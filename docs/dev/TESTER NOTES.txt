@@ -1,0 +1,98 @@
+================================================================================
+  OUTLAST VR - BETA 1.0 TESTER BUILD 2 (2026-10-17)
+  VR mod made by StrikeZoneVR
+================================================================================
+
+INSTALL
+  See README.txt: copy the files into your Outlast folder (Steam -> Outlast ->
+  Manage -> Browse local files -> Binaries\Win64), start Virtual Desktop, run
+  Outlast1VR.exe and choose PLAY IN VR. Made and tested on a Quest 3 with
+  Virtual Desktop.
+  Updating from tester build 1: copy everything over the old files. The old
+  Outlast-VR.bat is gone - the launcher installs and uninstalls (delete the
+  old .bat if it is still in your folder).
+
+CONTROLS
+  controls\Outlast1VR_Controls.png   every button
+  controls\Outlast1VR_Hands_On.png   what your hands and body do
+  (the pictures are only for you - they do not go in the game folder)
+
+NEW IN THIS BUILD (from your feedback)
+  - No more freezing when the game loads a new area: "it's hitching quite a
+    lot ... it freezes up and lurches ... new room, loading, loading". The
+    VR mod made the game wait on the graphics card every time it loaded new
+    textures. On a walk through the admin block on our test PC: 136 freezes
+    of up to 0.6 s before, none now. Tell us if anything looks wrong with
+    the textures (outlastvr.ini [XR] TextureShadow=0 goes back to the old way).
+  - Film grain: VR SETTINGS -> "Film grain" (in the game and the launcher).
+    Off by default - in a headset the grain reads as blur.
+  - VR hands keep working after Trager's wheelchair scene (losing the two
+    fingers used to switch them off for the rest of the game).
+  - The launcher opens full screen (F11 or Alt+Enter for a window - it
+    remembers).
+  - The camcorder's battery meter and record light sit further in from the
+    edges by default (VR SETTINGS -> "Camcorder display size").
+  - Faster: the game's render thread - what holds Outlast back in VR, and
+    why the graphics settings made little difference - does about a third
+    less work per frame. Measured on our test laptop (RTX 4050): 123 -> 182
+    fps and 137 -> 203 fps uncapped in two spots, the same picture. Two
+    changes: your MONITOR now shows 30 frames a second while you play (the
+    headset still gets every frame - VR SETTINGS -> "Monitor picture" to
+    change it), and the game no longer draws and waits for hidden-object
+    tests whose answers the mod already overrides.
+  - Turning: a new VR SETTINGS choice, "Smooth turn speed" - 60 degrees a
+    second up to MAX (about 260, the game's fastest, and the default). If
+    turning still feels too slow, tell us when (camcorder up? zoomed in?).
+  - Zoom: with the camcorder up, only a clear up or down push on the right
+    stick zooms - turning no longer zooms by accident. The zoomed picture
+    fills your view with no black bars ("Zoom with black bars" brings the
+    frame back if you prefer it). Tell us which you like better.
+  - Camcorder display size: a new VR SETTINGS choice. Can't see the battery
+    meter or the record light when you look through the camcorder? Make it
+    smaller and they move in from the edges.
+  - Vaulting works again: run at a low wall or a table and press A. Climbing
+    with your hands no longer gets in the way.
+  - Stutter every few seconds: the log is now written in the background, so
+    writing it can never hold up a frame, and it records the time of every
+    frame slower than 40 ms. If you still get drops, the log shows when.
+  - Quest Link / Air Link works: the "screen on each eye, distorted" picture
+    is fixed - the lens-shaped eyes turn off by themselves on Link.
+  - The launcher tells you why when it can't apply the VR settings (e.g.
+    Windows ransomware protection blocking it) and finds Outlast's settings
+    in more places.
+  - The old Outlast-VR.bat is gone from the download.
+
+PLEASE TRY, AND TELL US HOW IT FEELS
+  - Turning at a few different "Turn speed" settings, and snap turning.
+  - Vaulting and climbing: vault a few tables / low walls, climb a ledge or a
+    ladder with your hands.
+  - Zooming while you turn.
+  - Where it runs slowly, if anywhere (see below).
+
+IF IT STUTTERS
+  Keep VR SETTINGS -> "Monitor picture" at 30 FPS (EVERY FRAME is much
+  slower). Render resolution 85-90% helps if your graphics card is the
+  limit; Outlast's own graphics options make little difference. Tell us
+  where in the game it got slow, and send the log - it now says exactly when
+  frames were slow.
+
+KNOWN ISSUES
+  - Some heavier areas later in the game may still run below the headset's
+    frame rate: the game draws everything twice, once for each eye, on one
+    CPU core. This build takes a third off that work; tell us where it is
+    still slow.
+  - Miles's legs do not walk when you take real steps - he slides with you.
+
+UNINSTALLING
+  Close Outlast, run Outlast1VR.exe and choose UNINSTALL VR MOD (press it
+  twice). It puts the game's own settings back and removes every mod file from
+  the game folder; the launcher deletes itself when you close it.
+
+REPORTING A PROBLEM
+  Right after playing, close the game and send:
+    %LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt
+  (launcher -> VR SETTINGS -> "Open the log folder"), with a short video or a
+  description of what happened and where. The log starts over every time the
+  game starts, so grab it before you play again.
+
+  Outlast is a game by Red Barrels. This is an unofficial fan mod.

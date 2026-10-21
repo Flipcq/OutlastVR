@@ -1,0 +1,49 @@
+name: Bug report
+description: Something is wrong in VR (please attach your log file).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Outlast VR! Close the game first, then attach your log:
+        `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`. The launcher's VR SETTINGS has "Open the log folder".
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. A short clip helps a lot.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where in the game?
+      placeholder: "e.g. the library, the first security room, Trager's wheelchair scene"
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: How do you connect your headset?
+      options:
+        - Virtual Desktop
+        - Quest Link / Air Link
+        - SteamVR
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: headset
+    attributes:
+      label: Headset
+      placeholder: "e.g. Quest 3, Quest 2, Index, Pico 4"
+  - type: input
+    id: version
+    attributes:
+      label: Mod version
+      placeholder: "Beta 1.0"
+  - type: textarea
+    id: log
+    attributes:
+      label: Log file
+      description: Drag OutlastVR_Log.txt into this box.
+    validations:
+      required: true

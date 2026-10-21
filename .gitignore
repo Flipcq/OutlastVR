@@ -1,0 +1,5 @@
+builds/
+*.obj
+release/openxr_loader.dll
+launcher/Outlast1VR.exe
+launcher/preview_*.png

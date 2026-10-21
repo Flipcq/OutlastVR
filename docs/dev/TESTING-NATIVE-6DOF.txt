@@ -1,0 +1,195 @@
+OUTLAST VR - BETA 1.0 (final, built as Test 40)
+================================================
+
+What changed since the first Beta 1.0 build (Test 39)
+------------------------------------------------------
+Your feedback on it, and what this build does:
+
+1. "The camcorder is in the wrong position in the hand / not natural like the game's own animation"
+   - I recorded the game's own camcorder animation frame by frame (Miles raising it, with the game's
+     arms) and copied it: from your eyes you now see what the game shows - the flip-out screen face on,
+     the camcorder's side with its dial and ports, Miles's fingers over its top. It sits where your hand
+     is; turning the controller no longer twists it (both earlier builds took its angle from the
+     controller, which is what looked wrong). Checked high, low and with the controller turned.
+2. "Motion controls for climbing (with a setting for the old one)"
+   - Climbing with your hands, on by default (VR SETTINGS / in-game menu: "Climb with your hands"; off =
+     A climbs as before):
+     - A ledge: put both hands on the edge, squeeze both grips (Miles's hands hold the edge where you put
+       them), pull down - Miles steps in to the edge if he is a little away from it (your log showed two
+       pulls that only made him hop: he was too far for the game), stops, and climbs up, vaults or jumps
+       for it, whatever the game has for that ledge. With the camcorder in your right hand, the left hand
+       alone does it.
+     - Hanging from a ledge: hold on with both grips (his hands on the edge), pull down to climb up, let
+       go with both hands to drop.
+     - A ladder: walk into it, grab a rung with one hand and pull it down - Miles climbs until your hand
+       is back at the rung; grab the next with the other hand. Hand over hand to the top.
+     - New how-to labels: CLIMB at an edge, PULL YOURSELF UP while holding on.
+3. "When jumping you can move your arms and hands with the native hand animations"
+   - Jumps, falls, landings, vaults and crouches keep your arms (the game used to take them for every one
+     of these); the fingers play the game's own animation. While climbing, a hand that holds on plays
+     Miles's own climbing arm (on the edge, on the rung) and a free hand stays yours.
+4. "Opening and pushing doors can be buggy and janky - needs more physics"
+   - Found: the door chased a target at a fixed speed - it lagged a fast hand, stopped dead and could jump
+     when a hand started past the panel's edge. Now a door you touch is a heavy hinged body: a slow push
+     creeps it open, a shove swings it on a little and it slows by itself, your hand stops at the door's
+     surface instead of passing through, a hand on the handle pulls through a spring (let go mid-swing
+     and it carries on), it bounces softly off its open stop, latches when it swings shut and stops
+     against Miles. Anything the game does with a door itself (X, enemies, scripts) still works.
+
+Tested by me (this PC, SteamVR's test headset, scripted hands and buttons)
+------------------------------------------------------------------------
+- Camcorder: the game's raise animation captured with its own arms and matched; taken from the hip, held
+  high / low / with the controller turned, raised to the eye (camera view), lowered, let go (back on the hip).
+- Jump: "arms yours" the whole jump, no arm hand-over.
+- Doors: slow push (0.20 -> 0.47), shove (0.16 -> 0.60, swung on at 150 deg/s and stopped in under half a
+  second), handle grab and pull (0.51 -> 0.32 through the spring), locked door. The view centre matches
+  Miles's camera bone exactly, so held hands line up with handles.
+- Ladder: walked into it (the game's own enter move), climbed it hand over hand with scripted grips
+  (35 cm pulls = 33 cm climbed), the game's exit on top ran.
+- Ledge gesture: on a test edge, both hands took hold, the pull sent A (no real ledge there, so the game
+  jumped - the mod saw that and went back to normal). No real ledge was reachable from your save point,
+  so the real climb-up / hang / drop runs are NOT tested on a real ledge yet.
+- Launcher: the new setting and the CLIMB card render; self-test passes.
+- Not tested: real ledges (climb up, hang, drop), your real Quest hands, later levels.
+
+Please try (and record if you can)
+----------------------------------
+1. Take the camcorder from your hip and look at it in your hand; turn your hand around - it should stay
+   upright and point where your hand points.
+2. Push a door slowly, then shove one; grab a handle, swing it, let go mid-swing.
+3. Any ledge: both hands on the edge, squeeze, pull down. If one only makes Miles hop, tell me where.
+4. A ladder: hand over hand. Jump with your hands out in front of you.
+
+Log lines that matter (%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt)
+------------------------------------------------------------------
+- BUILD=OUTLAST1VR-BETA-1.0-20261014 (BETA 1.0, Test40 ...)
+- [OLVR][CLIMB] ... took hold of the edge / both hands pulled / climbing / hanging / on a ladder /
+  "the game found nothing to climb here" (a pull that only jumped)
+- [OLVR][DOORPHYS] handle grabbed / push / shoved / swung shut / handed back to the game
+- [OLVR][SCENESTATE] ... -> MOVE (arms yours) | CLIMB (holding hands native) | SCRIPTED (arms native)
+- [OLVR][INTERACT] alive: ... right grip fwd (...) up (...)  - how you really hold the controller
+
+Test 41 (same Beta 1.0 package): "climbing auto-goes into the animation; should feel like Boneworks"
+-----------------------------------------------------------------------------------------------------
+- Your log: walking up to a ladder mounted it by itself (and stepped you off at the top/bottom by
+  itself) - canned animations moving your view while your hands did nothing.
+- Now your pull drives every climb: the game's climb animations (ledges, walls, getting on a ladder,
+  over the top) play only as fast as your holding hands pull down - stop and Miles hangs there, pull
+  harder and he goes faster, let go and the game finishes the move. One ~45 cm pull carries a move.
+- Ladders: walking into one stops just short of it (the game would take you from ~90 cm); reach out,
+  squeeze a rung and pull - Miles steps on as you pull; hand over hand up; pull yourself over the top.
+- Tested (test headset, scripted hands): walk-in held at 98 uu; rung taken, mount held still for 3 s
+  then followed the pull; hand over hand up; the top exit followed one slow 45 cm pull (177 uu of
+  rise) and finished when the hands let go. Ledge climbs use the same pacing (no real ledge reachable
+  from your save to test it on).
+
+Test 42 (same Beta 1.0 package): "the arms deform when moving around a lot or crouching"
+----------------------------------------------------------------------------------------
+- Found (measured on the test headset): the bones that shape Miles's sleeves and forearm skin (the
+  twist helpers) copied the GAME's own arm twist every frame - and the game swings his arms as he
+  walks, runs and crouches: 12-19 degrees of twist walking or sprinting, up to 31 degrees crouching or
+  crouch-walking (under 5 standing still). On arms that follow your hands that wrung the wrists and
+  sleeves. They now keep the shape from Miles's calm pose and follow your arm only (close-up captures
+  crouch-walking: the twisted crease at the left wrist is gone).
+- Also: the elbow now bends only like a hinge (the upper arm used to roll as the arm moved far from
+  its rest pose, so the elbow bent sideways); a wrist roll is shared between the forearm and the wrist
+  instead of all twisting from the elbow; the collarbone lifts a little when you reach high or far.
+
+Test 43 (same Beta 1.0 package): the user's report on Test42
+------------------------------------------------------------
+"The camcorder pulling it out forward looks wrong ... it still does not go in front of my face and you
+don't have much free movement with it. Reverse engineer the climbing to make it more like a native VR
+game but still have the old option too. The first jumpscare at the door does not happen when I open it
+with motion controls. Add a surprise motion controls feature. The storm is way louder than the last build."
+Choices: free-hold camcorder (live screen); cover your mouth ("any moment he is breathing heavy and in
+lockers etc.").
+- Door scares: the game's own door "open" (AOLDoor 0xD4A770) fires TriggerEvent(0) when the door was
+  shut (DoorState 0), sets DoorState 1 and fires TriggerEvent(1) - the outputs of the door's
+  OLSeqEvent_Door Kismet events the level scripts' scares listen to. The hand physics never did. Now a door
+  the hands open from shut does exactly that, and one they swing shut fires TriggerEvent(2), state 0.
+  Verified: X on a shut door logs events 0, 1 (instigator Miles); the hands' pull logs the same, "fired by
+  the hands". Also: while Miles opens a door the game's way (X), the hands leave every door near him
+  alone until 2 s after (a hand in the swing had pushed a door X opened back to 57%).
+- Climbing (ClimbMode=2, physical): a grip on a marked edge or a ladder rung fixes that hand in the world;
+  Miles's body (physics off) moves 1:1 against it through the engine's collision-swept AActor::Move;
+  hand over hand; the edge at his chest (eyes 50 uu over the lip) and he hauls himself over (feet to the
+  lip); a ladder's top steps him off; let go of everything and he drops with the push of your hands.
+  Verified on the scaffold ladder: the whole climb hand over hand, ~48 uu per pull, over the platform
+  edge, standing on the scaffold (5 uu drop). A hitch no longer drops him (1.5 s grace).
+  ClimbMode=1 is the Test41 guided climb, 0 the A button.
+- Camcorder (CamcorderHold=4, free): the controller's own angle, the game's grip as its resting angle -
+  the lens where the controller points, the back of the camcorder toward you, the flip screen open on its
+  left facing you. Its flip screen is live: a quad over the model's screen showing the part of the frame
+  the lens points at, in night vision; static when the lens points off the picture. Raise to the eye and
+  lower: verified.
+- Cover your mouth: Miles's breath sounds are Wwise events (VO_MILES_RUN_BREATH, the STRESS_BREATH set,
+  BRE_DAN, the pain breaths...); they are paused (Wwise ExecuteActionOnEvent, 220 ms fade) while a free
+  hand is within 11 cm of the mouth, and resumed when it leaves; a gasp (VO_BRE_HGH_Short) after holding
+  2.5 s or more; a heartbeat in the covering hand, faster the longer; at 12 s he gasps by himself.
+  Verified: a sprint posts VO_MILES_RUN_BREATH; the left hand over the mouth paused it, 5.2 s later
+  resumed + the gasp. Available for 6.5 s after any heavy breath, while a stress breath runs, in a locker.
+- Storm: the listener (Wwise SetListenerPosition) follows Miles's camera, one listener only; door occlusion
+  works as in the game. Measured (WASAPI loopback, 20 s at the same rainy scaffold spot): Test39 median
+  -25.5 dBFS, Test42 -28.2, Test43 -25.7 / -25.5 - no build makes it louder. The in-game Volume is at
+  maximum in both of the user's profiles (the one profile byte that differs between the two sessions is not
+  a sound option). [AUDIODIAG] lines now name every event the game posts, for the next report.
+- (later the same day) "Activate the night vision on free hold ... for players wanting more realism; in
+  night vision there are black spots and it displays with a small visual issue."
+  * Night vision in your hand ([HANDNV]): a right-stick click while you hold the camcorder switches its
+    night vision; the live flip screen then amplifies the low light (gain 9, grain) - your eyes stay in
+    the dark - or shows the normal colour picture. Raised to the eye, the game's own night vision is
+    clicked to match once (OLHero.CamcorderMode: 0 default, 1 powered NV, 2 NV), then the game's switch is
+    followed. Verified: on in the hand, raised -> CamcorderMode 1, NV look at the eye.
+  * The black spots ([NVEYES]): with each eye's off-centre lens frustum the night-vision lamp lit only the
+    inner part of each eye (left eye's left wall and right eye's right wall black - the eyes disagreed).
+    Ruled out: the lamp's aim (set once per frame, outside the eye passes), hand shadows, the light
+    rectangles (whole eye). With symmetric eyes both are lit alike, so while the game's night vision is
+    up the eyes render symmetric, as the zoomed viewfinder already did. Verified in headset captures.
+
+== Test 44 (2026-10-15): walk around for real ==
+"Make sure to add where when you move in real life in VR the body in game moves with you too, I will test
+it since it would not be possible for you to test that."
+- Before: [BODYFOLLOW] dragged the position baseline once the head passed the body bounds (side 12,
+  forward 10, back 8 cm) and slid it under a head that sat still 2.5 s - the drag was thrown away, so the
+  view stopped at the bound and Miles stayed where he was.
+- Now ([ROOMWALK], [Motion] RoomscaleWalk=1): each drag is handed to Miles's feet. ol_xr keeps a running
+  total of it with each pose (pending -> latched with the pose at the frame latch); the player tick
+  (NativePlayerMove hook, right after the latch) moves Miles by the latched total through AActor::Move
+  (collision swept) - body and view move in the same frame. Blocked by more than 40%: a step up (30 uu up,
+  across, back down); still blocked = a wall, the view waits at the bound as before. Only while he is on his
+  feet in ordinary play (LocomotionMode 0, Physics Walking, no scripted scene, hands not climbing, head
+  position on); a head jump over 3.5 m/s is tracking, not walking. Over 40 uu in one frame is capped.
+- Verified on the null headset with "headoff" ramps (2.5 cm steps): head 1 m forward -> Miles 90 cm
+  (-3990 -> -4081; the last 10 cm stay a lean, then the settle slides the body under the head); 3 m right
+  -> 9 cm then the corridor wall: 36 + 45x5 cm held back, the view at the 12 cm side bound against the wall
+  (snapshot: at the wall, not through it); back out left 1 m + 1 m backward -> Miles followed both
+  (-6980 -> -7068, -4082 -> -3990). [ANCHOR] view vs camera bone stayed inside the bounds (-12, +8 uu).
+- Not testable here: real walking on the Quest (speed, feel, stairs). Log lines to read: [ROOMWALK]
+  "you walked X cm in your room - Miles walked Y cm with you (Z held back by walls, N steps up)",
+  "paused: <why>" / "on", and [BODYFOLLOW] "... cm of it handed to Miles's feet".
+
+== Test 45 (2026-10-16): tester build ==
+User (screenshot: the camcorder held out, its top toward the eye, lens up, the hand under it): "the camcorder
+... you should be able to see the issue; climbing is buggy and you can't walk directly up close to the ladder,
+it's like there is a barrier; remove cover your mouth; the live screen needs to show what's on the actual
+camcorder screen, not an overlay; get the camcorder in the right position, maybe a setting to position it
+myself; the framerate is horrible during fast movement and later sections."
+- Camcorder ([CAMADJUST]): free hold took the GRIP pose, whose forward runs along the handle (up and forward
+  in a relaxed hold) - the lens pointed up. Now the AIM pose (where the controller points). Plus the player's
+  own placement in the in-game VR settings: tilt / turn / roll (deg), forward / up / right (cm, the hand and
+  the camcorder together); [Motion] CamcorderTilt/Turn/Roll/ForwardCM/UpCM/RightCM. Null headset: default ->
+  "lens points 1.00 ahead ... top +1.00 up", camcorder in the hand, flip screen left (snapshot); tilt 30 /
+  turn 20 -> lens +0.48 up, +0.30 right (as sin 30, sin 20 cos 30). A [CAMADJUST] line reports where it
+  sits each time it comes to the hand.
+- Live screen: it is a compositor quad over the model, not the game's own screen - off by default, labelled
+  experimental. The real thing (the model's screen texture fed live) is a separate piece of RE.
+- Cover your mouth: out of the menus and the launcher, CoverMouth=0; the Wwise hooks are not installed unless
+  it is turned back on in the ini.
+- Ladders: the walk barrier (Test41 LADDERGRAB, 100 uu) is gone - the user's log shows "walk held short"
+  three times. A ladder now holds you: both hands off part-way up and Miles stays (take a rung to go on, B
+  drops him); at its foot he steps off. The log showed two drops mid-ladder.
+- Frame rate: the user's log (20 min) - game 55-73 fps against 72 Hz, game thread 13-22% busy, render thread
+  up to 65-79% in the later sections (both eyes drawn: the render thread is the limit there). The mod's own
+  spikes: a full object-table walk (93-103k objects, 1-3 ms) for doors every 2 s and ledges / ladders every
+  4 s. Now [OBJSCAN]: one sliced pass (4000 objects a frame) serves every class. The "GObjObjects refreshed"
+  line no longer fires on every spawn.
