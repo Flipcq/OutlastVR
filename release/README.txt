@@ -1,5 +1,5 @@
 ================================================================================
-  OUTLAST VR - BETA 1.0
+  OUTLAST VR - BETA 1.1
   VR mod made by StrikeZoneVR
 ================================================================================
 
@@ -15,9 +15,9 @@ WHAT YOU NEED
 --------------------------------------------------------------------------------
 
   - Outlast on Steam (the normal 64-bit game, Binaries\Win64\OLGame.exe).
-  - A Meta Quest 3 with Virtual Desktop (made and tested this way), or Quest
-    Link / Air Link. Other OpenXR headsets/runtimes may work but are not
-    tested.
+  - A Meta Quest 3 with Virtual Desktop (made and tested this way), Quest
+    Link / Air Link (fixed in Beta 1.1), or SteamVR. Other OpenXR headsets
+    and runtimes may work but are not tested.
   - Run Outlast once normally first, so the game creates its settings files.
 
 --------------------------------------------------------------------------------
@@ -110,6 +110,11 @@ HANDS
     hands".)
     Can't see the battery meter when you look through it? VR SETTINGS ->
     "Camcorder display size": smaller pulls it in from the edges.
+    Playing seated, or your arm gets tired? VR SETTINGS -> "Camcorder
+    controls" GRIP BUTTON: squeeze the right grip once to raise the camcorder
+    and again to lower it. You look through it with your head, so your hand
+    can rest anywhere. (The right grip then does not grab doors or edges -
+    use your left hand or X.)
 
   DOORS
     Doors are heavy. Push one with your open hand and it swings as far as you
@@ -153,14 +158,20 @@ SETTINGS
 
   Comfort favourites: Turning SMOOTH or SNAP, "Smooth turn speed" (60
   degrees a second up to MAX, the game's fastest), snap angle, "Blink while
-  snapping", "Reduce head bob", "Keep the horizon level", "Crouch when you
-  duck" (crouch for real), "Walk around for real" (roomscale).
+  snapping", "Reduce head bob" (100% = none, walking or running), "Keep the
+  horizon level", "Crouch when you duck" (crouch for real), "Walk around for
+  real" (roomscale), "Body turns with you" (turn your body or chair and Miles
+  turns to match after a moment - no recentering needed for that).
+
+  "World size": 100% = true size, with your own eye spacing read from the
+  headset. Things look too big or "zoomed in"? Lower it. Too small? Raise it.
 
 --------------------------------------------------------------------------------
 IF SOMETHING LOOKS WRONG
 --------------------------------------------------------------------------------
 
-  The world or body feels offset      Press both stick clicks (recenter).
+  The world or body feels offset      Click both thumbsticks (recenter).
+  Things look too big / zoomed in     VR SETTINGS -> "World size" 85-95%.
   The picture looks grainy/blurry     VR SETTINGS -> "Film grain" off.
   It stutters                         VR SETTINGS -> "Monitor picture" 30 FPS
                                       (not EVERY FRAME); Render resolution

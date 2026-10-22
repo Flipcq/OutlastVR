@@ -38,6 +38,8 @@ constexpr uint32_t XR_TYPE_VIEW_STATE_VALUE = 11;
 constexpr uint32_t XR_TYPE_FRAME_END_INFO_VALUE = 12;
 constexpr uint32_t XR_TYPE_EVENT_DATA_BUFFER_VALUE = 16;
 constexpr uint32_t XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED_VALUE = 18;
+constexpr uint32_t XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED_VALUE = 52;   // (Test48)
+constexpr uint32_t XR_TYPE_INTERACTION_PROFILE_STATE_VALUE = 53;
 constexpr uint32_t XR_TYPE_INSTANCE_PROPERTIES_VALUE = 32;
 constexpr uint32_t XR_TYPE_FRAME_WAIT_INFO_VALUE = 33;
 constexpr uint32_t XR_TYPE_COMPOSITION_LAYER_PROJECTION_VALUE = 35;
@@ -218,6 +220,8 @@ struct XrSpaceLocation { XrStructureType type; void* next; XrSpaceLocationFlags 
 struct XrHapticActionInfo { XrStructureType type; const void* next; XrAction action; XrPath subactionPath; };
 struct XrHapticBaseHeader { XrStructureType type; const void* next; };
 struct XrHapticVibration { XrStructureType type; const void* next; XrDuration duration; float frequency; float amplitude; };
+// (Test48) which controller layout the runtime bound for a hand
+struct XrInteractionProfileState { XrStructureType type; void* next; XrPath interactionProfile; };
 
 // ---- function-pointer typedefs -----------------------------------------------------------
 using PFN_xrGetInstanceProcAddr = XrResult (OL_XRAPI *)(XrInstance, const char*, PFN_xrVoidFunction*);
@@ -262,6 +266,8 @@ using PFN_xrCreateActionSpace = XrResult (OL_XRAPI *)(XrSession, const XrActionS
 using PFN_xrLocateSpace = XrResult (OL_XRAPI *)(XrSpace, XrSpace, XrTime, XrSpaceLocation*);
 using PFN_xrApplyHapticFeedback = XrResult (OL_XRAPI *)(XrSession, const XrHapticActionInfo*, const XrHapticBaseHeader*);
 using PFN_xrStopHapticFeedback = XrResult (OL_XRAPI *)(XrSession, const XrHapticActionInfo*);
+using PFN_xrGetCurrentInteractionProfile = XrResult (OL_XRAPI *)(XrSession, XrPath, XrInteractionProfileState*);
+using PFN_xrPathToString = XrResult (OL_XRAPI *)(XrInstance, XrPath, uint32_t, uint32_t*, char*);
 
 struct Functions
 {
@@ -305,6 +311,8 @@ struct Functions
     PFN_xrLocateSpace locateSpace = nullptr;
     PFN_xrApplyHapticFeedback applyHapticFeedback = nullptr;   // [HAPTICS] optional
     PFN_xrStopHapticFeedback stopHapticFeedback = nullptr;
+    PFN_xrGetCurrentInteractionProfile getCurrentInteractionProfile = nullptr;   // (Test48) log only
+    PFN_xrPathToString pathToString = nullptr;
 };
 
 inline bool XrSucceeded(XrResult r) noexcept { return r >= 0; }

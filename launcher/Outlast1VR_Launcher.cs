@@ -45,7 +45,7 @@ namespace Outlast1VR
     static class Program
     {
         // The release this launcher ships with: stamped under the title and shown in the window title.
-        public const string Release = "BETA 1.0";
+        public const string Release = "BETA 1.1";
 
         [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/images/hero.jpg" alt="Outlast VR - Beta 1.0" width="100%">
+  <img src="docs/images/hero.jpg" alt="Outlast VR" width="100%">
 </p>
 
-<h1 align="center">Outlast VR - Beta 1.0</h1>
+<h1 align="center">Outlast VR - Beta 1.1</h1>
 
 <p align="center">
   <b>This time, you hold the camera.</b><br>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><b>Download Beta 1.0</b></a> &nbsp;|&nbsp;
+  <a href="../../releases/latest"><b>Download Beta 1.1</b></a> &nbsp;|&nbsp;
   <a href="#install">Install</a> &nbsp;|&nbsp;
   <a href="#controls">Controls</a> &nbsp;|&nbsp;
   <a href="../../issues">Report a bug</a> &nbsp;|&nbsp;
@@ -35,7 +35,9 @@
 
 Also included:
 - Smooth or snap turning, with a speed you choose.
-- Comfort options: keep the horizon level, reduce head bob, and crouch for real when you duck.
+- Comfort options: keep the horizon level, no head bob, and crouch for real when you duck.
+- World size: 100% is true size, with your own eye spacing read from the headset. Lower it if things look too big.
+- Your body turns with you: turn your real body or chair and Miles turns to match, so his arms stay lined up.
 - A film grain on/off switch.
 - VR settings in the launcher and in the game (hold the left grip and press Menu).
 - A launcher that installs and uninstalls everything for you.

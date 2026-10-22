@@ -46,7 +46,8 @@ extern "C" void OLInteract_FilterMoveStick(float* x, float* y);
 // 0 doors, 1 raise gesture, 2 battery, 3 viewfinder, 4 markers, 5 Quest prompts, 6 hip holster,
 // 7 how-to labels, 8 (Test40) climbing with your hands, 9 (Test43) the camcorder's live screen,
 // 10 (Test43) cover your mouth, 11 (Test44) walk around for real (roomscale: Miles walks with you),
-// 12 (Test46) the camcorder zoom in a framed viewfinder (0: the zoomed picture fills the view)
+// 12 (Test46) the camcorder zoom in a framed viewfinder (0: the zoomed picture fills the view),
+// 13 (Beta 1.1) auto ledge grab: in the air the game catches the edge (physical climbing steps aside)
 extern "C" int  OLInteract_Get(int which);
 extern "C" void OLInteract_Set(int which, int on);
 // (Test43) climbing: 0 the A button, 1 guided (the game's climb at your pace), 2 physical (your hands
@@ -54,7 +55,14 @@ extern "C" void OLInteract_Set(int which, int on);
 extern "C" int  OLInteract_ClimbMode();
 extern "C" void OLInteract_SetClimbMode(int m);
 extern "C" int  OLInteract_CamHold();
+// (Beta 1.1) [BATGAUGE] the camcorder is up: its battery level (0..1) and spare batteries, for the headset gauge
+extern "C" int  OLInteract_BatteryGauge(float* energy, int* spares);
+extern "C" int  OLInteract_GetBatteryGauge();
+extern "C" void OLInteract_SetBatteryGauge(int on);
 extern "C" void OLInteract_SetCamHold(int m);
+// (Test49) [CAMBUTTON] 1 = the right grip is a camcorder button (raise / lower), the view stays the head's
+extern "C" int  OLInteract_CamButton();
+extern "C" void OLInteract_SetCamButton(int on);
 extern "C" void OLInteract_ResetHints();     // the how-to labels show again
 // (Test45) [CAMADJUST] the camcorder in your hand: rot = tilt, turn, roll (deg); off = forward, up, right (cm)
 extern "C" void OLInteract_GetCamAdjust(float rot[3], float off[3]);

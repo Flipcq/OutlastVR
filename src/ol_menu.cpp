@@ -70,6 +70,8 @@ extern "C" void  OLProxy_StartBindCapture(int which);
 extern "C" const char* OLProxy_KeyName(int vk);
 extern "C" const char* OLProxy_PadName(int mask);
 extern "C" int   OLUE3_GetArmImproved();  extern "C" void OLUE3_SetArmImproved(int on);
+extern "C" float OLUE3_GetWorldSize(); extern "C" void OLUE3_SetWorldSize(float s); extern "C" float OLUE3_GetEyeSpacingCm();   // (Beta 1.1)
+extern "C" int OLUE3_GetBodyTurn(); extern "C" void OLUE3_SetBodyTurn(int on);   // (Beta 1.1) [BODYTURN]
 extern "C" float OLUE3_GetBobReduce();    extern "C" void OLUE3_SetBobReduce(float v);
 extern "C" int   OLUE3_GetLevelHorizon(); extern "C" void OLUE3_SetLevelHorizon(int v);
 extern "C" int   OLUE3_GetLookUse();      extern "C" void OLUE3_SetLookUse(int v);
@@ -439,14 +441,13 @@ static void BuildUI() {
     // 100 uu/m ([LEAN100] - eye height 168 uu, walk speed, and the tuned depth landing at the
     // measured real IPD all agree), which is why a separation of 3.30 reads as ~1x: the stereo
     // was tuned to true scale by eye, without the number being derived on purpose.
-    { float v = OLUE3_GetHalfEye();
-      float ipd = OLXR_GetRtEyeSep(); if (ipd < 0.03f || ipd > 0.12f) ipd = 0.064f;
-      const float ratio = (v * 2.0f / 100.0f) / ipd;
-      char lbl[64]; sprintf_s(lbl, "%.2f  (%.1fx your real eye spacing)", v, ratio);
-      if (ImGui::SliderFloat("Depth", &v, 0.0f, 12.0f, lbl)) OLUE3_SetHalfEye(v);
+    { float v = OLUE3_GetWorldSize() * 100.0f;   // (Beta 1.1) [WORLDSIZE] replaces the raw "Depth" slider
+      char lbl[64]; sprintf_s(lbl, "%.0f%%  (eyes %.1f cm apart in the game)", v, OLUE3_GetEyeSpacingCm());
+      if (ImGui::SliderFloat("World size", &v, 60.0f, 150.0f, lbl)) OLUE3_SetWorldSize(v * 0.01f);
       Help(
-          "How far apart your two eyes see from. More depth also makes the world\n"
-          "feel smaller. This is the main 3D control."); }
+          "100% = true size: the eyes are as far apart as yours (from the headset).\n"
+          "Things look too big or 'zoomed in'? Lower it. Too small? Raise it.\n"
+          "Head movement scales with it."); }
     { float v = OLXR_GetConvergence();
       if (ImGui::SliderFloat("Focus distance", &v, -3.0f, 3.0f, "%.2f")) OLXR_SetConvergence(v);
       Help(
@@ -507,8 +508,8 @@ static void BuildUI() {
     { float v = OLUE3_GetBobReduce();
       if (ImGui::SliderFloat("Reduce head bob", &v, 0.0f, 1.0f, v <= 0.001f ? "off" : "%.2f")) OLUE3_SetBobReduce(v);
       Help(
-          "Takes the up-and-down walking bounce out of the camera.\n"
-          "Stairs, jumps and falls still move you normally."); }
+          "1.00 = no head bob walking or running: no bounce, rocking or sway.\n"
+          "off = the game's own bob. Stairs, jumps and falls still move you normally."); }
     { bool b = OLUE3_GetLevelHorizon() != 0;
       if (ImGui::Checkbox("Keep the horizon level", &b)) OLUE3_SetLevelHorizon(b ? 1 : 0);
       Help(
@@ -551,6 +552,12 @@ static void BuildUI() {
       Help(
           "Off: only your head looks up and down, the stick just turns.\n"
           "Camcorder zoom on the stick is unaffected."); }
+    { bool b = OLUE3_GetBodyTurn() != 0;   // (Beta 1.1) [BODYTURN]
+      if (ImGui::Checkbox("Body turns with you", &b)) OLUE3_SetBodyTurn(b);
+      Help(
+          "Turn your own body (or your chair) and after a moment Miles turns to face\n"
+          "the same way - the view does not move, his arms and the hip holster line up\n"
+          "with yours again. No more recentering for that. Off: only a recenter does it."); }
     // (Test44) [ROOMWALK]
     { bool b = OLInteract_Get(11) != 0;
       if (ImGui::Checkbox("Walk around for real", &b)) OLInteract_Set(11, b);
@@ -590,6 +597,15 @@ static void BuildUI() {
     // [HANDCAM] The camcorder IS the game's camera, so aiming the camera from the controller is
     // aiming the camcorder. Hold the right grip and you are holding it.
     Section("CAMCORDER");
+    { int m = OLInteract_CamButton() ? 1 : 0;   // (Test49) [CAMBUTTON]
+      static const char* kCtl[] = { "Hands-on - raise it to your eye", "Grip button - rest your hand" };
+      if (ImGui::Combo("Camcorder controls", &m, kCtl, 2)) OLInteract_SetCamButton(m);
+      Help(
+          "Hands-on: take the camcorder from your right hip and bring it to your eye.\n"
+          "Grip button: squeeze the right grip once to raise it, again to lower it. You\n"
+          "look through it with your head, so your hand can rest - for seated play or\n"
+          "arms that tire. The right grip then never grabs doors or edges."); }
+    if (!OLInteract_CamButton()) {   // the hands-on camcorder settings
     { bool b = OLXR_GetHandCam() != 0;
       if (ImGui::Checkbox("Hold it in your hand", &b)) OLXR_SetHandCam(b);
       Help(
@@ -609,6 +625,11 @@ static void BuildUI() {
           "Reach to your right hip and squeeze the grip: the camcorder glides into\n"
           "your hand. Bring it to your eye to look through it. Let go and it goes back.\n"
           "Off: lift your right hand to your eye, or squeeze the right grip."); }
+    { bool b = OLInteract_GetBatteryGauge() != 0;   // (Beta 1.1) [BATGAUGE]
+      if (ImGui::Checkbox("Large battery gauge while filming", &b)) OLInteract_SetBatteryGauge(b);
+      Help(
+          "While the camcorder is up, a big battery gauge sits low in your view,\n"
+          "with the number of spare batteries beside it."); }
     // (Test43) [CAMHOLD] free hold, [FLIPSCREEN]
     { int hold = OLInteract_CamHold() == 3 ? 1 : 0;
       static const char* kHold[] = { "Free - moves with your controller", "The game's pose" };
@@ -646,6 +667,7 @@ static void BuildUI() {
       Help(
           "Lift your right hand up to your eye and the camcorder comes up; drop it\n"
           "and it goes down. The right grip still toggles it too."); }
+    }   // (Test49) end of the hands-on camcorder settings
     { bool b = OLInteract_Get(12) != 0;   // (Test46)
       if (ImGui::Checkbox("Zoom in a framed viewfinder (black around it)", &b)) OLInteract_Set(12, b);
       Help(
@@ -690,6 +712,12 @@ static void BuildUI() {
           "Get the edge to your chest and he hauls himself over; let go of everything\n"
           "and he drops. Guided: the game's own climb, playing only as fast as you pull.\n"
           "A button: the old way. A climbs in every mode."); }
+    { bool b = OLInteract_Get(13) != 0;   // (Beta 1.1) [AUTOLEDGE]
+      if (ImGui::Checkbox("Catch ledges automatically when jumping", &b)) OLInteract_Set(13, b);
+      Help(
+          "Jump toward a ledge and Miles grabs it by himself, like the original game.\n"
+          "Then pull down with both grips (or press A) to climb up, B to drop.\n"
+          "Off: in the air your hands take the edge only when you squeeze a grip."); }
     // (Test45) cover-your-mouth removed from the menu ([Motion] CoverMouth=1 still turns it on)
     Section("DEVELOPER");
     { bool b = OLInteract_Get(4) != 0;

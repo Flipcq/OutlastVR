@@ -107,6 +107,8 @@ extern "C" void OLUE3_DevBones();
 extern "C" void OLUE3_DevGripDump();
 extern "C" void OLInteract_DevGripOverride(int h, float w);
 extern "C" void OLXR_DevHeadOffset(float x, float y, float z);
+extern "C" void OLXR_DevBaseYaw(float yawDeg);
+extern "C" int  OLXR_DevDeclLocal(int v);
 extern "C" void OLUE3_DevCurl(float t0, float t1, float t2, float f0, float f1, float f2);
 
 static long g_devOn = 0;
@@ -424,6 +426,12 @@ extern "C" void OLDev_OnPresent(IDirect3DDevice9* dev, long presentCount) {
         } else if (!_stricmp(cmd, "headoff")) {
             float x = 0, y = 0, z = 0; sscanf_s(a, "%f %f %f", &x, &y, &z); OLXR_DevHeadOffset(x, y, z);
             sprintf_s(l, "[OLVR][DEVBRIDGE] head offset (%.2f %.2f %.2f) m", x, y, z); OLProxyLog(l);
+        } else if (!_stricmp(cmd, "baseyaw")) {               // (Beta 1.1) [LINKPOSE] a recenter taken facing this far off LOCAL
+            float y = 0; sscanf_s(a, "%f", &y); OLXR_DevBaseYaw(y);
+            sprintf_s(l, "[OLVR][DEVBRIDGE] recenter baseline yaw forced to %.1f deg", y); OLProxyLog(l);
+        } else if (!_stricmp(cmd, "decltrue")) {              // (Beta 1.1) [LINKPOSE] 0 = the old declaration, 1 = true pose
+            int v = 1; sscanf_s(a, "%d", &v);
+            sprintf_s(l, "[OLVR][DEVBRIDGE] projection pose declared %s", OLXR_DevDeclLocal(v) ? "TRUE (LOCAL)" : "in the recenter frame (old)"); OLProxyLog(l);
         } else if (!_stricmp(cmd, "gripdump")) {
             OLUE3_DevGripDump();
         } else if (!_stricmp(cmd, "vrstick")) {                // (Test46) lx ly rx ry ms - the Quest sticks

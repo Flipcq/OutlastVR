@@ -17,7 +17,8 @@
 // safely, so the fourteen developer chords that used to live here were removed for release.
 //   INSERT = open and close the settings menu (arrows / WASD / mouse / d-pad inside it)
 //   G      = recenter, rebindable in the menu, saved to [Input] RecenterKey
-//   R3 x2  = recenter from the controller, rebindable, saved to [Input] RecenterPad
+//   pad x2 = recenter from a gamepad (double tap, L1 by default), rebindable, saved to [Input] RecenterPad
+//   VR controllers: click both thumbsticks together to recenter (ol_xr.cpp [XRINPUT])
 // =============================================================================
 
 #include <Windows.h>
@@ -1854,7 +1855,10 @@ static WORD MapPadButtons(const OLXrPad& p) {
     if (nvNow && !nvButtonDown && g_camcorderUp) g_nvRequested = !g_nvRequested;
     nvButtonDown = nvNow;
     const bool shift = p.gripL > 0.6f;
-    const bool chord = shift && (p.buttons & (OLXR_BTN_A | OLXR_BTN_B | OLXR_BTN_X | OLXR_BTN_Y));
+    // (Test48) A is not a left-grip chord: nothing is on left grip + A, and the left grip is also sprint, so
+    // counting it dropped BOTH the sprint and the jump the moment A was pressed while running - "most of the time
+    // running and vaulting with A does not work". Only X, Y and B have grip chords.
+    const bool chord = shift && (p.buttons & (OLXR_BTN_B | OLXR_BTN_X | OLXR_BTN_Y));
     if (shift) {
         if (p.buttons & OLXR_BTN_X) b |= 0x0004;           // left grip + X = recordings
         if (p.buttons & OLXR_BTN_Y) b |= 0x0008;           // left grip + Y = evidence/documents
@@ -1940,7 +1944,7 @@ static WORD CamcorderGripButton(const OLXrPad& p) {
         g_camcorderUp = !g_camcorderUp;
         // Hold the pulse long enough to cross at least several UE3 polls.
         g_gripEdgeUntil = GetTickCount() + 120;
-        OLXR_SetHandCamActive(g_camcorderUp ? 1 : 0);
+        OLXR_SetHandCamActive(g_camcorderUp && !OLInteract_CamButton() ? 1 : 0);   // (Test49) grip button: the head aims
     }
     g_camGripDown = down;
     return (GetTickCount() < g_gripEdgeUntil) ? 0x0200 : 0;   // RIGHT_SHOULDER
@@ -2203,6 +2207,8 @@ extern "C" float OLXR_GetGamma();           extern "C" void OLXR_SetGamma(float 
 extern "C" float OLXR_GetScreenBelow();     extern "C" void OLXR_SetScreenBelow(float v);
 extern "C" int   OLXR_GetHandCam();         extern "C" float OLXR_GetHandCamStrength();
 extern "C" void  OLUE3_GetArmFlags(int* handSync, int* leanFix, int* smoothDt);
+extern "C" float OLUE3_GetWorldSize();   // (Beta 1.1) [WORLDSIZE]
+extern "C" int   OLUE3_GetBodyTurn();    // (Beta 1.1) [BODYTURN]
 extern "C" float OLUE3_GetBobReduce();      extern "C" int OLUE3_GetLevelHorizon();
 extern "C" int   OLUE3_GetLookUse();        extern "C" int OLUE3_GetWideFov();
 extern "C" int   OLXR_GetUpscaler();        extern "C" float OLXR_GetSharpness();
@@ -2321,6 +2327,7 @@ extern "C" int  OLUE3_GetFilmGrain();   // (Test47) [GRAIN]
 extern "C" int OLProxy_SaveSettings() {
     wchar_t ini[MAX_PATH]; if (!IniPath(ini, MAX_PATH)) return 0;
     WriteF(L"Stage3", L"HalfEyeUU",     OLUE3_GetHalfEye(),       ini);
+    WriteF(L"Render", L"WorldSize",     OLUE3_GetWorldSize(),     ini);   // (Beta 1.1) [WORLDSIZE]
     WriteF(L"Stage3", L"WorldToMeters", OLUE3_GetWorldToMeters(), ini);
     WriteI(L"Stage3", L"HeadTracking",  OLUE3_GetHeadTrack(),     ini);
     WriteI(L"Stage3", L"HeadPosition",  OLUE3_GetHeadPos(),       ini);
@@ -2349,6 +2356,7 @@ extern "C" int OLProxy_SaveSettings() {
       WriteI(L"Stage3", L"ArmLeanFix",  lf, ini);
       WriteI(L"Stage3", L"ArmSmoothDt", sd, ini); }
     WriteF(L"Comfort", L"ReduceHeadBob", OLUE3_GetBobReduce(),   ini);
+    WritePrivateProfileStringW(L"Motion", L"BodyFollowsHead", OLUE3_GetBodyTurn() ? L"1" : L"0", ini);   // (Beta 1.1)
     WriteI(L"Comfort", L"LevelHorizon",  OLUE3_GetLevelHorizon(), ini);
     OLMotion_Save(ini);
     OLInteract_Save(ini);   // [INTERACT]
@@ -2450,7 +2458,7 @@ static DWORD WINAPI Worker(LPVOID) {
     Log("[OLVR] built=" __DATE__ " " __TIME__ " bitness=x64");
     wchar_t exe[MAX_PATH] = { 0 }; GetModuleFileNameW(NULL, exe, MAX_PATH);
     Log("[OLVR] exe=%ls pid=%lu", exe, GetCurrentProcessId());
-    Log("[OLVR] keys: INSERT opens the settings menu, G recenters, double tap R3 recenters");
+    Log("[OLVR] keys: INSERT opens the settings menu, G recenters; VR controllers: click both thumbsticks to recenter; gamepad: double tap the recenter button (L1 unless changed)");
     ReadXrConfig();
     InstallDisplayHooks();   // BEFORE the game's CreateDevice, or the clamp has already happened
     CreateThread(nullptr, 0, KeyThread, nullptr, 0, nullptr);

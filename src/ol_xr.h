@@ -78,6 +78,7 @@ enum { OLMK_GREEN = 0, OLMK_RED, OLMK_YELLOW, OLMK_CYAN, OLMK_ORANGE, OLMK_WHITE
        OLMK_L_SLIDE_IN, OLMK_L_NO_SPARE, OLMK_L_GRAB_HANDLE, OLMK_L_LOCKED, OLMK_L_CHARGED,
        OLMK_L_CLIMB, OLMK_L_PULL_UP,                                  // (Test40) climbing
        OLMK_L_COVER_MOUTH,                                            // (Test43) [BREATH]
+       OLMK_L_RECENTER,                                               // (Beta 1.1) [RECENTERHINT]
        OLMK_COUNT };
 // pos: recenter frame, metres. size: width in metres. aspect: width / height (0 = square).
 struct OLMarker { float pos[3]; float size; int color; float aspect; };

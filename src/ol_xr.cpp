@@ -97,6 +97,11 @@ static long long g_frame = 0;
 
 // ---- head pose (exported; nothing consumes it yet) ----
 volatile float g_olYawRad = 0.0f, g_olPitchRad = 0.0f, g_olRollRad = 0.0f;
+// (Beta 1.1) [BODYTURN] Miles turned to face where you face: the recenter frame turns with him by exactly
+// that much at the next locate, so the view stays put while his body (and your arms' frame) comes round.
+// Right-positive millidegrees, posted from the game thread.
+static volatile LONG g_bodyTurnPendMilli = 0;
+extern "C" void OLXR_TurnBaseline(float rightDeg) { InterlockedExchangeAdd(&g_bodyTurnPendMilli, (LONG)lroundf(rightDeg * 1000.0f)); }
 volatile float g_olHeadX = 0.0f, g_olHeadY = 0.0f, g_olHeadZ = 0.0f;
 volatile long  g_olPoseValid = 0;
 volatile float g_olDeclFovXDeg = 0.0f, g_olDeclFovYDeg = 0.0f;
@@ -232,6 +237,7 @@ static long           g_thCurved = 1;           // [Cinema] Curved: cylinder scr
 static bool           g_cylinderExt = false;    // XR_KHR_composition_layer_cylinder enabled
 static bool g_perEyePose = false;          // resolved from g_perEyeMode once the runtime is known
 static int  g_perEyeMode = -1;             // [XR] PerEyePose: -1 auto, 0 off, 1 on
+static bool g_declLocal = true;            // [LINKPOSE] (Beta 1.1) [XR] DeclareTruePose: projection poses in LOCAL
 static bool g_fitFrustum = false;          // [FITFRUSTUM], resolved once the runtime is known
 static int  g_fitMode = -1;                // [XR] FitRuntimeFrustum: -1 auto, 0 off, 1 on
 
@@ -444,6 +450,7 @@ static XrActionSet g_actionSet = 0;
 static XrAction g_aMove = 0, g_aLook = 0, g_aTrig = 0, g_aGrip = 0, g_aPose = 0, g_aAim = 0;
 static XrAction g_aClick = 0, g_aPrimary = 0, g_aSecondary = 0, g_aMenu = 0;
 static XrAction g_aHaptic = 0;   // [HAPTICS] vibration output, both hands
+static XrAction g_aStickTouch = 0;   // (Test48) [STICKCENTER] thumb on the stick (Touch / Index / Vive pad), optional
 static XrPath   g_handPath[2] = { 0, 0 };
 static XrSpace  g_handSpace[2] = { 0, 0 };
 static XrSpace  g_aimSpace[2]  = { 0, 0 };
@@ -521,6 +528,26 @@ static XrPath XrPathOf(const char* s) {
     return p;
 }
 
+// (Test48) Which controller layout the runtime picked for each hand. SteamVR maps a controller it has no
+// layout of its own for onto one of the five this mod offers; a tester's Pimax controllers turned and walked
+// Miles by themselves, so the log has to say which layout they ended up on.
+static void LogInteractionProfiles(const char* why) {
+    if (!g_fn.getCurrentInteractionProfile || !g_session || !g_handPath[0]) return;
+    static char s_last[2][256] = {};   // SteamVR sends the change event several times in a row: log real changes
+    for (int i = 0; i < 2; ++i) {
+        XrInteractionProfileState st = {}; st.type = XR_TYPE_INTERACTION_PROFILE_STATE_VALUE;
+        char name[256] = "none";
+        const XrResult r = g_fn.getCurrentInteractionProfile(g_session, g_handPath[i], &st);
+        if (XrSucceeded(r) && st.interactionProfile && g_fn.pathToString) {
+            uint32_t n = 0;
+            if (!XrSucceeded(g_fn.pathToString(g_instance, st.interactionProfile, (uint32_t)sizeof(name), &n, name))) strcpy_s(name, "?");
+        } else if (!XrSucceeded(r)) sprintf_s(name, "unknown (r=%d)", r);
+        if (!strcmp(name, s_last[i]) && strcmp(why, "first input") != 0) continue;
+        strcpy_s(s_last[i], name);
+        XLOG("[OLVR][XRINPUT] %s: %s hand uses %s", why, i ? "right" : "left", name);
+    }
+}
+
 // Build the action set. Called once, after the session exists and BEFORE the first xrSyncActions:
 // attach is a one-shot per session and every action must exist before it. A failure anywhere here
 // is non-fatal by design - g_inputReady stays false, the pad publisher never runs, and the mod is
@@ -568,6 +595,8 @@ static void BuildActionSet() {
     // [HAPTICS] Optional output action. A runtime that refuses it leaves g_aHaptic at 0, the
     // binding tables skip it, and every input above is unaffected.
     if (!mk(g_aHaptic, XR_ACTION_TYPE_VIBRATION_OUTPUT_VALUE, "rumble", "Rumble")) g_aHaptic = 0;
+    // (Test48) [STICKCENTER] optional the same way: refused, only the stick-drift fix is lost.
+    if (!mk(g_aStickTouch, XR_ACTION_TYPE_BOOLEAN_INPUT_VALUE, "sticktouch", "Thumbstick Touch")) g_aStickTouch = 0;
 
     struct Bind { XrAction a; const char* path; };
     auto suggest = [&](const char* profile, const Bind* b, int n) {
@@ -599,6 +628,7 @@ static void BuildActionSet() {
         { g_aSecondary, "/user/hand/left/input/y/click" }, { g_aSecondary, "/user/hand/right/input/b/click" },
         { g_aMenu, "/user/hand/left/input/menu/click" },
         { g_aHaptic, "/user/hand/left/output/haptic" }, { g_aHaptic, "/user/hand/right/output/haptic" },
+        { g_aStickTouch, "/user/hand/left/input/thumbstick/touch" }, { g_aStickTouch, "/user/hand/right/input/thumbstick/touch" },
     };
     suggest("/interaction_profiles/oculus/touch_controller", touch, (int)(sizeof(touch)/sizeof(touch[0])));
 
@@ -614,6 +644,7 @@ static void BuildActionSet() {
         { g_aSecondary, "/user/hand/left/input/b/click" }, { g_aSecondary, "/user/hand/right/input/b/click" },
         { g_aMenu, "/user/hand/left/input/system/click" },
         { g_aHaptic, "/user/hand/left/output/haptic" }, { g_aHaptic, "/user/hand/right/output/haptic" },
+        { g_aStickTouch, "/user/hand/left/input/thumbstick/touch" }, { g_aStickTouch, "/user/hand/right/input/thumbstick/touch" },
     };
     suggest("/interaction_profiles/valve/index_controller", index, (int)(sizeof(index)/sizeof(index[0])));
 
@@ -636,6 +667,7 @@ static void BuildActionSet() {
         { g_aAim,  "/user/hand/left/input/aim/pose" },    { g_aAim,  "/user/hand/right/input/aim/pose" },
         { g_aMove, "/user/hand/left/input/trackpad" },    { g_aMove, "/user/hand/right/input/trackpad" },
         { g_aClick,"/user/hand/left/input/trackpad/click" }, { g_aClick,"/user/hand/right/input/trackpad/click" },
+        { g_aStickTouch, "/user/hand/left/input/trackpad/touch" }, { g_aStickTouch, "/user/hand/right/input/trackpad/touch" },
         { g_aTrig, "/user/hand/left/input/trigger/value" }, { g_aTrig, "/user/hand/right/input/trigger/value" },
         { g_aGrip, "/user/hand/left/input/squeeze/click" }, { g_aGrip, "/user/hand/right/input/squeeze/click" },
         { g_aMenu, "/user/hand/left/input/menu/click" },
@@ -701,6 +733,65 @@ static void ReadStick(XrAction a, int hand, float* x, float* y) {
     XrActionStateVector2f st = {}; st.type = XR_TYPE_ACTION_STATE_VECTOR2F_VALUE;
     if (!XrSucceeded(g_fn.getActionStateVector2f(g_session, &gi, &st)) || !st.isActive) return;
     *x = st.currentState.x; *y = st.currentState.y;
+}
+
+// (Test48) [STICKCENTER] A tester on a Pimax headset (SteamVR): "when out of the car the image spins around like
+// crazy", and with the stick unbound in SteamVR he could not walk. A stick that does not read 0 at rest turns or
+// walks Miles by itself - the game takes the value as it is. Where the controller reports a thumb on the stick
+// (Touch, Index, the Vive pad), what the stick reads with NO thumb on it is drift: once that is seen (over 0.10
+// for half a second), the stick gives nothing while no thumb is on it, and its resting point is taken off while
+// one is. A healthy stick is never changed. A touch sensor that reports no thumb while the stick swings is
+// ignored from then on. [Input] StickAutoCenter=0 turns this off; [Input] StickDeadzone (radial, 0.00 - 0.60,
+// default 0 = the game's own) catches drift on controllers with no touch sensor.
+static volatile long  g_stickAutoCenter = 1;
+static volatile float g_stickDeadzone = 0.0f;
+static float s_stickRest[2][2] = {};
+static bool  s_stickDrift[2] = { false, false }, s_touchBroken[2] = { false, false };
+static int   s_stickTouch[2] = { -1, -1 };   // last sample: -1 no sensor, 0 no thumb, 1 thumb on it
+static void StickCenter(int hand, float* x, float* y) {
+    const float rx = *x, ry = *y, mag = sqrtf(rx * rx + ry * ry);
+    const ULONGLONG now = GetTickCount64();
+    int touch = -1;
+    if (g_stickAutoCenter && g_aStickTouch && !s_touchBroken[hand] && g_fn.getActionStateBoolean) {
+        XrActionStateGetInfo gi = {}; gi.type = XR_TYPE_ACTION_STATE_GET_INFO_VALUE;
+        gi.action = g_aStickTouch; gi.subactionPath = g_handPath[hand];
+        XrActionStateBoolean st = {}; st.type = XR_TYPE_ACTION_STATE_BOOLEAN_VALUE;
+        if (XrSucceeded(g_fn.getActionStateBoolean(g_session, &gi, &st)) && st.isActive) touch = st.currentState ? 1 : 0;
+    }
+    static float s_lo[2][2], s_hi[2][2];
+    static ULONGLONG s_win[2] = { 0, 0 }, s_driftSince[2] = { 0, 0 };
+    if (touch == 0) {
+        if (!s_win[hand] || now - s_win[hand] > 1000) { s_win[hand] = now; s_lo[hand][0] = s_hi[hand][0] = rx; s_lo[hand][1] = s_hi[hand][1] = ry; }
+        if (rx < s_lo[hand][0]) s_lo[hand][0] = rx; if (rx > s_hi[hand][0]) s_hi[hand][0] = rx;
+        if (ry < s_lo[hand][1]) s_lo[hand][1] = ry; if (ry > s_hi[hand][1]) s_hi[hand][1] = ry;
+        if (s_hi[hand][0] - s_lo[hand][0] > 0.5f || s_hi[hand][1] - s_lo[hand][1] > 0.5f) {
+            s_touchBroken[hand] = true; s_stickDrift[hand] = false; s_stickRest[hand][0] = s_stickRest[hand][1] = 0.0f; touch = -1;
+            XLOG("[OLVR][STICKCENTER] the %s stick swung with no thumb reported on it - its touch sensor is not used", hand ? "right" : "left");
+        } else {
+            s_stickRest[hand][0] += (rx - s_stickRest[hand][0]) * 0.08f;
+            s_stickRest[hand][1] += (ry - s_stickRest[hand][1]) * 0.08f;
+            if (mag > 0.10f) { if (!s_driftSince[hand]) s_driftSince[hand] = now; }
+            else s_driftSince[hand] = 0;
+            if (!s_stickDrift[hand] && s_driftSince[hand] && now - s_driftSince[hand] > 500) {
+                s_stickDrift[hand] = true;
+                XLOG("[OLVR][STICKCENTER] the %s stick reads (%.2f %.2f) with no thumb on it - drift: it gives nothing until touched, and its resting point is taken off",
+                     hand ? "right" : "left", rx, ry);
+            }
+        }
+    } else s_win[hand] = 0;
+    s_stickTouch[hand] = touch;
+    float ox = rx, oy = ry;
+    if (s_stickDrift[hand] && touch >= 0) {
+        if (touch == 0) ox = oy = 0.0f;
+        else { ox -= s_stickRest[hand][0]; oy -= s_stickRest[hand][1]; }
+    }
+    const float dz = g_stickDeadzone;
+    if (dz > 0.0f) {
+        const float m = sqrtf(ox * ox + oy * oy);
+        if (m <= dz) ox = oy = 0.0f;
+        else { const float k = (m - dz) / (1.0f - dz) / m; ox *= k; oy *= k; }
+    }
+    *x = ox; *y = oy;
 }
 
 // [HAPTICS] WORKER THREAD ONLY, once per frame after xrSyncActions. XInput motor levels persist
@@ -844,6 +935,10 @@ static void SyncInput(XrTime displayTime) {
     OLXrPad p = {};
     ReadStick(g_aMove, 0, &p.moveX, &p.moveY);
     ReadStick(g_aLook, 1, &p.lookX, &p.lookY);
+    // (Test48) [STICKCENTER] raw values first, for the log below
+    const float rawStick[4] = { p.moveX, p.moveY, p.lookX, p.lookY };
+    StickCenter(0, &p.moveX, &p.moveY);
+    StickCenter(1, &p.lookX, &p.lookY);
     p.trigL = ReadFloat(g_aTrig, 0); p.trigR = ReadFloat(g_aTrig, 1);
     p.gripL = ReadFloat(g_aGrip, 0); p.gripR = ReadFloat(g_aGrip, 1);
     if (ReadBool(g_aPrimary,   0)) p.buttons |= OLXR_BTN_X;   // left primary  = X
@@ -937,8 +1032,26 @@ static void SyncInput(XrTime displayTime) {
     if (!g_inputLoggedBind && (p.handValid || p.buttons || fabsf(p.moveX) > 0.1f ||
                                fabsf(p.moveY) > 0.1f || p.trigL > 0.1f || p.trigR > 0.1f)) {
         g_inputLoggedBind = 1;
-        XLOG("[OLVR][XRINPUT] first live controller input seen (hands=%u buttons=0x%X move=%.2f,%.2f)",
-             p.handValid, p.buttons, p.moveX, p.moveY);
+        XLOG("[OLVR][XRINPUT] first live controller input seen (hands=%u buttons=0x%X move=%.2f,%.2f look=%.2f,%.2f, thumbs %d %d)",
+             p.handValid, p.buttons, rawStick[0], rawStick[1], rawStick[2], rawStick[3], s_stickTouch[0], s_stickTouch[1]);
+        LogInteractionProfiles("first input");
+    }
+    // (Test48) [STICKCENTER] while a stick reads something with no thumb on it (or a controller has no touch
+    // sensor and a stick reads over 0.15), say so every 15 s - the numbers a drifting controller needs
+    {
+        static ULONGLONG s_stickLogMs = 0; static int s_stickLogs = 0;
+        const ULONGLONG now = GetTickCount64();
+        bool odd = false;
+        for (int h = 0; h < 2; ++h) {
+            const float ax = rawStick[h * 2], ay = rawStick[h * 2 + 1], m = sqrtf(ax * ax + ay * ay);
+            if ((s_stickTouch[h] == 0 && m > 0.10f) || (s_stickTouch[h] < 0 && m > 0.15f)) odd = true;
+        }
+        if (odd && s_stickLogs < 40 && now - s_stickLogMs > 15000) {
+            s_stickLogMs = now; ++s_stickLogs;
+            XLOG("[OLVR][STICKCENTER] raw left (%.2f %.2f) right (%.2f %.2f) | thumb on it: left %d right %d (-1 no sensor) | drift %d %d | sent left (%.2f %.2f) right (%.2f %.2f) | dead zone %.2f",
+                 rawStick[0], rawStick[1], rawStick[2], rawStick[3], s_stickTouch[0], s_stickTouch[1], s_stickDrift[0] ? 1 : 0, s_stickDrift[1] ? 1 : 0,
+                 p.moveX, p.moveY, p.lookX, p.lookY, (float)g_stickDeadzone);
+        }
     }
 }
 
@@ -1077,6 +1190,13 @@ extern "C" void OLXR_SetLensFit(int on) { InterlockedExchange(&g_lensFitOn, on ?
 extern "C" void OLXR_DevSetFakeHands(int on) { InterlockedExchange(&g_devFakeHands, on ? 1 : 0); }
 extern "C" void OLXR_DevSetHeadWave(int on) { InterlockedExchange(&g_devHeadWave, on ? 1 : 0); }
 extern "C" void OLXR_DevLook(float yawDeg, float pitchDeg) { g_devLookYaw = yawDeg; g_devLookPitch = pitchDeg; }
+// (Beta 1.1) [LINKPOSE] dev: the yaw baseline a recenter would take facing yawDeg off LOCAL forward, and the
+// declaration switch - together they reproduce the Quest Link "picture off to one side" on any headset.
+extern "C" void OLXR_DevBaseYaw(float yawDeg) {
+    const float y = yawDeg * 0.0174532925f;
+    g_baseQ = { 0.0f, sinf(y * 0.5f), 0.0f, cosf(y * 0.5f) };
+}
+extern "C" int OLXR_DevDeclLocal(int v) { g_declLocal = v != 0; return g_declLocal ? 1 : 0; }
 extern "C" void OLXR_DevSetLatch(int on) { InterlockedExchange(&g_latchOn, on ? 1 : 0); InterlockedExchange(&g_latchArmed, 1); }
 
 extern "C" void OLXR_GetEyeInfo(int* w, int* h, float* fovX, float* fovY) {
@@ -1306,6 +1426,11 @@ static bool Init(UINT w, UINT h) {
                 // model was tuned against (VDXR, SteamVR). 0/1 force it either way.
                 g_inputEnabled = GetPrivateProfileIntW(L"Input", L"MotionControls", 1, ini) ? 1 : 0;
                 g_hapticsOn = GetPrivateProfileIntW(L"Input", L"Haptics", 1, ini) ? 1 : 0;
+                // (Test48) [STICKCENTER]
+                g_stickAutoCenter = GetPrivateProfileIntW(L"Input", L"StickAutoCenter", 1, ini) ? 1 : 0;
+                { wchar_t dz[32]; GetPrivateProfileStringW(L"Input", L"StickDeadzone", L"0.00", dz, 32, ini);
+                  float d = (float)_wtof(dz); if (!(d >= 0.0f)) d = 0.0f; if (d > 0.60f) d = 0.60f; g_stickDeadzone = d;
+                  XLOG("[OLVR][STICKCENTER] auto-centre %s, dead zone %.2f", g_stickAutoCenter ? "on" : "off", d); }
                 { wchar_t hs[32]; GetPrivateProfileStringW(L"Input", L"HapticStrength", L"1.0", hs, 32, ini);
                   OLXR_SetHapticStrength((float)_wtof(hs)); }
                 g_handCamOn = GetPrivateProfileIntW(L"Input", L"HandCamcorder", 0, ini) ? 1 : 0;
@@ -1336,6 +1461,7 @@ static bool Init(UINT w, UINT h) {
                 XLOG("[OLVR][CINEMA] branded=%ld headLocked=%ld distance=%.2fm width=%.1fdeg environment=%ld curved=%ld",
                      g_brandOn, g_cinemaHeadLocked, g_cinemaDistanceM, g_cinemaWidthDeg, g_thEnv, g_thCurved);
                 g_perEyeMode = (int)GetPrivateProfileIntW(L"XR", L"PerEyePose", (UINT)-1, ini);
+                g_declLocal = GetPrivateProfileIntW(L"XR", L"DeclareTruePose", 1, ini) != 0;   // [LINKPOSE]
                 g_fitMode    = (int)GetPrivateProfileIntW(L"XR", L"FitRuntimeFrustum", (UINT)-1, ini);
                 g_nativeEyeResolution = GetPrivateProfileIntW(L"XR", L"NativeEyeResolution", 1, ini) != 0;
                 { wchar_t sv[32];
@@ -1485,6 +1611,7 @@ static bool Init(UINT w, UINT h) {
     RESOPT("xrGetActionStateVector2f", getActionStateVector2f);
     RESOPT("xrCreateActionSpace", createActionSpace); RESOPT("xrLocateSpace", locateSpace);
     RESOPT("xrApplyHapticFeedback", applyHapticFeedback); RESOPT("xrStopHapticFeedback", stopHapticFeedback);
+    RESOPT("xrGetCurrentInteractionProfile", getCurrentInteractionProfile); RESOPT("xrPathToString", pathToString);   // (Test48)
 
     XrSystemGetInfo sgi = {}; sgi.type = XR_TYPE_SYSTEM_GET_INFO_VALUE; sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY_VALUE;
     r = g_fn.getSystem(g_instance, &sgi, &g_system);
@@ -1624,6 +1751,8 @@ static void PollEvents() {
             } else if (ss->state == XR_SESSION_STATE_EXITING_VALUE || ss->state == XR_SESSION_STATE_LOSS_PENDING_VALUE) {
                 g_running = false; g_dead = true; XLOG("[OLVR][XR] session EXITING/LOST");
             }
+        } else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED_VALUE) {
+            LogInteractionProfiles("controller layout changed");   // (Test48)
         } else {
             // Anything else the runtime says was previously dropped on the floor. Log each
             // distinct event type once - if SteamVR is trying to signal something about this
@@ -2997,6 +3126,24 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     return ok;
 }
 
+// [LINKPOSE] (Beta 1.1) A projection layer's declared pose has to be where the head REALLY was, in the
+// layer's own space. The pose that travels with each image is in the recenter frame (the yaw and
+// position baselines - the frame the camera renders in), while the layer space is the runtime's raw
+// LOCAL. Virtual Desktop shrugged the difference off; Meta's runtime (Quest Link / Air Link) shows
+// every frame exactly at its declared pose, so after any recenter - the automatic one at start too,
+// taken while the headset may still be lying on the desk - the picture sat that far away from where
+// the player looks: "screens in a void that move to wherever I looked when I recentered", "the
+// camera perspective below me". Mapping the pose back through the baseline makes declared == true
+// on every runtime. [XR] DeclareTruePose=0 restores the old declaration.
+static XrPosef RecenterToLocal(const XrPosef& rel) {
+    if (!g_declLocal) return rel;
+    XrPosef p;
+    p.orientation = QNormalize(QMul(g_baseQ, rel.orientation));
+    const XrVector3f r = QRotate(g_baseQ, rel.position);
+    p.position = { g_baseP.x + r.x, g_baseP.y + r.y, g_baseP.z + r.z };
+    return p;
+}
+
 // [FITFRUSTUM] Place one eye's rendered picture at its TRUE angular position inside an image
 // that represents the RUNTIME's own frustum, black everywhere else.
 //
@@ -3249,6 +3396,10 @@ static bool EnsureBrandScene() {
 // Developer aid only ([Motion] DevMarkers).
 static const int kMarkerTex = 64, kMaxMarkers = 16;
 static const int kLabelW = 512, kLabelH = 160;
+// (Beta 1.1) [BATGAUGE] five battery pictures (0..4 bars) and the digits 0..9, in two rows under the labels
+static const int kBatW = 96, kBatH = 48, kDigW = 32, kDigH = 48;
+static int g_batRect[5][4] = {}, g_digRect[10][4] = {};
+extern "C" int OLInteract_BatteryGauge(float* energy, int* spares);
 static XrSwapchain g_mkAtlas = 0;                    // every ring, glow and label in one image
 static int g_mkRect[OLMK_COUNT][4] = {};              // x, y, w, h inside it
 static bool g_mkTried = false, g_mkReady = false;
@@ -3354,10 +3505,13 @@ static bool EnsureMarkers() {
         { L"BATTERY CHARGED",    L"",                           false },
         { L"CLIMB",              L"grab the edge, pull down",   false },
         { L"PULL YOURSELF UP",   L"both grips, pull down",      false },
-        { L"COVER YOUR MOUTH",   L"hand over it: hold your breath", false } };
+        { L"COVER YOUR MOUTH",   L"hand over it: hold your breath", false },
+        { L"RECENTER",           L"click both thumbsticks",     false } };
     // One atlas for everything (Test38: 18 separate swapchains were more than SteamVR would create):
     // the rings and glows side by side in the top 64-pixel row, the labels stacked below it.
-    const int AW = kLabelW, AH = kMarkerTex + (OLMK_COUNT - OLMK_L_TAKE_CAM) * kLabelH;
+    // (Beta 1.1) [BATGAUGE] then a row of battery pictures and a row of digits.
+    const int labelsEnd = kMarkerTex + (OLMK_COUNT - OLMK_L_TAKE_CAM) * kLabelH;
+    const int AW = kLabelW, AH = labelsEnd + kBatH + kDigH;
     std::vector<uint8_t> atlas((size_t)AW * AH * 4, 0), px;
     for (int c = 0; c < OLMK_COUNT; ++c) {
         int tw = kMarkerTex, th = kMarkerTex, ox = 0, oy = 0;
@@ -3391,6 +3545,57 @@ static bool EnsureMarkers() {
         }
         for (int y = 0; y < th; ++y) memcpy(&atlas[(((size_t)(oy + y)) * AW + ox) * 4], &px[(size_t)y * tw * 4], (size_t)tw * 4);
         g_mkRect[c][0] = ox; g_mkRect[c][1] = oy; g_mkRect[c][2] = tw; g_mkRect[c][3] = th;
+    }
+    {   // (Beta 1.1) [BATGAUGE] the camcorder's battery: an outlined cell with its terminal, 0..4 bars inside
+        // (white; red when one bar or none is left), on a dark translucent plate. Then 7-segment digits.
+        auto put = [&](int x, int y, float b, float g, float r, float a) {
+            if (x < 0 || y < 0 || x >= AW || y >= AH) return;
+            uint8_t* p = &atlas[((size_t)y * AW + x) * 4];
+            p[0] = (uint8_t)b; p[1] = (uint8_t)g; p[2] = (uint8_t)r; p[3] = (uint8_t)(a * 255.0f + 0.5f);
+        };
+        for (int s = 0; s < 5; ++s) {
+            const int ox = s * kBatW, oy = labelsEnd;
+            const bool low = s <= 1;
+            for (int y = 0; y < kBatH; ++y) for (int x = 0; x < kBatW; ++x) {
+                float a = 0.55f, cb = 14, cg = 14, cr = 14;                         // the plate
+                const bool body = x >= 8 && x < kBatW - 16 && y >= 8 && y < kBatH - 8;
+                const bool bodyIn = x >= 12 && x < kBatW - 20 && y >= 12 && y < kBatH - 12;
+                const bool nub = x >= kBatW - 16 && x < kBatW - 9 && y >= 17 && y < kBatH - 17;
+                if ((body && !bodyIn) || nub) { cb = cg = cr = 240; a = 1.0f; }
+                if (bodyIn) {
+                    const int inner = (kBatW - 20) - 12 - 4;                        // 4 bars with 4 px gaps
+                    const int bw = (inner - 3 * 4) / 4;
+                    const int rel = x - 14;
+                    const int bar = rel / (bw + 4), within = rel % (bw + 4);
+                    if (y >= 14 && y < kBatH - 14 && rel >= 0 && bar < s && within < bw) {
+                        if (low) { cb = 60; cg = 60; cr = 255; } else { cb = 235; cg = 245; cr = 235; }
+                        a = 1.0f;
+                    }
+                }
+                put(ox + x, oy + y, cb, cg, cr, a);
+            }
+            g_batRect[s][0] = ox; g_batRect[s][1] = oy; g_batRect[s][2] = kBatW; g_batRect[s][3] = kBatH;
+        }
+        // 7 segments: a top, b top-right, c bottom-right, d bottom, e bottom-left, f top-left, g middle
+        static const uint8_t kSeg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
+        for (int d = 0; d < 10; ++d) {
+            const int ox = d * kDigW, oy = labelsEnd + kBatH;
+            for (int y = 0; y < kDigH; ++y) for (int x = 0; x < kDigW; ++x) {
+                const int L = 7, Rr = kDigW - 8, T = 7, M = kDigH / 2, B = kDigH - 8, t = 2;
+                bool on = false;
+                const uint8_t m = kSeg[d];
+                if ((m & 0x01) && y >= T - t && y <= T + t && x >= L && x <= Rr) on = true;
+                if ((m & 0x02) && x >= Rr - t && x <= Rr + t && y >= T && y <= M) on = true;
+                if ((m & 0x04) && x >= Rr - t && x <= Rr + t && y >= M && y <= B) on = true;
+                if ((m & 0x08) && y >= B - t && y <= B + t && x >= L && x <= Rr) on = true;
+                if ((m & 0x10) && x >= L - t && x <= L + t && y >= M && y <= B) on = true;
+                if ((m & 0x20) && x >= L - t && x <= L + t && y >= T && y <= M) on = true;
+                if ((m & 0x40) && y >= M - t && y <= M + t && x >= L && x <= Rr) on = true;
+                if (on) put(ox + x, oy + y, 240, 240, 240, 1.0f);
+                else    put(ox + x, oy + y, 14, 14, 14, 0.55f);
+            }
+            g_digRect[d][0] = ox; g_digRect[d][1] = oy; g_digRect[d][2] = kDigW; g_digRect[d][3] = kDigH;
+        }
     }
     XrSwapchainCreateInfo ci = {}; ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO_VALUE;
     ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT_VALUE | XR_SWAPCHAIN_USAGE_SAMPLED_BIT_VALUE;
@@ -4219,6 +4424,19 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                                        : "waiting - arms on the first still pose after the headset is picked up, or on recenter");
         }
     } else if (g_centered) {
+        {   // (Beta 1.1) [BODYTURN] the yaw Miles just turned, taken out of the head's relative yaw (see above)
+            const LONG pm = InterlockedExchange(&g_bodyTurnPendMilli, 0);
+            if (pm) {
+                const float d = (float)pm * 0.001f * 0.0174532925f;                         // right-positive
+                const XrQuaternionf ry = { 0.0f, sinf(-d * 0.5f), 0.0f, cosf(-d * 0.5f) };  // XR yaw is left-positive
+                g_baseQ = QNormalize(QMul(ry, g_baseQ));
+                // relative = conj(base) * raw, so every relative orientation turns LEFT by d: the filters'
+                // state too, or they would read the turn as head motion and smooth it in
+                const XrQuaternionf rr = { 0.0f, sinf(d * 0.5f), 0.0f, cosf(d * 0.5f) };
+                g_smoothQuat = QNormalize(QMul(rr, g_smoothQuat));
+                g_handSmoothQ = QNormalize(QMul(rr, g_handSmoothQ));
+            }
+        }
         XrViewLocateInfo vli = {}; vli.type = XR_TYPE_VIEW_LOCATE_INFO_VALUE;
         vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO_VALUE;
         // One period AHEAD: this pose is consumed by the camera for the frame rendered during
@@ -4812,7 +5030,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                     // the IMAGES - the engine already rendered them from two separated cameras.
                     // Giving each eye its own IPD-apart pose makes the compositor reproject them
                     // to slightly different predicted poses, and they diverge during motion.
-                    pv[e].pose = poseValidForThisImage ? poseForThisImage : IdentityPose();
+                    pv[e].pose = poseValidForThisImage ? RecenterToLocal(poseForThisImage) : IdentityPose();   // [LINKPOSE]
                     // [PEREYEPOSE] Opt-in ([XR] PerEyePose=1). The default declares ONE centre
                     // pose for both views because the separation is already in the pixels, and
                     // that is what VDXR and SteamVR were tuned against. A runtime that instead
@@ -4913,7 +5131,9 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                 pv[0].subImage.swapchain = g_scL;
                 pv[1].subImage.swapchain = g_scR;
                 // [FLIPSCREEN] (Test43) the left eye's view, for where the camcorder's lens points in it
-                g_fsViewQ = pv[0].pose.orientation; g_fsLens = lensFrame && fittedToRuntime; g_fsFx = fx; g_fsFy = fy;
+                // the lens maths lives in the recenter frame, so it gets the pose before [LINKPOSE]
+                g_fsViewQ = poseValidForThisImage ? poseForThisImage.orientation : IdentityPose().orientation;
+                g_fsLens = lensFrame && fittedToRuntime; g_fsFx = fx; g_fsFy = fy;
                 for (int e = 0; e < 2; ++e) {
                     g_dbgDeclFov[e] = pv[e].fov;
                     g_dbgRect[e][0] = pv[e].subImage.imageRect.offset.x;
@@ -4947,7 +5167,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         if (g_olUseProjection) {
             for (int e = 0; e < 2; ++e) {
                 pv[e].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW_VALUE;
-                pv[e].pose = g_olPoseValid ? g_headPoseApp : IdentityPose();
+                pv[e].pose = g_olPoseValid ? RecenterToLocal(g_headPoseApp) : IdentityPose();
                 pv[e].fov.angleLeft = -fovX * 0.5f; pv[e].fov.angleRight = fovX * 0.5f;
                 pv[e].fov.angleUp = fovY * 0.5f;    pv[e].fov.angleDown = -fovY * 0.5f;
                 pv[e].subImage.swapchain = g_swapchain;      // mono: both eyes read the same image
@@ -5045,7 +5265,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         EnsureBlackScene()) {
         for (int e = 0; e < 2; ++e) {
             blackPv[e].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW_VALUE;
-            blackPv[e].pose = g_olPoseValid ? g_headPoseApp : IdentityPose();
+            blackPv[e].pose = g_olPoseValid ? RecenterToLocal(g_headPoseApp) : IdentityPose();
             blackPv[e].fov  = g_rtEyeFov[e];
             blackPv[e].subImage.swapchain = g_blackSc;
             blackPv[e].subImage.imageArrayIndex = 0;
@@ -5072,7 +5292,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         g_rtEyeFovValid && EnsureBlackScene()) {
         for (int e = 0; e < 2; ++e) {
             blackPv[e].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW_VALUE;
-            blackPv[e].pose = g_olPoseValid ? g_headPoseApp : IdentityPose();
+            blackPv[e].pose = g_olPoseValid ? RecenterToLocal(g_headPoseApp) : IdentityPose();
             blackPv[e].fov  = g_rtEyeFov[e];
             blackPv[e].subImage.swapchain = g_blackSc;
             blackPv[e].subImage.imageArrayIndex = 0;
@@ -5116,6 +5336,36 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                 q.size.width = mk[i].size; q.size.height = mk[i].aspect > 0.01f ? mk[i].size / mk[i].aspect : mk[i].size;
                 layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
             }
+        }
+    }
+
+    // (Beta 1.1) [BATGAUGE] the camcorder is up: its battery, large, low in the view (head-locked), with the
+    // spare batteries beside it. Over the stereo picture and over the zoomed viewfinder alike.
+    XrCompositionLayerQuad batQuad[2] = {};
+    {
+        float energy = 1.0f; int spares = 0;
+        if (fs.shouldRender && !g_screenOn && !blackOnly && layerCount > 0 && layerCount < 18 &&
+            OLInteract_BatteryGauge(&energy, &spares) && EnsureMarkers() && g_mkAtlas) {
+            int bars = (int)ceilf(energy * 4.0f - 0.05f);
+            if (bars < 0) bars = 0; if (bars > 4) bars = 4;
+            if (spares < 0) spares = 0; if (spares > 9) spares = 9;
+            const float w = 0.075f, h = w * (float)kBatH / (float)kBatW;      // metres, at 0.55 m: ~8 deg wide
+            for (int k = 0; k < 2; ++k) {
+                XrCompositionLayerQuad& q = batQuad[k];
+                q.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
+                q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT_VALUE |
+                               XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT_VALUE;
+                q.space = g_viewSpace; q.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
+                q.subImage.swapchain = g_mkAtlas; q.subImage.imageArrayIndex = 0;
+                const int* rc = k == 0 ? g_batRect[bars] : g_digRect[spares];
+                q.subImage.imageRect.offset = { rc[0], rc[1] }; q.subImage.imageRect.extent = { rc[2], rc[3] };
+                q.pose = IdentityPose();
+                q.pose.position = { k == 0 ? -0.020f : 0.037f, -0.150f, -0.55f };
+                q.size.width = k == 0 ? w : h * (float)kDigW / (float)kDigH; q.size.height = h;
+                layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
+            }
+            static ULONGLONG s_batLog = 0; const ULONGLONG t = GetTickCount64();
+            if (t - s_batLog > 10000) { s_batLog = t; XLOG("[OLVR][BATGAUGE] camcorder up: battery %.0f%% (%d bars), %d spare", energy * 100.0f, bars, spares); }
         }
     }
 
