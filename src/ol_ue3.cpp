@@ -3063,6 +3063,7 @@ static void ViewLeanM(float out[3]) {
 // follows stairs, slopes and crouch moves without lag, so only the oscillation is removed, and the
 // correction is capped at 10 uu (10 cm) so jumps, falls and scripted moves always pass through.
 // Called once per frame, at the first eye; both eyes use the same value.
+static volatile float g_bobZMax = 0.0f;   // (Beta 1.1.1) the largest vertical correction since the last [BOB2] report
 static float BobCorrection(float z, float w) {
     static bool s_init = false;
     static float s_level = 0.0f, s_trend = 0.0f;
@@ -3084,7 +3085,12 @@ static float BobCorrection(float z, float w) {
     s_level = pred + (z - pred) * a;
     s_trend += ((s_level - prev) / dt - s_trend) * b;
     float corr = s_level - z;
-    if (corr > 10.0f) corr = 10.0f; else if (corr < -10.0f) corr = -10.0f;
+    // (Beta 1.1.1) "head bob is still there while running": a sprint's bounce is bigger than the 10 uu that
+    // lets jumps and falls through, so the top of every stride came through. Plain walking or running (no
+    // jump, vault or other move of the game's) takes up to 30 uu out; anything else keeps the 10.
+    const float cap = (g_sMoveMode == 0 && g_sSpecialMove <= 0) ? 30.0f : 10.0f;
+    if (corr > cap) corr = cap; else if (corr < -cap) corr = -cap;
+    if (fabsf(corr) > g_bobZMax) g_bobZMax = fabsf(corr);
     return corr * g_bobReduce * w;
 }
 
@@ -3121,6 +3127,14 @@ static void BobStabilize(void* pc, const float* loc, const int* rot, float w) {
     float hloc[3] = { 0, 0, 0 };
     bool ok = g_bobReduce > 0.001f && w > 0.0f && dt > 0.0f && dt < 0.25f && g_ssRotation && g_bobLocOff &&
               ArmMoveClass() == 0 && g_sCinematic <= 0 && pc;
+    // (Beta 1.1.1) Only plain walking and running are steadied - a jump, a vault or a landing is the game's own
+    // camera move - and the steadying fades in and out over a quarter second instead of switching.
+    static float s_gate = 0.0f;
+    {
+        const bool plain = g_sMoveMode == 0 && g_sSpecialMove <= 0;
+        const float step = (dt > 0.0f && dt < 0.25f ? dt : 0.016f) / 0.25f;
+        s_gate = plain ? (s_gate + step > 1.0f ? 1.0f : s_gate + step) : (s_gate - step < 0.0f ? 0.0f : s_gate - step);
+    }
     if (ok) {
         __try {
             memcpy(crot, (const char*)pc + g_ssRotation, sizeof(crot));
@@ -3145,13 +3159,13 @@ static void BobStabilize(void* pc, const float* loc, const int* rot, float w) {
     // little: that gap is the turn, not a stride, and taking it out would make the turn end with a jerk.
     for (int i = 0; i < 2; ++i) if (ctrlRate[i] > 3640.0f) s_lp[i] = v[i];   // 20 deg/s
     const float a = 1.0f - expf(-dt / 0.30f);   // a stride is ~0.3-0.5 s; turning and leading are slower
-    static const float kSwing[4] = { 1456.0f, 1456.0f, 14.0f, 14.0f };   // 8 deg, 8 deg, 14 cm, 14 cm
+    static const float kSwing[4] = { 2730.0f, 2730.0f, 45.0f, 45.0f };   // (Beta 1.1.1) 15 deg, 15 deg, 45 cm, 45 cm
     float c[4];
     for (int i = 0; i < 4; ++i) {
         s_lp[i] += (v[i] - s_lp[i]) * a;
         float osc = v[i] - s_lp[i];
         if (fabsf(osc) > kSwing[i]) { s_lp[i] = v[i]; osc = 0.0f; ++g_bobStat.passed; }   // a real move
-        c[i] = -osc * g_bobReduce * w;
+        c[i] = -osc * g_bobReduce * w * s_gate;
         if (fabsf(osc) > g_bobStat.maxOsc[i]) g_bobStat.maxOsc[i] = fabsf(osc);
         if (fabsf(c[i]) > g_bobStat.maxCorr[i]) g_bobStat.maxCorr[i] = fabsf(c[i]);
     }
@@ -3167,11 +3181,12 @@ static void BobStabilize(void* pc, const float* loc, const int* rot, float w) {
         s_rep = t;
         char l[300];
         sprintf_s(l, "[OLVR][BOB2] last 5 s (%ld frames): swing pitch %.1f yaw %.1f deg, side %.1f fwd %.1f uu | "
-                     "taken out pitch %.1f yaw %.1f deg, side %.1f fwd %.1f uu | real moves passed %ld | strength %.2f",
+                     "taken out pitch %.1f yaw %.1f deg, side %.1f fwd %.1f uu, up-down %.1f uu | real moves passed %ld | strength %.2f",
                   g_bobStat.frames, g_bobStat.maxOsc[0] * (360.0f / 65536.0f), g_bobStat.maxOsc[1] * (360.0f / 65536.0f),
                   g_bobStat.maxOsc[2], g_bobStat.maxOsc[3], g_bobStat.maxCorr[0] * (360.0f / 65536.0f),
                   g_bobStat.maxCorr[1] * (360.0f / 65536.0f), g_bobStat.maxCorr[2], g_bobStat.maxCorr[3],
-                  g_bobStat.passed, g_bobReduce);
+                  (float)g_bobZMax, g_bobStat.passed, g_bobReduce);
+        g_bobZMax = 0.0f;
         OLProxyLog(l);
         memset(&g_bobStat, 0, sizeof(g_bobStat));
     }
@@ -6582,7 +6597,7 @@ static void ReadConfig() {
 void OLUE3_Init() {
     g_base = (uintptr_t)GetModuleHandleW(nullptr);
     char line[256];
-    OLProxyLog("[OLVR] BUILD=OUTLAST1VR-BETA-1.1-20261022 (BETA 1.1: Quest Link picture where you look (true pose declared), head bob fully off incl. running, world size + your own IPD, focus 0, body turns with you, doors let go when you turn away + arm resets, doors stop at Miles, auto ledge grab option, hand tucked at the eye, big battery gauge, recenter hint; Test49: camcorder GRIP BUTTON option (seated play); Test48: sprint + A vaults, a running squeeze at the hip is sprint not an edge, stick drift fix + controller layout in the log (Pimax / SteamVR); Test47: streaming freezes gone (texture copies in RAM), film grain switch, arms after Trager, readouts in from the edges; Test46: Quest Link fixed (lens-shaped eyes off there), render thread ~1/3 faster - monitor at 30 fps + forced occlusion tests skipped, turn speed through the game's own turn (arms stay right) + quick snap, live screen off for now, zoom fill without double vision, zoom only on a clear up/down push and filling the view, vault fix, async log + hitch times; Test45: camcorder aims with the controller + adjustable, ladders without the barrier, smoother scan; Test44: walk around for real; Test43: physical climbing, free-hold camcorder with a live screen, door scares fire, cover your mouth)");
+    OLProxyLog("[OLVR] BUILD=OUTLAST1VR-BETA-1.1.1-20261022 (BETA 1.1.1: head bob fully off while running too; BETA 1.1: Quest Link picture where you look (true pose declared), head bob fully off incl. running, world size + your own IPD, focus 0, body turns with you, doors let go when you turn away + arm resets, doors stop at Miles, auto ledge grab option, hand tucked at the eye, big battery gauge, recenter hint; Test49: camcorder GRIP BUTTON option (seated play); Test48: sprint + A vaults, a running squeeze at the hip is sprint not an edge, stick drift fix + controller layout in the log (Pimax / SteamVR); Test47: streaming freezes gone (texture copies in RAM), film grain switch, arms after Trager, readouts in from the edges; Test46: Quest Link fixed (lens-shaped eyes off there), render thread ~1/3 faster - monitor at 30 fps + forced occlusion tests skipped, turn speed through the game's own turn (arms stay right) + quick snap, live screen off for now, zoom fill without double vision, zoom only on a clear up/down push and filling the view, vault fix, async log + hitch times; Test45: camcorder aims with the controller + adjustable, ladders without the barrier, smoother scan; Test44: walk around for real; Test43: physical climbing, free-hold camcorder with a live screen, door scares fire, cover your mouth)");
     sprintf_s(line, "[OLVR][S3] module base=%p", (void*)g_base);
     OLProxyLog(line);
 

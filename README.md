@@ -20,6 +20,10 @@
 > **PC VR only.** The game runs on your PC and streams to your headset (SteamVR, Virtual Desktop or
 > Quest Link / Air Link). It does **not** run standalone on a Quest.
 
+> **Open for contributors.** The original developer has stepped back, and the full source is here
+> under GPL-3.0 for anyone to improve, fix and release. Start with [CONTRIBUTING.md](CONTRIBUTING.md)
+> and the open issues in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ---
 
 ## What it does
@@ -108,9 +112,10 @@ own settings and removes every mod file. The normal game is back.
 
 ## Building from source
 
-Visual Studio 2022 with the C++ workload, then `scripts\build.bat`. See [BUILD.md](BUILD.md), and
-[docs/TECHNICAL.md](docs/TECHNICAL.md) for how the mod works inside. The developer change log is in
-[docs/dev](docs/dev).
+Visual Studio 2022 with the C++ workload, then `scripts\build.bat`. See [BUILD.md](BUILD.md),
+[CONTRIBUTING.md](CONTRIBUTING.md) for a code map and how to test without a headset, and
+[docs/TECHNICAL.md](docs/TECHNICAL.md) for how the mod works inside. Open bugs and requests are in
+[docs/ROADMAP.md](docs/ROADMAP.md), and the developer change log is in [docs/dev](docs/dev).
 
 ## Credits
 
