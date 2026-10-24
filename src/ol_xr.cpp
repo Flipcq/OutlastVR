@@ -3511,7 +3511,14 @@ static bool EnsureMarkers() {
     // the rings and glows side by side in the top 64-pixel row, the labels stacked below it.
     // (Beta 1.1) [BATGAUGE] then a row of battery pictures and a row of digits.
     const int labelsEnd = kMarkerTex + (OLMK_COUNT - OLMK_L_TAKE_CAM) * kLabelH;
-    const int AW = kLabelW, AH = labelsEnd + kBatH + kDigH;
+    // (Beta 1.2) [BATGAUGE] Two blank rows above the battery pictures and again between the pictures and
+    // the digits. The how-to label in the row directly above ends on its arrow's very last pixel, and with
+    // no opaque plate behind the cell a bilinear sample at the top edge of the quad could pick that up as a
+    // white sliver sitting over the gauge. A margin of transparent texels means nothing above can reach it.
+    const int kBatPad = 2;
+    const int batY = labelsEnd + kBatPad;
+    const int digY = batY + kBatH + kBatPad;
+    const int AW = kLabelW, AH = digY + kDigH;
     std::vector<uint8_t> atlas((size_t)AW * AH * 4, 0), px;
     for (int c = 0; c < OLMK_COUNT; ++c) {
         int tw = kMarkerTex, th = kMarkerTex, ox = 0, oy = 0;
@@ -3556,7 +3563,7 @@ static bool EnsureMarkers() {
             p[0] = (uint8_t)b; p[1] = (uint8_t)g; p[2] = (uint8_t)r; p[3] = (uint8_t)(a * 255.0f + 0.5f);
         };
         for (int s = 0; s < 5; ++s) {
-            const int ox = s * kBatW, oy = labelsEnd;
+            const int ox = s * kBatW, oy = batY;
             const bool low = s <= 1;
             for (int y = 0; y < kBatH; ++y) for (int x = 0; x < kBatW; ++x) {
                 float a = 0.0f, cb = 0, cg = 0, cr = 0;                             // nothing behind the cell
@@ -3581,7 +3588,7 @@ static bool EnsureMarkers() {
         // 7 segments: a top, b top-right, c bottom-right, d bottom, e bottom-left, f top-left, g middle
         static const uint8_t kSeg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
         for (int d = 0; d < 10; ++d) {
-            const int ox = d * kDigW, oy = labelsEnd + kBatH;
+            const int ox = d * kDigW, oy = digY;
             for (int y = 0; y < kDigH; ++y) for (int x = 0; x < kDigW; ++x) {
                 const int L = 7, Rr = kDigW - 8, T = 7, M = kDigH / 2, B = kDigH - 8, t = 2;
                 bool on = false;
