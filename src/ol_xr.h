@@ -46,6 +46,7 @@ struct OLXrPad {
     unsigned handValid;        // bit 0 = left, bit 1 = right
     OLXrPose aimPose[2];       // [LOOKUSE] where each controller POINTS (aim pose), same frame
     unsigned aimValid;
+    bool     usePressBuffered; // X already extended at the XR source; do not extend it again
 };
 enum {
     OLXR_BTN_A = 1u << 0, OLXR_BTN_B = 1u << 1, OLXR_BTN_X = 1u << 2, OLXR_BTN_Y = 1u << 3,

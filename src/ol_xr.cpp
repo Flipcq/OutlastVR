@@ -18,6 +18,7 @@
 
 #include "ol_xr_types.h"
 #include "ol_xr.h"
+#include "ol_use_input.h"
 #include <d3d9.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -485,6 +486,8 @@ extern "C" void  OLXR_SetHandCamStrength(float v) {
 }
 static bool     g_inputReady = false;       // action set built AND attached
 static long     g_inputEnabled = 1;         // [Input] MotionControls, ini
+static long     g_bufferUsePress = 1;       // [Input] BufferUsePress, legacy path = 0
+static OLUsePressBuffer g_usePressBuffer;   // worker only, like SyncInput
 static OLXrPad  g_padPub = {};              // published snapshot, guarded by g_pubLock
 static long     g_padPubValid = 0;
 static long     g_inputLoggedBind = 0;
@@ -930,7 +933,16 @@ static void SyncInput(XrTime displayTime) {
     const XrResult r = g_fn.syncActions(g_session, &si);
     // XR_SESSION_NOT_FOCUSED is normal and frequent (dashboard up, app in the background) - it
     // is not an error, it just means every action reads inactive this frame.
-    if (!XrSucceeded(r)) return;
+    if (!XrSucceeded(r)) {
+        // Do not leave a synthetic Use held if action synchronization stops.
+        g_usePressBuffer.Reset();
+        if (g_bufferUsePress) {
+            AcquireSRWLockExclusive(&g_pubLock);
+            g_padPub.buttons &= ~OLXR_BTN_X;
+            ReleaseSRWLockExclusive(&g_pubLock);
+        }
+        return;
+    }
 
     OLXrPad p = {};
     ReadStick(g_aMove, 0, &p.moveX, &p.moveY);
@@ -1024,6 +1036,10 @@ static void SyncInput(XrTime displayTime) {
         if (GetTickCount64() < g_devStickUntil) { p.moveX = g_devStick[0]; p.moveY = g_devStick[1]; p.lookX = g_devStick[2]; p.lookY = g_devStick[3]; }
     }
 
+    // [USEINPUT] Extend X on the producer, not after XInput has already missed
+    // the press. Grip chords retain their original mapping/extension. Changing
+    // to a chord or losing focus cancels the tail, so it cannot open recordings.
+    g_usePressBuffer.Apply(p, GetTickCount64(), g_bufferUsePress != 0, r == XR_SUCCESS_VALUE);
     AcquireSRWLockExclusive(&g_pubLock);
     g_padPub = p; g_padPubValid = 1;
     ReleaseSRWLockExclusive(&g_pubLock);
@@ -1425,6 +1441,9 @@ static bool Init(UINT w, UINT h) {
                 // (measured true of Oculus/Quest Link), off for the ones the single-centre-pose
                 // model was tuned against (VDXR, SteamVR). 0/1 force it either way.
                 g_inputEnabled = GetPrivateProfileIntW(L"Input", L"MotionControls", 1, ini) ? 1 : 0;
+                g_bufferUsePress = GetPrivateProfileIntW(L"Input", L"BufferUsePress", 1, ini) ? 1 : 0;
+                XLOG("[OLVR][USEINPUT] Use press buffer %s (100 ms at the XR source; 0 = legacy)",
+                     g_bufferUsePress ? "ON" : "OFF");
                 g_hapticsOn = GetPrivateProfileIntW(L"Input", L"Haptics", 1, ini) ? 1 : 0;
                 // (Test48) [STICKCENTER]
                 g_stickAutoCenter = GetPrivateProfileIntW(L"Input", L"StickAutoCenter", 1, ini) ? 1 : 0;

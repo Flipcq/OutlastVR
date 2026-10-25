@@ -1830,10 +1830,10 @@ extern "C" int OLProxy_NightVisionActive() { return (g_camcorderUp && g_nvReques
 extern "C" void OLProxy_SetNvRequested(int on) { g_nvRequested = on != 0; }
 
 // OpenXR and UE3/XInput are sampled on different clocks. A very quick Touch-button tap can be
-// present for one XR sample yet fall wholly between two game polls. Extend discrete presses for
-// 100 ms. Continuous controls (sprint and zoom) deliberately bypass this helper so release is
-// immediate.
-static WORD ReliablePadButtons(WORD raw) {
+// present for one XR sample yet fall wholly between two game polls. X is now extended at the XR
+// source (BufferUsePress=1), where that loss can be prevented. Other discrete presses and the
+// legacy X path retain their 100 ms extension here. Continuous controls bypass this helper.
+static WORD ReliablePadButtons(WORD raw, bool usePressBuffered) {
     static const WORD bits[] = { 0x0004, 0x0008, 0x0010, 0x0020, 0x0080,
                                  0x1000, 0x2000, 0x4000, 0x8000 };
     // 64-bit: a 32-bit "(LONG)(until - now) > 0" against the initial 0 is TRUE whenever the PC's
@@ -1842,6 +1842,7 @@ static WORD ReliablePadButtons(WORD raw) {
     const ULONGLONG now = GetTickCount64();
     WORD out = raw;
     for (unsigned i = 0; i < _countof(bits); ++i) {
+        if (bits[i] == 0x4000 && usePressBuffered) { until[i] = 0; continue; }
         if (raw & bits[i]) until[i] = now + 100;
         else if (now < until[i]) out |= bits[i];
     }
@@ -1887,7 +1888,7 @@ static WORD MapPadButtons(const OLXrPad& p) {
         if (GetTickCount64() < s_startUntil) b |= 0x0010;
     }
     if (!chord && (shift || (p.buttons & OLXR_BTN_LSTICK))) b |= 0x0100; // grip or L3 = sprint
-    b = ReliablePadButtons(b);
+    b = ReliablePadButtons(b, p.usePressBuffered);
     // camera up: right stick up = zoom in, down = zoom out. (Test46) Only a clearly up/down push zooms:
     // a turn is never a perfectly level push, and "with the camcorder on I accidentally zoom when I turn".
     static int s_zoom = 0;
