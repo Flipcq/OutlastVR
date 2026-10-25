@@ -75,13 +75,18 @@ Run the launcher again after Steam updates or verifies Outlast, because Steam ca
 |---|---|
 | Stick: walk | Stick: turn (smooth or snap) |
 | Stick click: sprint | Stick click: night vision |
-| X: use / open / pick up | A: jump, climb, vault |
-| Y: reload the camcorder battery | B: crouch |
+| X: crouch / drop | A: jump, climb, vault |
+| Y: reload the camcorder battery | B: use / open / close / pick up |
 | Trigger: lean left / look back | Trigger: lean right / look back |
 | Menu: pause | Grip at your right hip: take the camcorder |
 | Left grip + Menu: **VR settings** | Both stick clicks: recenter |
 
 With the camcorder up, push the right stick straight up or down to zoom.
+
+During gameplay, B uses the left mouse input; keep interaction bound to **Left Mouse Button**
+in the game's settings. Menus and left grip shortcuts retain their original controls.
+Set `[Input] MouseUse=0` in `outlastvr.ini` to restore X for use and B for crouch.
+The control images above and below show the original layout.
 
 More hand-gesture detail is in [`release/controls/Outlast1VR_Hands_On.png`](release/controls/Outlast1VR_Hands_On.png)
 and in the [player README](release/README.txt).

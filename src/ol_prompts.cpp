@@ -25,6 +25,9 @@
 #include "MinHook.h"
 #include "ol_interact.h"
 #include "ol_motion.h"
+#include "ol_xr.h"
+
+extern "C" int OLUE3_InGameMenu();
 
 extern "C" void OLProxyLog(const char* line);
 
@@ -56,13 +59,14 @@ static const ActionWord kActions[] = {
 
 // ---- whole hints the hands now do (English text, OLGame.int) -----------------------------------------
 enum Gate { G_ALWAYS, G_DOORS, G_RAISE, G_BATTERY, G_DUCK, G_HOLSTER, G_HOLSTER_BATTERY, G_CLIMB };
-struct Sentence { Gate gate; const wchar_t* game; const wchar_t* quest; };
+struct Sentence { Gate gate; const wchar_t* game; const wchar_t* quest; const wchar_t* mouseQuest = nullptr; };
 static const Sentence kSentences[] = {
-    { G_DOORS, L"Press or hold {OLA_Use} to open", L"Grab the handle to open, or press X" },
-    { G_DOORS, L"Press {OLA_Use} to open",         L"Grab the handle to open, or press X" },
-    { G_DOORS, L"Press {OLA_Use} to close",        L"Grab the handle to close, or press X" },
+    { G_DOORS, L"Press or hold {OLA_Use} to open", L"Grab the handle to open, or press X", L"Grab the handle to open, or press B" },
+    { G_DOORS, L"Press {OLA_Use} to open",         L"Grab the handle to open, or press X", L"Grab the handle to open, or press B" },
+    { G_DOORS, L"Press {OLA_Use} to close",        L"Grab the handle to close, or press X", L"Grab the handle to close, or press B" },
     { G_DOORS, L"To open a door quickly, press {OLA_Use}. To open a door slowly, hold down {OLA_Use} and move forward or backward.",
-               L"To open a door, grab its handle and push or pull it. X still opens it in one go." },
+               L"To open a door, grab its handle and push or pull it. X still opens it in one go.",
+               L"To open a door, grab its handle and push or pull it. B still opens it in one go." },
     // (Test38) the chest holster and the hands-on reload come first; without them, Test37's wording
     { G_HOLSTER, L"To raise your camcorder, press {OLA_ToggleCamcorder}",
                  L"Your camcorder is on your right hip: take it with your right hand and bring it to your eye" },
@@ -76,12 +80,14 @@ static const Sentence kSentences[] = {
                  L"To reload, take a battery from your left hip to the camcorder, or press Y" },
     { G_BATTERY, L"Batteries are used for the infrared light of your camcorder. You can reload by pressing {OLA_Reload}",
                  L"Batteries are used for the infrared light of your camcorder. To reload, take one from your left hip and bring it to your right hand, or press Y" },
-    { G_DUCK, L"Crouch or uncrouch with {OLA_CrouchToggle}", L"Duck down to crouch and stand up to stand, or press B" },
+    { G_DUCK, L"Crouch or uncrouch with {OLA_CrouchToggle}", L"Duck down to crouch and stand up to stand, or press B",
+               L"Duck down to crouch and stand up to stand, or press X" },
     // (Test40) climbing with your hands
     { G_CLIMB, L"To climb up, press {OLA_Jump}",
                L"To climb up, grab the edge with both hands and pull yourself up (or press A)" },
     { G_CLIMB, L"To climb up, press {OLA_Jump}. To drop, press {OLA_CrouchToggle}",
-               L"To climb up, hold on with both grips and pull down. To drop, let go with both hands (or press B)" },
+               L"To climb up, hold on with both grips and pull down. To drop, let go with both hands (or press B)",
+               L"To climb up, hold on with both grips and pull down. To drop, let go with both hands (or press X)" },
     { G_CLIMB, L"To jump up, press {OLA_Jump}",
                L"To jump up, reach up at the edge with both hands, squeeze and pull (or press A)" },
     { G_CLIMB, L"To vault, press {OLA_Jump} while moving towards waist-high objects.",
@@ -124,10 +130,12 @@ static bool AfterVerb(const wchar_t* s, size_t at) {
 }
 // Returns true when the text changed (out then holds the new text).
 static bool Rewrite(const wchar_t* s, size_t len, wchar_t* out, size_t cap) {
+    const bool mouseLayout = OLProxy_MouseUseEnabled() && !OLUE3_InGameMenu();
     for (const Sentence& st : kSentences) {
         if (wcslen(st.game) == len && wcsncmp(s, st.game, len) == 0 && GateOn(st.gate)) {
             size_t n = 0;
-            return Put(out, cap, &n, st.quest, wcslen(st.quest));
+            const wchar_t* text = mouseLayout && st.mouseQuest ? st.mouseQuest : st.quest;
+            return Put(out, cap, &n, text, wcslen(text));
         }
     }
     bool changed = false; size_t n = 0; out[0] = 0;
@@ -141,6 +149,9 @@ static bool Rewrite(const wchar_t* s, size_t len, wchar_t* out, size_t cap) {
                 for (const ActionWord& a : kActions)
                     if (wcslen(a.action) == nl && wcsncmp(name, a.action, nl) == 0) { quest = a.quest; break; }
                 if (quest) {
+                    if (mouseLayout && nl == 3 && wcsncmp(name, L"Use", nl) == 0) quest = L"B";
+                    if (mouseLayout && ((nl == 6 && wcsncmp(name, L"Crouch", nl) == 0) ||
+                        (nl == 12 && wcsncmp(name, L"CrouchToggle", nl) == 0))) quest = L"X";
                     const bool bare = AfterVerb(s, i);
                     if (!bare && !Put(out, cap, &n, L"(", 1)) return false;
                     if (!Put(out, cap, &n, quest, wcslen(quest))) return false;

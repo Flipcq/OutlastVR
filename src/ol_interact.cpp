@@ -1306,12 +1306,14 @@ static void PhysClimb(ULONGLONG now, float dt, const OLXrFrameHands& fh, V3 hand
     if (!s_pc) return;
     if (!s_hold[0] && !s_hold[1]) {
         // (Test45) a ladder holds you: let go of it part-way up and Miles stays on it - take a rung to climb on;
-        // at its foot, or with B, he steps off. (The user's session: let go mid-ladder twice and fell.)
+        // at its foot, or with the crouch button, he steps off. (The user's session: let go mid-ladder twice and fell.)
         if (s_pcOnLadder && s_pcLadder >= 0 && s_pcLadder < s_ladderN) {
             OLXrPad pp = {};
-            const bool bDown = OLXR_GetPad(&pp) && (pp.buttons & OLXR_BTN_B) != 0;
-            if (B.z > s_ladders[s_pcLadder].bot.z + 15.0f && !bDown) {
-                if (!s_pcHangLog) { s_pcHangLog = true; ILog("[OLVR][PHYSCLIMB] both hands off the ladder part-way up - Miles holds on (take a rung to climb on, B to drop)"); }
+            const bool dropDown = OLXR_GetPad(&pp) &&
+                (pp.buttons & (OLProxy_MouseUseEnabled() ? OLXR_BTN_X : OLXR_BTN_B)) != 0 &&
+                (!OLProxy_MouseUseEnabled() || pp.gripL <= 0.6f);
+            if (B.z > s_ladders[s_pcLadder].bot.z + 15.0f && !dropDown) {
+                if (!s_pcHangLog) { s_pcHangLog = true; ILog("[OLVR][PHYSCLIMB] both hands off the ladder part-way up - Miles holds on (take a rung to climb on, %s to drop)", OLProxy_MouseUseEnabled() ? "X" : "B"); }
                 unsigned char hp = 0xFF;
                 if (Rd(hero, F.phys, &hp) && hp != kPhysNone) OLUE3_HeroSetPhysics(kPhysNone);
                 PcSetVel(hero, { 0, 0, 0 }); s_pcVel = { 0, 0, 0 };

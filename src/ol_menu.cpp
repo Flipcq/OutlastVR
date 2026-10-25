@@ -24,6 +24,7 @@
 #include "backends/imgui_impl_dx9.h"
 #include "ol_menu.h"
 #include "ol_xr.h"
+#include "ol_mouse_use.h"
 #include "ol_motion.h"
 #include "ol_interact.h"
 
@@ -117,6 +118,14 @@ static HINSTANCE g_self = nullptr;
 static POINT g_center = { 0, 0 };
 
 static LRESULT CALLBACK LLMouseProc(int code, WPARAM w, LPARAM l) {
+    if (code == HC_ACTION) {
+        const auto* m = reinterpret_cast<const MSLLHOOKSTRUCT*>(l);
+        // Let our owned mouse release reach Windows/the game when opening this
+        // menu. Swallowing it would leave the preceding gameplay down stuck.
+        // These events must never activate the settings menu's virtual cursor.
+        if ((m->flags & LLMHF_INJECTED) && m->dwExtraInfo == OLMouseUse::InputTag)
+            return CallNextHookEx(g_llHook, code, w, l);
+    }
     if (code == HC_ACTION && g_visible) {
         MSLLHOOKSTRUCT* m = (MSLLHOOKSTRUCT*)l;
         const bool injected = (m->flags & LLMHF_INJECTED) != 0;
@@ -127,8 +136,10 @@ static LRESULT CALLBACK LLMouseProc(int code, WPARAM w, LPARAM l) {
                     const float s = 1.1f;
                     float nx = g_curX + (m->pt.x - g_center.x) * s;
                     float ny = g_curY + (m->pt.y - g_center.y) * s;
-                    if (nx < 0) nx = 0; if (nx > kRTW) nx = kRTW;
-                    if (ny < 0) ny = 0; if (ny > kRTH) ny = kRTH;
+                    if (nx < 0) nx = 0;
+                    if (nx > kRTW) nx = kRTW;
+                    if (ny < 0) ny = 0;
+                    if (ny > kRTH) ny = kRTH;
                     g_curX = nx; g_curY = ny;
                     SetCursorPos(g_center.x, g_center.y);
                 }
@@ -497,7 +508,7 @@ static void BuildUI() {
       Help(
           "Duck for real and Miles crouches, stand up and he stands.\n"
           "Needs \"Lean and duck with your body\" and a recenter while standing\n"
-          "or sitting upright. B still crouches as before.");
+          "or sitting upright. The crouch button still works.");
       if (b) {
           const int cs = OLMotion_CrouchStatus();
           ImGui::SameLine();
@@ -584,7 +595,7 @@ static void BuildUI() {
       int u = OLUE3_GetLookUse();
       if (ImGui::Combo("Interact with", &u, kUse, 3)) OLUE3_SetLookUse(u);
       Help(
-          "Which way the game checks for things to pick up, open or hide in when you press X.");
+          "Which way the game checks for things to pick up, open or hide in when you interact.");
       if (!OLUE3_LookUseReady()) { ImGui::SameLine(); ImGui::TextDisabled("(unavailable on this build of the game)"); } }
     { bool b = OLXR_GetHaptics() != 0;
       if (ImGui::Checkbox("Controller vibration", &b)) OLXR_SetHaptics(b ? 1 : 0);
@@ -700,7 +711,7 @@ static void BuildUI() {
       Help(
           "Doors are heavy: push one with your open hand and it swings as far as you\n"
           "push (a shove swings it on a little), or squeeze the grip on its handle and\n"
-          "swing it. X still opens doors too."); }
+          "swing it. The interaction button still opens doors too."); }
     // [CLIMB] (Test40)
     Section("CLIMBING");
     { int cm = OLInteract_ClimbMode();
@@ -716,7 +727,7 @@ static void BuildUI() {
       if (ImGui::Checkbox("Catch ledges automatically when jumping", &b)) OLInteract_Set(13, b);
       Help(
           "Jump toward a ledge and Miles grabs it by himself, like the original game.\n"
-          "Then pull down with both grips (or press A) to climb up, B to drop.\n"
+          "Then pull down with both grips (or press A) to climb up, or press crouch to drop.\n"
           "Off: in the air your hands take the edge only when you squeeze a grip."); }
     // (Test45) cover-your-mouth removed from the menu ([Motion] CoverMouth=1 still turns it on)
     Section("DEVELOPER");
@@ -729,7 +740,7 @@ static void BuildUI() {
       if (ImGui::Checkbox("Hints name the Quest controls", &b)) OLInteract_Set(5, b);
       Help(
           "The game's hints say what to do on Quest 3 controllers instead of showing\n"
-          "Xbox buttons: \"Grab the handle to open, or press X\", \"hold down the left grip\"."); }
+          "Xbox buttons: the interaction button or \"hold down the left grip\"."); }
             ImGui::EndChild();
             ImGui::EndTabItem();
         }

@@ -32,6 +32,7 @@
 #include <math.h>
 #include <unordered_map>
 #include "ol_xr.h"
+#include "ol_mouse_use.h"
 #include "ol_motion.h"
 #include "ol_interact.h"
 #include "ol_ue3.h"
@@ -1813,7 +1814,8 @@ static volatile long g_padFaked    = 0;   // frames answered for an empty slot
 // ol_xr.cpp instead of XInput's. Chosen against Outlast's own bindings (OLInput.ini):
 //   A = OLA_Jump      B = OLA_CrouchToggle   X = OLA_Use        Y = OLA_Reload (camcorder battery)
 //   LB = OLA_Run      RB = OLA_ToggleCamcorder                  R3 = OLA_ToggleNightVision
-// So on Touch: right A/B are jump/crouch, left X/Y are use/battery, grips are run (the natural
+// Legacy Touch layout (MouseUse=0): A/B jump/crouch, X/Y use/battery. MouseUse=1 swaps
+// gameplay X/B and sends B through the mouse. Grips are run (the natural
 // "hold to sprint"), right stick click is night vision, and the triggers keep the game's own
 // analog lean. Menu opens the pause menu (Start).
 // The game's camcorder command is a toggle, so the VR control must also be a toggle.  The old
@@ -1829,11 +1831,77 @@ extern "C" int OLProxy_NightVisionActive() { return (g_camcorderUp && g_nvReques
 // (Test43) [HANDNV] ol_interact keeps this in step with the game's own CamcorderMode at your eye
 extern "C" void OLProxy_SetNvRequested(int on) { g_nvRequested = on != 0; }
 
+// [MOUSEUSE] The requested gameplay layout: B = left mouse, X = crouch.
+// Menu and left-grip bindings retain the physical button names. 0 restores
+// the complete legacy layout. Read once before the XR worker starts.
+static volatile LONG g_mouseUse = 1;
+extern "C" int OLProxy_MouseUseEnabled() { return g_mouseUse ? 1 : 0; }
+extern "C" int OLUE3_InGameMenu();
+extern "C" int OLUE3_GameplayActive();
+static SRWLOCK g_mouseUseLock = SRWLOCK_INIT;
+static OLMouseUse g_mouseUseState;
+static ULONGLONG g_mouseUseSampleMs = 0;
+static volatile LONG g_mouseUseStopping = 0, g_mouseUseHeld = 0;
+
+static bool SendUseMouseEvent(bool down) {
+    INPUT input = {};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+    input.mi.dwExtraInfo = OLMouseUse::InputTag;
+    // Publish ownership before entering Windows: process teardown can terminate
+    // the worker inside SendInput before its return value is processed.
+    if (down) InterlockedExchange(&g_mouseUseHeld, 1);
+    const bool ok = SendInput(1, &input, sizeof(input)) == 1;
+    if ((down && !ok) || (!down && ok)) InterlockedExchange(&g_mouseUseHeld, 0);
+    return ok;
+}
+static bool SendUseMouse(bool down) {
+    const bool ok = SendUseMouseEvent(down);
+    static unsigned failures = 0;
+    if (ok || failures++ < 5)
+        Log("[OLVR][MOUSEUSE] left mouse %s: %s", down ? "down" : "up", ok ? "sent" : "FAILED");
+    if (ok) failures = 0;
+    return ok;
+}
+static bool MouseUseContext() {
+    return g_mouseUse && !g_mouseUseStopping && g_gameWnd &&
+           GetForegroundWindow() == g_gameWnd && !OLMenu_Visible() && !OLUE3_InGameMenu();
+}
+// Called on every RAW XR sample, before publication. Even a whole tap
+// between game polls reaches Windows as down/up; there is no 100 ms mouse tail.
+extern "C" void OLProxy_MouseUseSample(unsigned buttons, float gripL, int focused) {
+    AcquireSRWLockExclusive(&g_mouseUseLock);
+    g_mouseUseSampleMs = GetTickCount64();
+    const bool allowed = focused && MouseUseContext() && gripL <= 0.6f;
+    const bool canStart = OLUE3_GameplayActive() && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000);
+    if (!focused) g_mouseUseState.Cancel(SendUseMouse);
+    else g_mouseUseState.Sample((buttons & OLXR_BTN_B) != 0, allowed, canStart, SendUseMouse);
+    if (g_mouseUseStopping) g_mouseUseState.Cancel(SendUseMouse);
+    ReleaseSRWLockExclusive(&g_mouseUseLock);
+}
+// Independent of XInput polling and xrWaitFrame, including while binding keys.
+static void MouseUseWatchdog() {
+    AcquireSRWLockExclusive(&g_mouseUseLock);
+    if (!MouseUseContext() || g_mouseUseState.releasePending || GetTickCount64() - g_mouseUseSampleMs > 200)
+        g_mouseUseState.Cancel(SendUseMouse);
+    ReleaseSRWLockExclusive(&g_mouseUseLock);
+}
+extern "C" void OLProxy_MouseUseShutdown() {
+    InterlockedExchange(&g_mouseUseStopping, 1);
+    // DllMain holds the loader lock: never wait for the worker here.
+    if (TryAcquireSRWLockExclusive(&g_mouseUseLock)) {
+        g_mouseUseState.Cancel(SendUseMouseEvent);
+        ReleaseSRWLockExclusive(&g_mouseUseLock);
+    } else if (InterlockedExchange(&g_mouseUseHeld, 0)) {
+        SendUseMouseEvent(false);
+    }
+}
+
 // OpenXR and UE3/XInput are sampled on different clocks. A very quick Touch-button tap can be
 // present for one XR sample yet fall wholly between two game polls. Extend discrete presses for
 // 100 ms. Continuous controls (sprint and zoom) deliberately bypass this helper so release is
 // immediate.
-static WORD ReliablePadButtons(WORD raw) {
+static WORD ReliablePadButtons(WORD raw, bool resetFace = false) {
     static const WORD bits[] = { 0x0004, 0x0008, 0x0010, 0x0020, 0x0080,
                                  0x1000, 0x2000, 0x4000, 0x8000 };
     // 64-bit: a 32-bit "(LONG)(until - now) > 0" against the initial 0 is TRUE whenever the PC's
@@ -1842,42 +1910,52 @@ static WORD ReliablePadButtons(WORD raw) {
     const ULONGLONG now = GetTickCount64();
     WORD out = raw;
     for (unsigned i = 0; i < _countof(bits); ++i) {
+        if (resetFace && (bits[i] == 0x2000 || bits[i] == 0x4000)) until[i] = 0;
         if (raw & bits[i]) until[i] = now + 100;
         else if (now < until[i]) out |= bits[i];
     }
     return out;
 }
 
-static WORD MapPadButtons(const OLXrPad& p) {
+static OLFaceButtonGate g_faceGate;
+static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
+    const bool resetFace = OLProxy_MouseUseEnabled() && g_faceGate.inMenu != inMenu;
+    const bool mouseLayout = OLProxy_MouseUseEnabled() && !inMenu;
+    const unsigned buttons = OLProxy_MouseUseEnabled() ? g_faceGate.Apply(p.buttons, inMenu) : p.buttons;
     WORD b = 0;
     static bool nvButtonDown = false;
-    const bool nvNow = (p.buttons & OLXR_BTN_RSTICK) != 0;
+    const bool nvNow = (buttons & OLXR_BTN_RSTICK) != 0;
     if (nvNow && !nvButtonDown && g_camcorderUp) g_nvRequested = !g_nvRequested;
     nvButtonDown = nvNow;
     const bool shift = p.gripL > 0.6f;
     // (Test48) A is not a left-grip chord: nothing is on left grip + A, and the left grip is also sprint, so
     // counting it dropped BOTH the sprint and the jump the moment A was pressed while running - "most of the time
     // running and vaulting with A does not work". Only X, Y and B have grip chords.
-    const bool chord = shift && (p.buttons & (OLXR_BTN_B | OLXR_BTN_X | OLXR_BTN_Y));
+    const bool chord = shift && (buttons & (OLXR_BTN_B | OLXR_BTN_X | OLXR_BTN_Y));
     if (shift) {
-        if (p.buttons & OLXR_BTN_X) b |= 0x0004;           // left grip + X = recordings
-        if (p.buttons & OLXR_BTN_Y) b |= 0x0008;           // left grip + Y = evidence/documents
-        if (p.buttons & OLXR_BTN_B) b |= 0x0020;           // left grip + B = tab/inventory
+        if (buttons & OLXR_BTN_X) b |= 0x0004;           // left grip + X = recordings
+        if (buttons & OLXR_BTN_Y) b |= 0x0008;           // left grip + Y = evidence/documents
+        if (buttons & OLXR_BTN_B) b |= 0x0020;           // left grip + B = tab/inventory
     }
     if (!chord) {
-        if (p.buttons & OLXR_BTN_A) b |= 0x1000;           // A  = OLA_Jump
-        if (p.buttons & OLXR_BTN_B) b |= 0x2000;           // B  = OLA_CrouchToggle
-        if (p.buttons & OLXR_BTN_X) b |= 0x4000;           // X  = OLA_Use
-        if (p.buttons & OLXR_BTN_Y) b |= 0x8000;           // Y  = OLA_Reload (camcorder battery)
+        if (buttons & OLXR_BTN_A) b |= 0x1000;           // A  = OLA_Jump
+        if (mouseLayout) {
+            if (buttons & OLXR_BTN_X) b |= 0x2000;       // physical X = crouch
+            // Physical B is delivered as RAW mouse down/up by the XR sampler.
+        } else {
+            if (buttons & OLXR_BTN_B) b |= 0x2000;       // menus/legacy: B
+            if (buttons & OLXR_BTN_X) b |= 0x4000;       // menus/legacy: X
+        }
+        if (buttons & OLXR_BTN_Y) b |= 0x8000;           // Y  = OLA_Reload (camcorder battery)
     }
-    if (p.buttons & OLXR_BTN_RSTICK) b |= 0x0080;         // R3 = OLA_ToggleNightVision
+    if (buttons & OLXR_BTN_RSTICK) b |= 0x0080;         // R3 = OLA_ToggleNightVision
     // START = pause menu. Left grip + Menu is the mod menu instead ([TOUCHMENU]). (Test39) Start is
     // sent when Menu is RELEASED, and only if the left grip never joined the press: squeezing the
     // grip a moment after Menu used to open the game's pause menu AND the mod menu together.
     {
         static bool s_menuHeld = false, s_menuChorded = false;
         static ULONGLONG s_startUntil = 0;
-        if (p.buttons & OLXR_BTN_MENU) {
+        if (buttons & OLXR_BTN_MENU) {
             if (!s_menuHeld) { s_menuHeld = true; s_menuChorded = false; }
             if (shift || g_menuChordLatch || p.gripL > 0.35f) s_menuChorded = true;
         } else if (s_menuHeld) {
@@ -1886,8 +1964,8 @@ static WORD MapPadButtons(const OLXrPad& p) {
         }
         if (GetTickCount64() < s_startUntil) b |= 0x0010;
     }
-    if (!chord && (shift || (p.buttons & OLXR_BTN_LSTICK))) b |= 0x0100; // grip or L3 = sprint
-    b = ReliablePadButtons(b);
+    if (!chord && (shift || (buttons & OLXR_BTN_LSTICK))) b |= 0x0100; // grip or L3 = sprint
+    b = ReliablePadButtons(b, resetFace);
     // camera up: right stick up = zoom in, down = zoom out. (Test46) Only a clearly up/down push zooms:
     // a turn is never a perfectly level push, and "with the camcorder on I accidentally zoom when I turn".
     static int s_zoom = 0;
@@ -1988,6 +2066,7 @@ static DWORD WINAPI Hook_XiGetState(DWORD idx, OLXiState* st) {
         // jumps or pauses underneath it, and the slot never reads as unplugged.
         static DWORD s_menuPacket = 0;
         if (r != ERROR_SUCCESS) { ZeroMemory(st, sizeof(*st)); st->dwPacketNumber = ++s_menuPacket; }
+        if (OLProxy_MouseUseEnabled() && OLXR_GetPad(&p)) g_faceGate.Apply(p.buttons, true);
         return ERROR_SUCCESS;
     }
     if (OLXR_MotionControlsReady() && OLXR_GetPad(&p)) {
@@ -2008,7 +2087,7 @@ static DWORD WINAPI Hook_XiGetState(DWORD idx, OLXiState* st) {
         float mx = p.moveX, my = p.moveY, lx = p.lookX;
         float ly = g_camcorderUp ? 0.0f : p.lookY;          // vertical stick owns zoom while camera is up
         const WORD motionButtons = OLMotion_Process(p, g_camcorderUp, &mx, &my, &lx, &ly);
-        WORD btn = MapPadButtons(pg) | camEdge | motionButtons | ip.addButtons;
+        WORD btn = MapPadButtons(pg, inMenu) | camEdge | motionButtons | ip.addButtons;
         if (inMenu && pg.gripR > 0.65f) btn |= 0x0200;              // right grip = RB (a tab switch)
         st->Gamepad.wButtons |= MenuTaps(btn, inMenu);
         // Sticks: take the fabricated values only when actually deflected, so a real stick is never
@@ -2110,6 +2189,7 @@ static DWORD WINAPI KeyThread(LPVOID) {
     DWORD lastPadTapMs = 0;
     int  padTick = 0; bool padReported = false;   // [PADSTUB] report cadence
     for (;;) {
+        MouseUseWatchdog();
         // [RECENTER] rebind capture first: while it is armed, the pressed key is a binding, not
         // a command, so nothing else in this loop should act on it.
         const LONG cap = g_bindCapture;
@@ -2242,6 +2322,9 @@ static void WriteI(const wchar_t* sec, const wchar_t* key, long val, const wchar
 static void LoadSavedSettings() {
     wchar_t ini[MAX_PATH]; if (!IniPath(ini, MAX_PATH)) return;
     wchar_t v[64];
+    g_mouseUse = GetPrivateProfileIntW(L"Input", L"MouseUse", 1, ini) ? 1 : 0;
+    Log("[OLVR][MOUSEUSE] %s (gameplay B=left mouse, X=crouch; menus/grip shortcuts unchanged)",
+        g_mouseUse ? "ON" : "OFF: legacy layout");
     GetPrivateProfileStringW(L"Render", L"Convergence", L"", v, 64, ini);
     if (v[0]) OLXR_SetConvergence((float)_wtof(v));
     GetPrivateProfileStringW(L"Render", L"StereoModel", L"", v, 64, ini);
@@ -2344,6 +2427,7 @@ extern "C" int OLProxy_SaveSettings() {
     WriteI(L"Render", L"HudScalePct",   g_hudScalePct,            ini);
     WriteI(L"Render", L"HudOffsetXPct", g_hudOffXPct,             ini);
     WriteI(L"Render", L"HudOffsetYPct", g_hudOffYPct,             ini);
+    WriteI(L"Input",  L"MouseUse", OLProxy_MouseUseEnabled(), ini);
     WriteI(L"Input",  L"HandCamcorder", OLXR_GetHandCam(),        ini);
     WriteF(L"Input",  L"HandCamcorderStrength", OLXR_GetHandCamStrength(), ini);
     WriteI(L"Input",  L"RecenterKey",   g_recenterVk,             ini);
@@ -2478,6 +2562,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
         OLMenu_StartInput(hInst);   // low-level mouse hook needs the module's HINSTANCE
         CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
     } else if (reason == DLL_PROCESS_DETACH) {
+        OLProxy_MouseUseShutdown();
         OLXR_Shutdown();
         if (g_log) {
             Log("[OLVR] ==== detach: presents=%ld ====", g_presentCount);
