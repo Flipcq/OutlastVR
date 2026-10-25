@@ -109,6 +109,9 @@ static volatile long g_batGauge = 1;        // (Beta 1.1) [BATGAUGE] [Render] Ca
 // work"). A raised hand still takes an edge, and a ladder rung is always taken. [Motion] RunGripIgnoresLowEdges=0
 // = as before.
 static volatile long g_runGripLow = 1;
+// [DOORNATIVE] The game's close command owns a door as soon as it starts,
+// including before its angle has moved enough for the old 0.02 ratio test.
+static bool g_doorNativePriority = true;
 // (Test49) [CAMBUTTON] [Motion] CamcorderControl: 0 = hands-on (default: take it from the right hip, bring it to
 // your eye), 1 = GRIP BUTTON - one squeeze of the right grip raises the camcorder, the next lowers it (the game's
 // own toggle), and you look through it with your head, so the hand can rest anywhere: for seated players and
@@ -182,6 +185,8 @@ void OLInteract_Init() {
     g_camHold = GetPrivateProfileIntW(L"Motion", L"CamcorderHold", 4, ini) == 3 ? 3 : 4;   // (Beta 1.1) a saved 5 means 4
     g_batGauge = GetPrivateProfileIntW(L"Render", L"CamcorderBatteryGauge", 1, ini) ? 1 : 0;   // (Beta 1.1) [BATGAUGE]
     g_runGripLow = GetPrivateProfileIntW(L"Motion", L"RunGripIgnoresLowEdges", 1, ini) ? 1 : 0;   // (Test48)
+    g_doorNativePriority = GetPrivateProfileIntW(L"Motion", L"DoorNativePriority", 1, ini) != 0;
+    ILog("[OLVR][DOORNATIVE] native closing/target priority %s", g_doorNativePriority ? "ON" : "OFF (legacy)");
     OLInteract_SetCamButton(GetPrivateProfileIntW(L"Motion", L"CamcorderControl", 0, ini));        // (Test49)
     ILog("[OLVR][RUNGRIP] a running squeeze at the hip is sprint, not an edge: %s", g_runGripLow ? "on" : "off");
     OLUE3_DevCamHold((int)g_camHold);
@@ -660,7 +665,8 @@ static bool ReadDoor(void* d, NearDoor* o) {
     // going through, its own open-close animation, broken
     unsigned char st = 0, brk = 0; void* user = nullptr;
     o->busy = (F.mBusyBits && (bits & F.mBusyBits)) ||
-              (F.dstate && Rd(d, F.dstate, &st) && (st == 3 || st == 4)) ||
+              // DoorState 2 = closing (native close 0xD58AEB; Test43 notes).
+              (F.dstate && Rd(d, F.dstate, &st) && (st == 3 || st == 4 || (g_doorNativePriority && st == 2))) ||
               (F.dbreak && Rd(d, F.dbreak, &brk) && brk != 0) ||
               (F.duser && Rd(d, F.duser, &user) && user && user != OLUE3_Hero());
     return true;
@@ -677,6 +683,16 @@ static DoorSim* SimFor(void* d, bool create) {
     if (!create) return nullptr;
     for (DoorSim& s : s_sim) if (!s.live) { s = {}; s.d = d; return &s; }
     return nullptr;
+}
+static bool DoorNativeTargetChanged(const NearDoor& nd, const DoorSim& sim, float* target) {
+    if (!g_doorNativePriority || !sim.live) return false;
+    float t = 0.0f;
+    if (!Rd(nd.d, F.tgtR, &t) || !std::isfinite(t)) return false;
+    *target = t;
+    // Both native set-ratio and the fallback leave TargetOpenRatio at lastCmd.
+    // A different target is a new game command, even while OpenRatio is still
+    // unchanged. Comparing only the angle let the hands overwrite that command.
+    return fabsf(t - sim.lastCmd) > 0.0001f;
 }
 static bool ClimbHolding(int h);   // [CLIMB] below: a hand that holds an edge is not a door hand
 static float BodyYaw();             // (Beta 1.1) [DOORLETGO] below
@@ -844,9 +860,12 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         }
         if (!s) s = SimFor(nd.d, true);
         if (!s) continue;
-        if (s->live && fabsf(nd.ratio - s->lastCmd) > 0.02f) {
+        float nativeTarget = nd.ratio;
+        const bool targetChanged = DoorNativeTargetChanged(nd, *s, &nativeTarget);
+        if (s->live && (targetChanged || fabsf(nd.ratio - s->lastCmd) > 0.02f)) {
             // somebody else moved it (X, a script): it is the game's until it is touched again
-            ILog("[OLVR][DOORPHYS] door moved by the game (%.2f, we left it at %.2f) - handing it back", nd.ratio, s->lastCmd);
+            ILog("[OLVR][DOORPHYS] door command from the game (ratio %.3f target %.3f, hands left %.3f) - handing it back",
+                 nd.ratio, nativeTarget, s->lastCmd);
             s->live = false; s->om = 0.0f; s->gameUntil = now + 1500;
             for (int h = 0; h < 2; ++h) if (s_grab[h].d == nd.d) s_grab[h].d = nullptr;
             continue;

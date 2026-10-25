@@ -2011,7 +2011,13 @@ static DWORD WINAPI Hook_XiGetState(DWORD idx, OLXiState* st) {
         const WORD motionButtons = OLMotion_Process(p, g_camcorderUp, &mx, &my, &lx, &ly);
         WORD btn = MapPadButtons(pg) | camEdge | motionButtons | ip.addButtons;
         if (inMenu && pg.gripR > 0.65f) btn |= 0x0200;              // right grip = RB (a tab switch)
-        st->Gamepad.wButtons |= MenuTaps(btn, inMenu);
+        const WORD gameButtons = MenuTaps(btn, inMenu);
+        static WORD s_prevVRButtons = 0;
+        if (!inMenu && (gameButtons & 0x4000) && !(s_prevVRButtons & 0x4000))
+            Log("[OLVR][USEINPUT] VR X delivered as Use (sourceBuffer=%d, leftGrip=%.2f)",
+                p.usePressBuffered ? 1 : 0, pg.gripL);
+        s_prevVRButtons = gameButtons;
+        st->Gamepad.wButtons |= gameButtons;
         // Sticks: take the fabricated values only when actually deflected, so a real stick is never
         // fought. The walk gate reads the player's own stick; the rotated vector then goes in whole.
         if (fabsf(p.moveX) > 0.12f || fabsf(p.moveY) > 0.12f) {   // gate on the player's input
