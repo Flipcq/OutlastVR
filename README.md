@@ -97,6 +97,7 @@ and in the [player README](release/README.txt).
 |---|---|
 | The world or your body feels offset | Press both stick clicks to recenter. |
 | The picture looks grainy or blurry | VR SETTINGS: turn "Film grain" off. |
+| Lamp halos show through walls | Lens flares are suppressed by default. Set `[Render] LensFlares=1` and restart to restore them, including flashlight flares. |
 | It stutters | VR SETTINGS: set "Monitor picture" to 30 FPS, and render resolution to 85-90%. |
 | Textures look wrong, or the game crashes | In `outlastvr.ini`, set `[XR] D3D9Ex=0` (slower, but very compatible). |
 | Each eye shows a distorted screen | In `outlastvr.ini`, set `[Render] LensFit=0` (Quest Link does this by itself). |
