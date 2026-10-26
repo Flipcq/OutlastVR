@@ -111,17 +111,27 @@ int main() {
     OLCamHud::Canvas canvas;
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
-    assert(canvas.pixels[(462*1920+855)*4+3]==255);  // focusing brackets, top-left corner
-    // ...drawn a step greyer than the artwork default so they do not read as pure white
+    // Focusing brackets: a step greyer than the artwork default, slightly translucent, still hollow,
+    // and small (the reference's oversized box is gone). Size and centre are unchanged.
+    assert(canvas.pixels[(462*1920+855)*4+3] > 180 && canvas.pixels[(462*1920+855)*4+3] < 240);
     assert(canvas.pixels[(462*1920+855)*4+1] > 150 && canvas.pixels[(462*1920+855)*4+1] < 190);
     assert(canvas.pixels[(402*1920+784)*4+3]==0);    // ...and the reference's oversized box is gone
     assert(canvas.pixels[(550*1920+960)*4+3]==0);    // brackets stay hollow
     s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1764)*4+3]==255); // full charge reaches right edge
+    assert(canvas.pixels[(100*1920+1803)*4+3]==255); // full charge reaches right edge
+    // The readouts were pushed out toward the corners; their old coordinates are empty now.
+    assert(canvas.pixels[(100*1920+100)*4+2]==255 && canvas.pixels[(100*1920+134)*4+3]==0); // REC light
+    assert(canvas.pixels[(100*1920+1599)*4+3]==0);   // the gauge no longer starts at the old x
+    // The gauge and its terminal carry a thin black rim: night vision turns the scene behind the HUD
+    // into a bright green wash and a light grey gauge has no edge left to read against.
+    assert(canvas.pixels[(100*1920+1820)*4]==0 && canvas.pixels[(100*1920+1820)*4+3]==255);
+    assert(canvas.pixels[(70*1920+1700)*4]==0 && canvas.pixels[(70*1920+1700)*4+3]==255);
+    assert(canvas.pixels[(100*1920+1812)*4+1]==200);  // the grey frame sits just inside the rim
+    assert(canvas.pixels[(92*1920+1637)*4]==0 && canvas.pixels[(92*1920+1637)*4+3]==255); // terminal rim
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1623)*4+2]==255 && canvas.pixels[(100*1920+1623)*4]==60);
+    assert(canvas.pixels[(100*1920+1663)*4+2]==255 && canvas.pixels[(100*1920+1663)*4]==60);
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1623)*4+2]==canvas.pixels[(100*1920+1623)*4]);
+    assert(canvas.pixels[(100*1920+1663)*4+2]==canvas.pixels[(100*1920+1663)*4]);
     // The W-T thumb follows the zoom factor instead of sitting at one end of the lever.
     s.zoom=0; OLCamHud::Top(canvas,s,noText);
     assert(canvas.pixels[(100*1920+820)*4+1]>=200);            // thumb at the W end
@@ -132,8 +142,9 @@ int main() {
     assert(canvas.pixels[(100*1920+950)*4+1]<150);
     assert(canvas.pixels[(94*1920+1076)*4+3]==255);            // T endpoint
     s.energy=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1623)*4+3]==0); // empty battery actually empty
-    assert(canvas.pixels[(462*1920+855)*4+3]==255); // dynamic updates preserve reticle
+    assert(canvas.pixels[(100*1920+1663)*4+3]==0); // empty battery actually empty
+    assert(canvas.pixels[(462*1920+855)*4+3] > 180 && canvas.pixels[(462*1920+855)*4+3] < 240);
+                                                    // dynamic updates preserve reticle
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
     // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
     assert(OLCamHud::PanelWidth(100.0f) > 1.30f && OLCamHud::PanelWidth(100.0f) < 1.45f);

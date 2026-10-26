@@ -374,6 +374,17 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
   6.4 deg instead of ~13.8 x 11.6. They are drawn at 175 grey instead of the artwork's 190, which read as
   pure white against the dark scenes and pulled the eye away from the picture.
+- The readouts sit one step further out and up than the reference's own coordinates - REC/clock 40 px
+  left and 10 px up, the spare count and gauge 40 px right and 10 px up - because the shrinking quad put
+  the display's corners nearer the middle of the view. The brackets stay exactly where they were; the
+  extra room around the centred W-T lever is what the shift buys.
+- The focusing brackets are drawn at 200/255 alpha, so the picture shows through them instead of the box
+  reading as a cut-out laid over the game.
+- Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout has no
+  edge left and vanishes. The spare count gets a 1 px black rim (the same string drawn four times, once
+  per neighbour, then in grey) and the gauge a 2 px black rim just outside its grey frame, terminal
+  included. Four passes, not eight: measured 0.34 ms/frame for the rim with the HUD's naive 96x72 glyph
+  blit (the whole top band is 0.54 ms), and it only runs while the camcorder is up.
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
   can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
   visible against the track.

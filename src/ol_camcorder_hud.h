@@ -70,9 +70,9 @@ struct Canvas {
         p[2] = uint8_t((r * a + (p[2] * old + 127) / 255) / alpha);
         p[3] = uint8_t(alpha);
     }
-    void Rect(int x, int y, int w, int h, uint8_t shade = 190) {
+    void Rect(int x, int y, int w, int h, uint8_t shade = 190, uint8_t alpha = 255) {
         for (int yy = y; yy < y + h; ++yy)
-            for (int xx = x; xx < x + w; ++xx) Pixel(xx, yy, shade, shade, shade);
+            for (int xx = x; xx < x + w; ++xx) Pixel(xx, yy, shade, shade, shade, alpha);
     }
     void Rounded(int x, int y, int w, int h, float radius, int top, int bottom) {
         for (int yy = 0; yy < h; ++yy) for (int xx = 0; xx < w; ++xx) {
@@ -97,10 +97,13 @@ template<class Text> void Static(Canvas& c, Text& text) {
     // nothing behind it, so it reads as a square hanging in front of the face. The reference's
     // 354x298 box was too big for that: 212x178 (60%) on the same centre (960.5, 550.5), arms 56 px.
     // At the artwork default (190) they read as pure white against the dark scenes and pulled the
-    // eye, so they sit one short step greyer, 175 - still the brightest thing on the display.
-    const uint8_t bracket = 175;
-    c.Rect(855,462,56,2,bracket); c.Rect(855,462,2,178,bracket); c.Rect(855,638,56,2,bracket);
-    c.Rect(1011,462,56,2,bracket); c.Rect(1065,462,2,178,bracket); c.Rect(1011,638,56,2,bracket);
+    // eye, so they sit one short step greyer, 175 - still the brightest thing on the display - and
+    // slightly translucent (200/255), so the picture behind them shows through instead of the box
+    // looking like a cut-out laid over the game.
+    const uint8_t bracket = 175, bracketAlpha = 200;
+    c.Rect(855,462,56,2,bracket,bracketAlpha); c.Rect(1011,462,56,2,bracket,bracketAlpha);
+    c.Rect(855,464,2,174,bracket,bracketAlpha); c.Rect(1065,464,2,174,bracket,bracketAlpha);
+    c.Rect(855,638,56,2,bracket,bracketAlpha); c.Rect(1011,638,56,2,bracket,bracketAlpha);
     c.Rounded(149,819,108,52,4,215,170);
     for (int y = 823; y <= 855; y += 16) {
         c.Rounded(153,y,14,12,3,0,0); c.Rounded(239,y,14,12,3,0,0);
@@ -115,15 +118,19 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // Exactly the rows the upload refreshes (DynamicTop/DynamicHeight), so the two cannot drift.
     std::fill(c.pixels.begin() + size_t(Width)*DynamicTop*4,
               c.pixels.begin() + size_t(Width)*(DynamicTop+DynamicHeight)*4, 0);
+    // Every readout sits a step further out and up than the reference's own coordinates. The quad now
+    // fills less of the view (PanelWidth), so the display's corners land nearer the middle of what you
+    // see; the clusters are pushed toward the edges so they still read as corners, with a wider gap
+    // left around the centred W-T lever. The focusing brackets below are untouched.
     // Record light and REC, top-left corner of the display.
-    for (int y = 90; y < 130; ++y) for (int x = 114; x < 155; ++x) {
-        const float d = std::sqrt((x-134.0f)*(x-134.0f) + (y-109.5f)*(y-109.5f));
+    for (int y = 80; y < 120; ++y) for (int x = 74; x < 115; ++x) {
+        const float d = std::sqrt((x-94.0f)*(x-94.0f) + (y-99.5f)*(y-99.5f));
         const float coverage = Unit(19.5f-d);
         c.Pixel(x,y,255,0,0,uint8_t(coverage*255));
     }
-    text(c,159,82,46,true,"REC",255,0,0);
+    text(c,119,72,46,true,"REC",255,0,0);
     char time[12]; Timecode(s.recordingSeconds, time);
-    text(c,310,90,34,true,time,255,0,0);
+    text(c,270,80,34,true,time,255,0,0);
     // Zoom lever: W (wide) on the left, T (tele) on the right, centred in the display.
     text(c,747,78,44,false,"W",200,200,200);
     text(c,1117,78,44,false,"T",200,200,200);
@@ -135,16 +142,25 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     const int capacity = s.capacity > 0 ? s.capacity : 10;
     const int spares = s.spares < 0 ? 0 : (s.spares > capacity ? capacity : s.spares);
     char count[32]; std::snprintf(count,sizeof(count),"%d / %d",spares,capacity);
-    text(c,1504,91,25,true,count,210,210,210);
+    // Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout
+    // has no edge left to read against and simply disappears. A one-pixel black rim under the count
+    // and around the gauge gives both their outline back without making them heavier. Four neighbours
+    // rather than eight: the count is redrawn every frame and each extra pass is a full glyph blit.
+    const int rimX[4] = { -1, 1, 0, 0 }, rimY[4] = { 0, 0, -1, 1 };
+    for (int i = 0; i < 4; ++i) text(c, 1544 + rimX[i], 81 + rimY[i], 25, true, count, 0, 0, 0);
+    text(c,1544,81,25,true,count,210,210,210);
     // Terminal faces left, as in the supplied reference. Continuous charge, no 4-bar quantization.
-    c.Rect(1599,96,9,20,200); c.Outline(1606,82,170,48,5,200);
-    c.Rect(1604,101,5,10,0);
+    c.Outline(1637,84,13,24,2,0);                       // rim around the terminal tab
+    c.Rect(1639,86,9,20,200);                           // the terminal itself
+    c.Outline(1644,70,178,52,2,0);                      // rim around the gauge body
+    c.Outline(1646,72,170,48,5,200);                    // the gauge body
+    c.Rect(1644,91,5,10,0);
     const float charge = Unit(s.energy);
     // Preserve the large gauge's low-charge warning (one bar or less), with a continuous fill.
     const bool low = std::ceil(charge*4.0f-0.05f) <= 1;
     for (int y = 0; y < 24; ++y) for (int x = 0; x < int(142*charge); ++x) {
         const uint8_t shade = uint8_t(215-35*y/23);
-        c.Pixel(1623+x,94+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
+        c.Pixel(1663+x,84+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
     }
 }
 }
