@@ -98,14 +98,14 @@ int main() {
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
     assert(canvas.pixels[(402*1920+784)*4+3]==255);
     s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1764)*4+3]==255); // full charge reaches right edge
+    assert(canvas.pixels[(280*1920+1467)*4+3]==255); // full charge reaches right edge
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1623)*4+2]==255 && canvas.pixels[(100*1920+1623)*4]==60);
+    assert(canvas.pixels[(280*1920+1276)*4+2]==255 && canvas.pixels[(280*1920+1276)*4]==60);
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1623)*4+2]==canvas.pixels[(100*1920+1623)*4]);
+    assert(canvas.pixels[(280*1920+1276)*4+2]==canvas.pixels[(280*1920+1276)*4]);
     s.energy=0; s.zoom=1; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1623)*4+3]==0); // empty battery actually empty
-    assert(canvas.pixels[(94*1920+1076)*4+3]==255); // T endpoint
+    assert(canvas.pixels[(280*1920+1276)*4+3]==0); // empty battery actually empty
+    assert(canvas.pixels[(273*1920+1094)*4+3]==255); // T endpoint
     assert(canvas.pixels[(402*1920+784)*4+3]==255); // dynamic updates preserve reticle
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
 }

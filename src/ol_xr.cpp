@@ -3400,7 +3400,7 @@ static bool EnsureBrandScene() {
 static const int kMarkerTex = 64, kMaxMarkers = 16;
 static const int kLabelW = 512, kLabelH = 160;
 // [CAMHUD] One head-locked transparent layer replaces the old two battery quads.
-// Cache font coverage once; only the top 160 rows change as the game's readouts change.
+// Cache font coverage once; only the top readout band changes as the game's readouts change.
 extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state);
 extern "C" void OLInteract_CamcorderHudSubmitted(int shown);
 struct HudText {
@@ -3483,9 +3483,12 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
         // Do not release an image whose wait failed. Stand down until session teardown.
         g_hudFailed = true; return false;
     }
-    D3D11_BOX box = {0,0,0,OLCamHud::Width,OLCamHud::DynamicHeight,1};
+    D3D11_BOX box = {0,OLCamHud::DynamicTop,0,OLCamHud::Width,
+        OLCamHud::DynamicTop+OLCamHud::DynamicHeight,1};
+    const uint8_t* pixels = g_hudCanvas.pixels.data();
+    if (g_hudInitialized[index]) pixels += size_t(OLCamHud::Width)*OLCamHud::DynamicTop*4;
     g_ctx->UpdateSubresource(g_hudImages[index].texture,0,g_hudInitialized[index] ? &box : nullptr,
-        g_hudCanvas.pixels.data(),OLCamHud::Width*4,0);
+        pixels,OLCamHud::Width*4,0);
     g_hudInitialized[index] = true;
     XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
     if (!XrSucceeded(g_fn.releaseSwapchainImage(g_hudSc,&ri))) { g_hudFailed = true; return false; }
@@ -3495,9 +3498,10 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
     q.space = g_viewSpace; q.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
     q.subImage.swapchain = g_hudSc;
     q.subImage.imageRect.extent = {OLCamHud::Width,OLCamHud::Height};
-    q.pose = IdentityPose(); q.pose.position.z = -0.55f;
-    // A 16:9 panel safely inside the lens, with the reference's aspect and margins preserved.
-    q.size.width = 0.65f; q.size.height = 0.65f * 1080.0f/1920.0f;
+    q.pose = IdentityPose(); q.pose.position.z = -OLCamHud::PanelDistance;
+    // Closer plane plus larger, inward readouts: readable without looking into the lens edges.
+    q.size.width = OLCamHud::PanelWidth;
+    q.size.height = OLCamHud::PanelWidth * OLCamHud::Height / OLCamHud::Width;
     return true;
 }
 
