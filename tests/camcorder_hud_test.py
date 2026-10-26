@@ -112,6 +112,8 @@ int main() {
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
     assert(canvas.pixels[(462*1920+855)*4+3]==255);  // focusing brackets, top-left corner
+    // ...drawn a step greyer than the artwork default so they do not read as pure white
+    assert(canvas.pixels[(462*1920+855)*4+1] > 150 && canvas.pixels[(462*1920+855)*4+1] < 190);
     assert(canvas.pixels[(402*1920+784)*4+3]==0);    // ...and the reference's oversized box is gone
     assert(canvas.pixels[(550*1920+960)*4+3]==0);    // brackets stay hollow
     s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);

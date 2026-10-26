@@ -96,8 +96,11 @@ template<class Text> void Static(Canvas& c, Text& text) {
     // Focusing brackets - the one bright shape in the middle of the view, and the only one with
     // nothing behind it, so it reads as a square hanging in front of the face. The reference's
     // 354x298 box was too big for that: 212x178 (60%) on the same centre (960.5, 550.5), arms 56 px.
-    c.Rect(855,462,56,2); c.Rect(855,462,2,178); c.Rect(855,638,56,2);
-    c.Rect(1011,462,56,2); c.Rect(1065,462,2,178); c.Rect(1011,638,56,2);
+    // At the artwork default (190) they read as pure white against the dark scenes and pulled the
+    // eye, so they sit one short step greyer, 175 - still the brightest thing on the display.
+    const uint8_t bracket = 175;
+    c.Rect(855,462,56,2,bracket); c.Rect(855,462,2,178,bracket); c.Rect(855,638,56,2,bracket);
+    c.Rect(1011,462,56,2,bracket); c.Rect(1065,462,2,178,bracket); c.Rect(1011,638,56,2,bracket);
     c.Rounded(149,819,108,52,4,215,170);
     for (int y = 823; y <= 855; y += 16) {
         c.Rounded(153,y,14,12,3,0,0); c.Rounded(239,y,14,12,3,0,0);

@@ -372,7 +372,8 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
 - The focusing brackets in the middle of the display are 60% of the reference's box (212x178 instead of
   354x298, same centre and arm thickness). They are the only bright shape with nothing behind it, so the
   reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
-  6.4 deg instead of ~13.8 x 11.6.
+  6.4 deg instead of ~13.8 x 11.6. They are drawn at 175 grey instead of the artwork's 190, which read as
+  pure white against the dark scenes and pulled the eye away from the picture.
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
   can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
   visible against the track.
