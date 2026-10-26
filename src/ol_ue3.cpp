@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <math.h>
+#include <cmath>
 #include <share.h>    // _SH_DENYWR for the [CAMPROBE] csv (readable while the game runs)
 #include <tlhelp32.h> // [BONEWATCH] thread enumeration, to set debug registers on every thread
 #include <intrin.h>   // _ReturnAddress for the call-site gate
@@ -4681,6 +4682,78 @@ static bool LS_Call(void* obj, void* fn, void* parms) {
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { if (nat) *nat = was; return false; }
 }
+// [CAMHUD] Field/function names from the Outlast SDK, resolved against the running build:
+// https://github.com/CppBunny/Outlast_SDK/blob/master/SDK_HEADERS/OLGame_classes.hpp
+// Read the existing clock; do not close/pause the movie or change bVisible, since the game's
+// UpdateRecordingTime must keep its own semantics. Only its Flash root alpha is overridden.
+extern "C" int OLUE3_CamcorderHudRead(float* seconds, int* capacity, int hide) {
+    static unsigned myHud = 0, camHud = 0, clock = 0, maxBat = 0, visible = 0, visibleMask = 0;
+    static void* setNumber = nullptr;
+    static void* getNumber = nullptr;
+    static int pathOff = -1, valueOff = -1, getPathOff = -1, resultOff = -1;
+    static ULONGLONG nextTry = 0;
+    static void* hiddenMovie = nullptr;
+    static float originalAlpha = 100;
+    if (!setNumber || !getNumber || !myHud || !camHud || !clock || !maxBat || !visible) {
+        const ULONGLONG now = GetTickCount64();
+        if (now < nextTry) return 0;
+        nextTry = now + 3000;
+        OLUE3_FindProp("PlayerController", "myHUD", &myHud, nullptr);
+        OLUE3_FindProp("OLHUD", "CamcorderHUD", &camHud, nullptr);
+        OLUE3_FindProp("OLCamcorderHud", "RecordingTimeSeconds", &clock, nullptr);
+        OLUE3_FindProp("OLPlayerController", "MaxNumBatteries", &maxBat, nullptr);
+        OLUE3_FindProp("OLCamcorderHud", "bVisible", &visible, &visibleMask);
+        setNumber = LS_FindFunction("GFxMoviePlayer", "SetVariableNumber");
+        getNumber = LS_FindFunction("GFxMoviePlayer", "GetVariableNumber");
+        pathOff = LS_ParamOff(setNumber, "Path"); valueOff = LS_ParamOff(setNumber, "F");
+        getPathOff = LS_ParamOff(getNumber, "Path"); resultOff = LS_ParamOff(getNumber, "ReturnValue");
+        if (!setNumber || !getNumber || !myHud || !camHud || !clock || !maxBat || !visible ||
+            pathOff < 0 || pathOff > 48 || valueOff < 0 || valueOff > 60 ||
+            getPathOff < 0 || getPathOff > 48 || resultOff < 0 || resultOff > 60) {
+            setNumber = nullptr;
+            OLProxyLog("[OLVR][CAMHUD] reflection incomplete; retaining the original camcorder display");
+            return 0;
+        }
+        OLProxyLog("[OLVR][CAMHUD] game clock, capacity and camcorder movie resolved");
+    }
+    void* pc = OLUE3_PlayerController();
+    void* hud = pc ? ProbeReadPtr((char*)pc + myHud) : nullptr;
+    void* movie = hud ? ProbeReadPtr((char*)hud + camHud) : nullptr;
+    float time = 0; int max = 0; unsigned flags = 0;
+    const bool valid = movie && pc && BP_Read((char*)movie + clock, &time, sizeof(time)) &&
+        BP_Read((char*)pc + maxBat, &max, sizeof(max)) &&
+        BP_Read((char*)movie + visible, &flags, sizeof(flags)) &&
+        std::isfinite(time) && time >= 0 && max > 0 && max <= 100;
+    if (!movie) return 0;
+    // Never keep/dereference an old UObject after travel. Operate on the controller's current HUD.
+    if (hiddenMovie != movie) hiddenMovie = nullptr;
+    wchar_t rootAlpha[] = L"_root._alpha";
+    struct ScriptString { wchar_t* data; int count, capacity; };
+    ScriptString path = { rootAlpha, 13, 13 };
+    alignas(8) unsigned char parms[64] = {};
+    if (hide && valid && (flags & visibleMask)) {
+        if (!hiddenMovie) {
+            memcpy(parms + getPathOff, &path, sizeof(path));
+            if (!LS_Call(movie, getNumber, parms)) return 0;
+            memcpy(&originalAlpha, parms + resultOff, sizeof(originalAlpha));
+            if (!std::isfinite(originalAlpha) || originalAlpha <= 0) return 0;
+        }
+        memset(parms, 0, sizeof(parms));
+        memcpy(parms + pathOff, &path, sizeof(path));
+        const float alpha = 0; memcpy(parms + valueOff, &alpha, sizeof(alpha));
+        if (!LS_Call(movie, setNumber, parms)) return 0;
+        hiddenMovie = movie;
+    } else if (hiddenMovie) {
+        memcpy(parms + pathOff, &path, sizeof(path));
+        memcpy(parms + valueOff, &originalAlpha, sizeof(originalAlpha));
+        if (!LS_Call(movie, setNumber, parms)) return 0;
+        hiddenMovie = nullptr;
+    }
+    if (!valid) return 0;
+    *seconds = time; *capacity = max;
+    return (flags & visibleMask) != 0;
+}
+
 // a function's parameters, for the log
 static void LS_LogParams(const char* cls, const char* fn) {
     char l[300], nm[64], kn[64];

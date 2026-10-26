@@ -637,11 +637,9 @@ static void BuildUI() {
           "Reach to your right hip and squeeze the grip: the camcorder glides into\n"
           "your hand. Bring it to your eye to look through it. Let go and it goes back.\n"
           "Off: lift your right hand to your eye, or squeeze the right grip."); }
-    { bool b = OLInteract_GetBatteryGauge() != 0;   // (Beta 1.1) [BATGAUGE]
-      if (ImGui::Checkbox("Large battery gauge while filming", &b)) OLInteract_SetBatteryGauge(b);
-      Help(
-          "While the camcorder is up, a big battery gauge sits low in your view,\n"
-          "with the number of spare batteries beside it."); }
+    { bool b = OLInteract_GetCamcorderHud() != 0;
+      if (ImGui::Checkbox("Custom camcorder HUD", &b)) OLInteract_SetCamcorderHud(b);
+      Help("Reference-style HUD with the game's recording time, zoom and batteries."); }
     // (Test43) [CAMHOLD] free hold, [FLIPSCREEN]
     { int hold = OLInteract_CamHold() == 3 ? 1 : 0;
       static const char* kHold[] = { "Free - moves with your controller", "The game's pose" };
@@ -799,21 +797,6 @@ static void BuildUI() {
           "Outlast's film grain. Off: a clean picture - in a headset the grain\n"
           "reads as blur. On: the game's own found-footage look."); }
 
-    // The camcorder readouts (battery, record dot, timecode) are drawn at the very edges of the
-    // frame, which a headset lens cannot show. These pull them into the readable middle. Uniform
-    // scale, so the display keeps its own proportions: stretching UI to fit is what makes it look
-    // wrong. Only the mirrored UI viewport is touched, so nothing here reaches the 3D path.
-    Section("CAMCORDER DISPLAY");
-    { float s = 1.0f, ox = 0.0f, oy = 0.0f; OLProxy_GetHudFit(&s, &ox, &oy);
-      bool ch = false;
-      if (ImGui::SliderFloat("Size", &s, 0.40f, 1.00f, "%.2f")) ch = true;
-      Help(
-          "Cannot see the battery meter or the record light? Lower this.\n"
-          "It pulls everything in from the corners, where the lens cuts it off.");
-      if (ImGui::SliderFloat("Move left or right", &ox, -0.40f, 0.40f, "%.2f")) ch = true;
-      if (ImGui::SliderFloat("Move up or down",    &oy, -0.40f, 0.40f, "%.2f")) ch = true;
-      Help("Slide right to move it down.");
-      if (ch) OLProxy_SetHudFit(s, ox, oy); }
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
