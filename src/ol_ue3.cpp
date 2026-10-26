@@ -5498,6 +5498,83 @@ static void GrainTick() {
     }
 }
 
+// [FLARES] Suppress the decorative lens-flare components, including flashlight flares.
+// The user's runtime reflection dump confirms LensFlareComponent.SetIsActive and bIsActive.
+// Resolve the layout rather than hard-coding the observed +0x248 packed bool. Calling the
+// native setter through ProcessEvent updates the render proxy; just clearing the bit would
+// leave its old render-thread state behind. Game thread only, after NativePlayerMove.
+// [Render] LensFlares=1 restores the game's behaviour on the next launch.
+static bool g_lensFlaresOn = false;
+static int g_flareState = 0;   // 0 awaiting reflection, 1 ready, -1 unsupported
+static unsigned g_flareActiveOff = 0, g_flareActiveMask = 0, g_flareOwnerOff = 0;
+static void* g_flareClass = nullptr;
+static void* g_flareSetActive = nullptr;
+static ULONGLONG g_flareNextTry = 0;
+static void LensFlareTick() {
+    if (g_lensFlaresOn || g_flareState < 0) return;
+    if (!g_flareState) {
+        const ULONGLONG now = GetTickCount64();
+        if (now < g_flareNextTry) return;
+        g_flareNextTry = now + 1000;
+        if (!g_bpUNameOff || !BP_RefreshObjects()) return;
+        g_flareClass = BP_FindClassObj("LensFlareComponent");
+        if (!g_flareClass) return;   // wait until the engine's classes are loaded
+        g_flareSetActive = LS_FindFunction("LensFlareComponent", "SetIsActive");
+        bool valid = g_flareSetActive &&
+            SP_FindPropAny("LensFlareComponent", "bIsActive", &g_flareActiveOff, &g_flareActiveMask) &&
+            SS_Plausible(g_flareActiveOff) && g_flareActiveMask &&
+            SP_FindPropAny("ActorComponent", "Owner", &g_flareOwnerOff, nullptr) &&
+            SS_Plausible(g_flareOwnerOff);
+        // Accept only the expected void setter with one bool at parameter offset zero.
+        // All-zero parameters mean false, regardless of the bool's name or bit mask.
+        int params = 0, visited = 0;
+        for (void* p = g_flareSetActive ? ProbeReadPtr((char*)g_flareSetActive + 0x80) : nullptr;
+             p && valid; p = ProbeReadPtr((char*)p + 0x60)) {
+            char type[64]; unsigned off = 0;
+            if (++visited > 16 || !BP_ObjName(LS_ClassOf(p), type, sizeof(type)) ||
+                strcmp(type, "BoolProperty") || !BP_Read((char*)p + 0x8C, &off, 4) || off != 0) {
+                valid = false; break;
+            }
+            ++params;
+        }
+        if (!valid || params != 1) {
+            g_flareState = -1;
+            OLProxyLog("[OLVR][FLARES] reflection/signature unavailable - lens flares left unchanged");
+            return;
+        }
+        g_flareState = 1;
+        OLProxyLog("[OLVR][FLARES] suppression ready (native SetIsActive); LensFlares=1 restores on restart");
+    }
+    void* flares[kObjScanMax];
+    const int n = OLUE3_ObjectsOfClass("LensFlareComponent", flares, kObjScanMax);
+    int changed = 0;
+    for (int i = 0; i < n; ++i) {
+        void* comp = flares[i];
+        if (LS_ClassOf(comp) != g_flareClass) continue;   // stale object-cache entry
+        void* owner = ProbeReadPtr((char*)comp + g_flareOwnerOff);
+        char name[96];
+        if (!owner || !ObjIsA(owner, "Actor") || !BP_ObjName(owner, name, sizeof(name)) ||
+            !strncmp(name, "Default__", 9)) continue;   // leave templates/default objects alone
+        uint32_t flags = 0;
+        if (!BP_Read((char*)comp + g_flareActiveOff, &flags, sizeof(flags)) ||
+            !(flags & g_flareActiveMask)) continue;
+        alignas(16) char args[0x80] = {};
+        if (!LS_Call(comp, g_flareSetActive, args) ||
+            !BP_Read((char*)comp + g_flareActiveOff, &flags, sizeof(flags)) ||
+            (flags & g_flareActiveMask)) {
+            g_flareState = -1;
+            OLProxyLog("[OLVR][FLARES] SetIsActive(false) failed - stopping suppression for this session");
+            return;
+        }
+        ++changed;
+    }
+    static int logs = 0;
+    if (changed && logs < 4) {
+        ++logs;
+        char l[120]; sprintf_s(l, "[OLVR][FLARES] deactivated %d lens-flare component(s)", changed); OLProxyLog(l);
+    }
+}
+
 // (Beta 1.1) [BODYTURN] The user: "the arms should reset if it goes off its position, this way no more having to
 // recenter all the time". The usual reason they go off: you turn your own body (a swivel chair, standing and
 // shifting) and Miles's body still faces the old way - your hands are then off to one side of his shoulders,
@@ -5621,6 +5698,10 @@ static void __fastcall Hook_NativePlayerMove(void* ctrl, float dt) {
                       mode == 2 ? "right hand" : "head", saved[0], saved[1], saved[2], wrote[0], wrote[1], wrote[2]);
             OLProxyLog(l);
         }
+    }
+    __try { LensFlareTick(); } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_flareState = -1;
+        OLProxyLog("[OLVR][FLARES] exception - stopping suppression for this session");
     }
 }
 
@@ -6579,6 +6660,7 @@ static void ReadConfig() {
     g_cineFovOn = GetPrivateProfileIntW(L"Stage3", L"CineFov", 1, ini) ? 1 : 0;   // [CINEFOV]
     g_wideFov = GetPrivateProfileIntW(L"Render", L"WideFov", 0, ini) ? 1 : 0;     // [WIDEFOV]
     g_grainOn = GetPrivateProfileIntW(L"Render", L"FilmGrain", 0, ini) ? 1 : 0;   // (Test47) [GRAIN]
+    g_lensFlaresOn = GetPrivateProfileIntW(L"Render", L"LensFlares", 0, ini) != 0;
     if (g_wideFov) OLProxyLog("[OLVR][WIDEFOV] ON - rendering at the headset's own width "
                               "(costs sharpness, fills the eye; [Render] WideFov=0 reverts)");
     GetPrivateProfileStringW(L"Stage3", L"PvsRva", L"0", val, 64, ini);
