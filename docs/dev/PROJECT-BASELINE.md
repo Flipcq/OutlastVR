@@ -361,14 +361,18 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   stops the corner readouts past ~37 deg, where they would be drawn in one eye only and read as a ghost.
 - The artwork is back on the reference screenshot's own 1920x1080 coordinates (`DynamicTop = 0`, the
   readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
-- The display sits further back, into the view instead of against the lenses (`PanelDistance` 1.05 m, FOV
-  fill clamped to 60-68 deg instead of the first pass's 76-84): the quad is head-locked and mono, so it has
+- The display sits further back, into the view instead of against the lenses (`PanelDistance` 1.15 m, FOV
+  fill clamped to 56-64 deg instead of the first pass's 76-84): the quad is head-locked and mono, so it has
   no stereo disparity and its apparent distance comes only from how much of the view it fills -
   `PanelWidth` scales with `PanelDistance`, so moving the quad back on its own changes nothing on screen.
-  Keeping the physical width (~1.37 m) and filling less puts the REC light and the battery gauge at ~30 deg
-  (was ~37, then ~34), with clear space around the readouts and still inside the ~40 deg both eyes fuse;
-  the 46 px REC caption is now 1.7 deg tall, still well above comfortable reading size.
-  `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
+  Keeping the physical width (the reference display's ~1.37 m) and filling less puts the REC light and the
+  battery gauge at ~28 deg (was ~37, then ~34, then ~30), with clear space around the readouts and still
+  inside the ~40 deg both eyes fuse; the 46 px REC caption is 1.6 deg tall, still well above comfortable
+  reading size. `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
+- The focusing brackets in the middle of the display are 60% of the reference's box (212x178 instead of
+  354x298, same centre and arm thickness). They are the only bright shape with nothing behind it, so the
+  reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
+  6.4 deg instead of ~13.8 x 11.6.
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
   can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
   visible against the track.

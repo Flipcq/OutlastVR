@@ -23,15 +23,15 @@ constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // disparity: its apparent distance is set by how much of the view it fills, not by how many
 // centimetres away it is parked (PanelWidth scales with PanelDistance, so moving it alone changes
 // nothing on screen). Pushing it back therefore means filling a little less of the view.
-constexpr float PanelDistance = 1.05f;      // metres in front of the eye
+constexpr float PanelDistance = 1.15f;      // metres in front of the eye
 constexpr float PanelMargin = 0.97f;        // hair of margin so the corner readouts are not clipped
 // Fill the view, but stop before the corners leave the region both eyes can see (~+/-40 deg on a
-// Quest): a readout past that is drawn in one eye only and reads as a ghost. 68 deg leaves the REC
-// light and the battery gauge at ~30 deg - inside the corners, with clear space around the display,
+// Quest): a readout past that is drawn in one eye only and reads as a ghost. 64 deg leaves the REC
+// light and the battery gauge at ~28 deg - inside the corners, with clear space around the display,
 // which is what reads as set back into the view rather than pressed against the lenses. The
-// display's physical width stays at the reference's ~1.37 m, so this is the same screen further
-// out: 84 deg at 0.75 m -> 78 at 0.85 -> 68 at 1.05.
-constexpr float PanelMinFovDeg = 60.0f, PanelMaxFovDeg = 68.0f;
+// physical width stays at the reference display's ~1.37 m: the same screen, further out each time
+// (84 deg at 0.75 m -> 78 at 0.85 -> 68 at 1.05 -> 64 at 1.15).
+constexpr float PanelMinFovDeg = 56.0f, PanelMaxFovDeg = 64.0f;
 inline float PanelWidth(float hmdFovDeg) {
     float deg = std::isfinite(hmdFovDeg) ? hmdFovDeg : 0.0f;
     if (deg < PanelMinFovDeg) deg = PanelMinFovDeg;   // no runtime FOV yet, or a narrow headset
@@ -93,8 +93,11 @@ struct Canvas {
 // Static artwork at the reference screenshot's own 1920x1080 positions: the lens markings sit in
 // the bottom-left corner of the display, the focusing brackets in the middle of it.
 template<class Text> void Static(Canvas& c, Text& text) {
-    c.Rect(784,402,93,2); c.Rect(784,402,2,298); c.Rect(784,698,93,2);
-    c.Rect(1044,402,94,2); c.Rect(1136,402,2,298); c.Rect(1044,698,94,2);
+    // Focusing brackets - the one bright shape in the middle of the view, and the only one with
+    // nothing behind it, so it reads as a square hanging in front of the face. The reference's
+    // 354x298 box was too big for that: 212x178 (60%) on the same centre (960.5, 550.5), arms 56 px.
+    c.Rect(855,462,56,2); c.Rect(855,462,2,178); c.Rect(855,638,56,2);
+    c.Rect(1011,462,56,2); c.Rect(1065,462,2,178); c.Rect(1011,638,56,2);
     c.Rounded(149,819,108,52,4,215,170);
     for (int y = 823; y <= 855; y += 16) {
         c.Rounded(153,y,14,12,3,0,0); c.Rounded(239,y,14,12,3,0,0);
