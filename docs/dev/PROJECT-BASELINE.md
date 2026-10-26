@@ -374,12 +374,16 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
   6.4 deg instead of ~13.8 x 11.6. They are drawn at 175 grey instead of the artwork's 190, which read as
   pure white against the dark scenes and pulled the eye away from the picture.
-- The readouts sit one step further out and up than the reference's own coordinates - REC/clock 40 px
-  left and 10 px up, the spare count and gauge 40 px right and 10 px up - because the shrinking quad put
+- The readouts sit one step further out and up than the reference's own coordinates - REC/clock 80 px
+  left and 10 px up, the spare count and gauge 80 px right and 10 px up - because the shrinking quad put
   the display's corners nearer the middle of the view. The brackets stay exactly where they were; the
-  extra room around the centred W-T lever is what the shift buys.
-- The focusing brackets are drawn at 200/255 alpha, so the picture shows through them instead of the box
-  reading as a cut-out laid over the game.
+  extra room around the centred W-T lever is what the shift buys. The gauge's rim now ends 59 px from the
+  display's edge (~30.4 deg of the panel's 31.2).
+- The focusing brackets are drawn at 235/255 alpha in 190 grey, so a little of the picture shows through
+  instead of the box reading as a cut-out. Not more than that: this runtime multiplies the layer's colour
+  by its own alpha despite `XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT`, and the 200/255 first try
+  (175 grey) came out **black**. At 235 a double multiply still lands on ~161 grey, which the test now
+  asserts, so no future tweak can darken them again.
 - Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout has no
   edge left and vanishes. The spare count gets a 1 px black rim (the same string drawn four times, once
   per neighbour, then in grey) and the gauge a 2 px black rim just outside its grey frame, terminal

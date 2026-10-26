@@ -96,11 +96,11 @@ template<class Text> void Static(Canvas& c, Text& text) {
     // Focusing brackets - the one bright shape in the middle of the view, and the only one with
     // nothing behind it, so it reads as a square hanging in front of the face. The reference's
     // 354x298 box was too big for that: 212x178 (60%) on the same centre (960.5, 550.5), arms 56 px.
-    // At the artwork default (190) they read as pure white against the dark scenes and pulled the
-    // eye, so they sit one short step greyer, 175 - still the brightest thing on the display - and
-    // slightly translucent (200/255), so the picture behind them shows through instead of the box
-    // looking like a cut-out laid over the game.
-    const uint8_t bracket = 175, bracketAlpha = 200;
+    // Slightly translucent, but only just: the compositor on at least one runtime multiplies the
+    // layer's colour by its own alpha even though the layer asks for XR_COMPOSITION_LAYER_UNPREMULTIPLIED
+    // (measured: 175 at 200/255 came out black). Keeping the alpha high means a double multiply still
+    // lands on light grey (~161) instead of a dark line, while the picture behind shows through a little.
+    const uint8_t bracket = 190, bracketAlpha = 235;
     c.Rect(855,462,56,2,bracket,bracketAlpha); c.Rect(1011,462,56,2,bracket,bracketAlpha);
     c.Rect(855,464,2,174,bracket,bracketAlpha); c.Rect(1065,464,2,174,bracket,bracketAlpha);
     c.Rect(855,638,56,2,bracket,bracketAlpha); c.Rect(1011,638,56,2,bracket,bracketAlpha);
@@ -118,19 +118,19 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // Exactly the rows the upload refreshes (DynamicTop/DynamicHeight), so the two cannot drift.
     std::fill(c.pixels.begin() + size_t(Width)*DynamicTop*4,
               c.pixels.begin() + size_t(Width)*(DynamicTop+DynamicHeight)*4, 0);
-    // Every readout sits a step further out and up than the reference's own coordinates. The quad now
-    // fills less of the view (PanelWidth), so the display's corners land nearer the middle of what you
-    // see; the clusters are pushed toward the edges so they still read as corners, with a wider gap
-    // left around the centred W-T lever. The focusing brackets below are untouched.
+    // Every readout sits a step further out and up than the reference's own coordinates - 80 px further
+    // out and 10 px up. The quad now fills less of the view (PanelWidth), so the display's corners land
+    // nearer the middle of what you see; the clusters are pushed toward the edges so they still read as
+    // corners, with a wider gap left around the centred W-T lever. The focusing brackets are untouched.
     // Record light and REC, top-left corner of the display.
-    for (int y = 80; y < 120; ++y) for (int x = 74; x < 115; ++x) {
-        const float d = std::sqrt((x-94.0f)*(x-94.0f) + (y-99.5f)*(y-99.5f));
+    for (int y = 80; y < 120; ++y) for (int x = 34; x < 75; ++x) {
+        const float d = std::sqrt((x-54.5f)*(x-54.5f) + (y-99.5f)*(y-99.5f));
         const float coverage = Unit(19.5f-d);
         c.Pixel(x,y,255,0,0,uint8_t(coverage*255));
     }
-    text(c,119,72,46,true,"REC",255,0,0);
+    text(c,79,72,46,true,"REC",255,0,0);
     char time[12]; Timecode(s.recordingSeconds, time);
-    text(c,270,80,34,true,time,255,0,0);
+    text(c,230,80,34,true,time,255,0,0);
     // Zoom lever: W (wide) on the left, T (tele) on the right, centred in the display.
     text(c,747,78,44,false,"W",200,200,200);
     text(c,1117,78,44,false,"T",200,200,200);
@@ -147,20 +147,20 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // and around the gauge gives both their outline back without making them heavier. Four neighbours
     // rather than eight: the count is redrawn every frame and each extra pass is a full glyph blit.
     const int rimX[4] = { -1, 1, 0, 0 }, rimY[4] = { 0, 0, -1, 1 };
-    for (int i = 0; i < 4; ++i) text(c, 1544 + rimX[i], 81 + rimY[i], 25, true, count, 0, 0, 0);
-    text(c,1544,81,25,true,count,210,210,210);
+    for (int i = 0; i < 4; ++i) text(c, 1584 + rimX[i], 81 + rimY[i], 25, true, count, 0, 0, 0);
+    text(c,1584,81,25,true,count,210,210,210);
     // Terminal faces left, as in the supplied reference. Continuous charge, no 4-bar quantization.
-    c.Outline(1637,84,13,24,2,0);                       // rim around the terminal tab
-    c.Rect(1639,86,9,20,200);                           // the terminal itself
-    c.Outline(1644,70,178,52,2,0);                      // rim around the gauge body
-    c.Outline(1646,72,170,48,5,200);                    // the gauge body
-    c.Rect(1644,91,5,10,0);
+    c.Outline(1677,84,13,24,2,0);                       // rim around the terminal tab
+    c.Rect(1679,86,9,20,200);                           // the terminal itself
+    c.Outline(1684,70,178,52,2,0);                      // rim around the gauge body
+    c.Outline(1686,72,170,48,5,200);                    // the gauge body
+    c.Rect(1684,91,5,10,0);
     const float charge = Unit(s.energy);
     // Preserve the large gauge's low-charge warning (one bar or less), with a continuous fill.
     const bool low = std::ceil(charge*4.0f-0.05f) <= 1;
     for (int y = 0; y < 24; ++y) for (int x = 0; x < int(142*charge); ++x) {
         const uint8_t shade = uint8_t(215-35*y/23);
-        c.Pixel(1663+x,84+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
+        c.Pixel(1703+x,84+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
     }
 }
 }
