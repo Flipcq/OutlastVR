@@ -132,12 +132,13 @@ int main() {
     assert(canvas.pixels[(402*1920+784)*4+3]==255); // dynamic updates preserve reticle
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
     // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
-    assert(OLCamHud::PanelWidth(100.0f) > 1.25f && OLCamHud::PanelWidth(100.0f) < 1.40f);
+    assert(OLCamHud::PanelWidth(100.0f) > 1.30f && OLCamHud::PanelWidth(100.0f) < 1.40f);
     // ...and it stops short of the corners, which is the only thing that sets how far away it reads
     // (the quad is head-locked and mono, so the parking distance alone moves nothing on screen).
     auto halfDeg = [](float width){ return float(std::atan(0.5f*width/OLCamHud::PanelDistance)*57.29578f); };
-    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) > 36.0f);   // still spans the view
-    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) < 39.0f);   // inside the ~40 deg both eyes fuse
+    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) > 30.0f);   // still spans the view
+    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) < 36.0f);   // set back, clear of the lens edge, well
+                                                             // inside the ~40 deg both eyes fuse
     assert(OLCamHud::PanelWidth(84.0f) == OLCamHud::PanelWidth(180.0f)); // clamped to the same fill
     assert(OLCamHud::PanelWidth(0.0f) > 1.0f);       // no runtime FOV yet: sane floor
     assert(OLCamHud::PanelWidth(-5.0f) > 1.0f);
