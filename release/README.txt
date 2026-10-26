@@ -74,9 +74,9 @@ QUEST 3 CONTROLS
   Stick click: sprint                      Stick click: night vision
   Grip (hold): sprint; on a ledge or       Grip at your right hip: take the
     a handle: hold on                        camcorder (see HANDS below);
-  X: use / open / pick up                    on a ledge or a handle: hold on
+  X: crouch / drop                          on a ledge or a handle: hold on
   Y: reload the camcorder battery          A: jump, climb, vault
-  Trigger: lean left / look back           B: crouch
+  Trigger: lean left / look back           B: use / open / close / pick up
   Menu: pause                              Trigger: lean right / look back
                                            Meta button: the headset's menu
   Left grip + X: notes
@@ -90,6 +90,11 @@ QUEST 3 CONTROLS
 
   In the game's menus (pause, notebook, notes): the left stick moves, A picks,
   B goes back.
+
+  During gameplay, B uses the left mouse input. Keep interaction bound to Left
+  Mouse Button in the game's settings. Menu controls and left grip shortcuts
+  keep their original bindings. Set [Input] MouseUse=0 in outlastvr.ini to
+  restore X for use and B for crouch. The control images show the old layout.
 
 --------------------------------------------------------------------------------
 HANDS
@@ -114,15 +119,15 @@ HANDS
     controls" GRIP BUTTON: squeeze the right grip once to raise the camcorder
     and again to lower it. You look through it with your head, so your hand
     can rest anywhere. (The right grip then does not grab doors or edges -
-    use your left hand or X.)
+    use your left hand or B.)
 
   DOORS
     Doors are heavy. Push one with your open hand and it swings as far as you
     push: a slow push creeps it open, a shove swings it on a little before it
     slows. Or put your hand on the handle, squeeze the grip and swing it open
-    or shut - let go mid-swing and it carries on. Locked doors buzz. X still
+    or shut - let go mid-swing and it carries on. Locked doors buzz. B still
     opens doors in one press. A door you open with your hands is opened for
-    the game too: whatever waits behind it happens, just as with X.
+    the game too: whatever waits behind it happens, just as with B.
 
   CLIMBING
     Your hands carry Miles. Squeeze a grip on an edge you can climb or on a
@@ -132,7 +137,7 @@ HANDS
     edge to your chest and he hauls himself over onto the top. At the top of
     a ladder, keep pulling and he steps off onto the floor. Let go of
     everything and he drops - except on a ladder: let go part-way up and Miles
-    holds on until you take a rung again (B drops him). Walk right up to a
+    holds on until you take a rung again (X drops him). Walk right up to a
     ladder and take its rungs, or walk into it and the game climbs it its own
     way. A still climbs the game's way.
     (VR SETTINGS: "Climbing" GUIDED = the game's own climb, played only as
@@ -144,7 +149,7 @@ HANDS
     Your arms stay yours while Miles jumps, falls, lands and vaults.
 
   The game's own hints name these controls ("Grab the handle to open, or
-  press X", "hold down the left grip") instead of Xbox buttons.
+  press B", "hold down the left grip") instead of Xbox buttons.
 
 --------------------------------------------------------------------------------
 SETTINGS

@@ -53,6 +53,9 @@ enum {
 };
 extern "C" int OLXR_MotionControlsReady();
 extern "C" int OLXR_GetPad(OLXrPad* out);      // 1 = out filled with a coherent one-frame snapshot
+// MouseUse=1: gameplay B uses left mouse, X crouches; menus/chords stay native.
+extern "C" int OLProxy_MouseUseEnabled();
+extern "C" void OLProxy_MouseUseSample(unsigned buttons, float gripL, int focused);
 extern "C" long OLXR_RecenterGeneration();     // increments after each completed XR recenter
 
 // [HANDSYNC] Both hands and the RAW (unclamped) head position, located at the SAME predicted

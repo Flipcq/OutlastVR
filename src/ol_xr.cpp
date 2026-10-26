@@ -923,14 +923,14 @@ static void DevFakeHands(OLXrPose hand[2], unsigned* valid, XrTime t) {
 // Sync + publish. WORKER THREAD ONLY, once per xrWaitFrame. The whole struct is built locally
 // and copied under the lock in one go, so the game thread can never see a half-updated pad.
 static void SyncInput(XrTime displayTime) {
-    if (!g_inputReady || !g_fn.syncActions) return;
+    if (!g_inputReady || !g_fn.syncActions) { OLProxy_MouseUseSample(0, 0, 0); return; }
     XrActiveActionSet aas = {}; aas.actionSet = g_actionSet; aas.subactionPath = XR_NULL_PATH_VALUE;
     XrActionsSyncInfo si = {}; si.type = XR_TYPE_ACTIONS_SYNC_INFO_VALUE;
     si.countActiveActionSets = 1; si.activeActionSets = &aas;
     const XrResult r = g_fn.syncActions(g_session, &si);
     // XR_SESSION_NOT_FOCUSED is normal and frequent (dashboard up, app in the background) - it
     // is not an error, it just means every action reads inactive this frame.
-    if (!XrSucceeded(r)) return;
+    if (!XrSucceeded(r)) { OLProxy_MouseUseSample(0, 0, 0); return; }
 
     OLXrPad p = {};
     ReadStick(g_aMove, 0, &p.moveX, &p.moveY);
@@ -1024,6 +1024,7 @@ static void SyncInput(XrTime displayTime) {
         if (GetTickCount64() < g_devStickUntil) { p.moveX = g_devStick[0]; p.moveY = g_devStick[1]; p.lookX = g_devStick[2]; p.lookY = g_devStick[3]; }
     }
 
+    OLProxy_MouseUseSample(p.buttons, p.gripL, r == XR_SUCCESS_VALUE);
     AcquireSRWLockExclusive(&g_pubLock);
     g_padPub = p; g_padPubValid = 1;
     ReleaseSRWLockExclusive(&g_pubLock);
@@ -1741,6 +1742,7 @@ static void PollEvents() {
         if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED_VALUE) {
             auto* ss = reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
             InterlockedExchange(&g_sessionState, (LONG)ss->state);
+            if (ss->state != XR_SESSION_STATE_FOCUSED_VALUE) OLProxy_MouseUseSample(0, 0, 0);
             XLOG("[OLVR][XRSTATE] session state -> %d (%s)", ss->state, SessionStateName(ss->state));
             if (ss->state == XR_SESSION_STATE_READY_VALUE) {
                 XrSessionBeginInfo sbi = {}; sbi.type = XR_TYPE_SESSION_BEGIN_INFO_VALUE;
@@ -5475,13 +5477,14 @@ static DWORD WINAPI WorkerMain(LPVOID) {
         // runtime is not. Present going quiet is also exactly what a shutdown looks like from
         // here, and if it resumes - a long load, a hitch - playback simply picks back up.
         const DWORD quiet = NowMs() - g_lastPresentMs;
-        if (g_lastPresentMs && quiet > 2000) { Sleep(50); continue; }
+        if (g_lastPresentMs && quiet > 2000) { OLProxy_MouseUseSample(0, 0, 0); Sleep(50); continue; }
         PollEvents();
         if (g_dead) break;
-        if (!g_running) { Sleep(10); continue; }
+        if (!g_running) { OLProxy_MouseUseSample(0, 0, 0); Sleep(10); continue; }
         ConsumeUpload();
-        if (!RunXrFrame(nullptr, g_conSeq != 0)) Sleep(20);
+        if (!RunXrFrame(nullptr, g_conSeq != 0)) { OLProxy_MouseUseSample(0, 0, 0); Sleep(20); }
     }
+    OLProxy_MouseUseSample(0, 0, 0);
     return 0;
 }
 
