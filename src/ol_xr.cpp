@@ -18,6 +18,7 @@
 
 #include "ol_xr_types.h"
 #include "ol_xr.h"
+#include "ol_camcorder_hud.h"
 #include <d3d9.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -3398,10 +3399,117 @@ static bool EnsureBrandScene() {
 // Developer aid only ([Motion] DevMarkers).
 static const int kMarkerTex = 64, kMaxMarkers = 16;
 static const int kLabelW = 512, kLabelH = 160;
-// (Beta 1.1) [BATGAUGE] five battery pictures (0..4 bars) and the digits 0..9, in two rows under the labels
-static const int kBatW = 96, kBatH = 48, kDigW = 32, kDigH = 48;
-static int g_batRect[5][4] = {}, g_digRect[10][4] = {};
-extern "C" int OLInteract_BatteryGauge(float* energy, int* spares);
+// [CAMHUD] One head-locked transparent layer replaces the old two battery quads.
+// Cache font coverage once; only the top readout band changes as the game's readouts change.
+extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state);
+extern "C" void OLInteract_CamcorderHudSubmitted(int shown);
+struct HudText {
+    struct Glyph { char ch; int size; bool bold; int advance; std::vector<uint8_t> alpha; };
+    std::vector<Glyph> glyphs;
+    bool ok = true;
+    const Glyph& Get(char ch, int size, bool bold) {
+        for (const auto& g : glyphs) if (g.ch == ch && g.size == size && g.bold == bold) return g;
+        Glyph g = { ch, size, bold, size / 2, std::vector<uint8_t>(96*72, 0) };
+        BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = 96; bi.bmiHeader.biHeight = -72;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        void* bits = nullptr;
+        HDC dc = CreateCompatibleDC(nullptr);
+        HBITMAP bmp = dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+        HFONT font = CreateFontW(-size,0,0,0,bold ? FW_BOLD : FW_NORMAL,0,0,0,DEFAULT_CHARSET,
+            OUT_TT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH|FF_SWISS,L"Arial");
+        if (dc && bmp && bits && font) {
+            HGDIOBJ oldBmp = SelectObject(dc,bmp), oldFont = SelectObject(dc,font);
+            memset(bits,0,96*72*4); SetBkMode(dc,TRANSPARENT); SetTextColor(dc,RGB(255,255,255));
+            const wchar_t letter = (wchar_t)ch; SIZE extent = {};
+            if (!TextOutW(dc,0,0,&letter,1) || !GetTextExtentPoint32W(dc,&letter,1,&extent)) ok = false;
+            GdiFlush(); g.advance = extent.cx;
+            for (int i=0; i<96*72; ++i) g.alpha[i] = ((uint8_t*)bits)[i*4];
+            SelectObject(dc,oldFont); SelectObject(dc,oldBmp);
+        } else ok = false;
+        if (font) DeleteObject(font);
+        if (bmp) DeleteObject(bmp);
+        if (dc) DeleteDC(dc);
+        glyphs.push_back(g); return glyphs.back();
+    }
+    void operator()(OLCamHud::Canvas& canvas,int x,int y,int size,bool bold,const char* str,
+                    uint8_t r,uint8_t green,uint8_t b) {
+        for (; *str; ++str) {
+            const Glyph& g = Get(*str,size,bold);
+            for (int yy=0; yy<72; ++yy) for (int xx=0; xx<96; ++xx)
+                if (g.alpha[yy*96+xx]) canvas.Pixel(x+xx,y+yy,r,green,b,g.alpha[yy*96+xx]);
+            x += g.advance;
+        }
+    }
+};
+static XrSwapchain g_hudSc = 0;
+static std::vector<XrSwapchainImageD3D11KHR> g_hudImages;
+static std::vector<bool> g_hudInitialized;
+static OLCamHud::Canvas g_hudCanvas;
+static HudText g_hudText;
+static bool g_hudFailed = false;
+static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLayerQuad& q) {
+    if (g_hudFailed) return false;
+    if (!g_hudSc) {
+        XrSwapchainCreateInfo ci = {}; ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO_VALUE;
+        ci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT_VALUE | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT_VALUE;
+        ci.format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        ci.sampleCount = 1; ci.width = OLCamHud::Width; ci.height = OLCamHud::Height;
+        ci.faceCount = ci.arraySize = ci.mipCount = 1;
+        if (!XrSucceeded(g_fn.createSwapchain(g_session,&ci,&g_hudSc))) {
+            g_hudSc = 0; g_hudFailed = true;
+            XLOG("[OLVR][CAMHUD] swapchain creation failed; original display retained"); return false;
+        }
+        uint32_t n = 0;
+        if (!XrSucceeded(g_fn.enumerateSwapchainImages(g_hudSc,0,&n,nullptr)) || !n) {
+            g_hudFailed = true; return false;
+        }
+        g_hudImages.resize(n);
+        for (auto& im : g_hudImages) { im.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR_VALUE; }
+        if (!XrSucceeded(g_fn.enumerateSwapchainImages(g_hudSc,n,&n,
+            (XrSwapchainImageBaseHeader*)g_hudImages.data()))) { g_hudFailed = true; return false; }
+        g_hudInitialized.assign(n,false);
+        OLCamHud::Static(g_hudCanvas,g_hudText);
+        XLOG("[OLVR][CAMHUD] procedural 1920x1080 HUD ready");
+    }
+    OLCamHud::Top(g_hudCanvas,state,g_hudText);
+    if (!g_hudText.ok) { g_hudFailed = true; return false; }
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
+    if (!XrSucceeded(g_fn.acquireSwapchainImage(g_hudSc,&ai,&index))) return false;
+    XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE;
+    wi.timeout = XR_INFINITE_DURATION_VALUE;
+    if (!XrSucceeded(g_fn.waitSwapchainImage(g_hudSc,&wi))) {
+        // Do not release an image whose wait failed. Stand down until session teardown.
+        g_hudFailed = true; return false;
+    }
+    D3D11_BOX box = {0,OLCamHud::DynamicTop,0,OLCamHud::Width,
+        OLCamHud::DynamicTop+OLCamHud::DynamicHeight,1};
+    const uint8_t* pixels = g_hudCanvas.pixels.data();
+    if (g_hudInitialized[index]) pixels += size_t(OLCamHud::Width)*OLCamHud::DynamicTop*4;
+    g_ctx->UpdateSubresource(g_hudImages[index].texture,0,g_hudInitialized[index] ? &box : nullptr,
+        pixels,OLCamHud::Width*4,0);
+    g_hudInitialized[index] = true;
+    XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
+    if (!XrSucceeded(g_fn.releaseSwapchainImage(g_hudSc,&ri))) { g_hudFailed = true; return false; }
+    q.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
+    q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT_VALUE |
+        XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT_VALUE;
+    q.space = g_viewSpace; q.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
+    q.subImage.swapchain = g_hudSc;
+    q.subImage.imageRect.extent = {OLCamHud::Width,OLCamHud::Height};
+    q.pose = IdentityPose(); q.pose.position.z = -OLCamHud::PanelDistance;
+    // The reference artwork is a fullscreen display, not a panel: size the quad from this headset's
+    // own field of view so the readouts land in the corners like the reference instead of growing
+    // into a tight cluster in front of the face - stopping just short of the edges, which is what
+    // makes the display read as set back rather than pressed against the lenses.
+    float hmdFovX = 0.0f;
+    OLXR_GetHmdFovDeg(&hmdFovX, nullptr);
+    q.size.width = OLCamHud::PanelWidth(hmdFovX);
+    q.size.height = q.size.width * OLCamHud::Height / OLCamHud::Width;
+    return true;
+}
+
 static XrSwapchain g_mkAtlas = 0;                    // every ring, glow and label in one image
 static int g_mkRect[OLMK_COUNT][4] = {};              // x, y, w, h inside it
 static bool g_mkTried = false, g_mkReady = false;
@@ -3511,16 +3619,7 @@ static bool EnsureMarkers() {
         { L"RECENTER",           L"click both thumbsticks",     false } };
     // One atlas for everything (Test38: 18 separate swapchains were more than SteamVR would create):
     // the rings and glows side by side in the top 64-pixel row, the labels stacked below it.
-    // (Beta 1.1) [BATGAUGE] then a row of battery pictures and a row of digits.
-    const int labelsEnd = kMarkerTex + (OLMK_COUNT - OLMK_L_TAKE_CAM) * kLabelH;
-    // (Beta 1.2) [BATGAUGE] Two blank rows above the battery pictures and again between the pictures and
-    // the digits. The how-to label in the row directly above ends on its arrow's very last pixel, and with
-    // no opaque plate behind the cell a bilinear sample at the top edge of the quad could pick that up as a
-    // white sliver sitting over the gauge. A margin of transparent texels means nothing above can reach it.
-    const int kBatPad = 2;
-    const int batY = labelsEnd + kBatPad;
-    const int digY = batY + kBatH + kBatPad;
-    const int AW = kLabelW, AH = digY + kDigH;
+    const int AW = kLabelW, AH = kMarkerTex + (OLMK_COUNT - OLMK_L_TAKE_CAM) * kLabelH;
     std::vector<uint8_t> atlas((size_t)AW * AH * 4, 0), px;
     for (int c = 0; c < OLMK_COUNT; ++c) {
         int tw = kMarkerTex, th = kMarkerTex, ox = 0, oy = 0;
@@ -3554,59 +3653,6 @@ static bool EnsureMarkers() {
         }
         for (int y = 0; y < th; ++y) memcpy(&atlas[(((size_t)(oy + y)) * AW + ox) * 4], &px[(size_t)y * tw * 4], (size_t)tw * 4);
         g_mkRect[c][0] = ox; g_mkRect[c][1] = oy; g_mkRect[c][2] = tw; g_mkRect[c][3] = th;
-    }
-    {   // (Beta 1.1) [BATGAUGE] the camcorder's battery: an outlined cell with its terminal, 0..4 bars inside
-        // (white; red when one bar or none is left). Then 7-segment digits. No plate behind either: the
-        // gauge floats over the game with nothing but its own white lines, so there is no dark rectangle
-        // hanging low in the view where the game's picture should be.
-        auto put = [&](int x, int y, float b, float g, float r, float a) {
-            if (x < 0 || y < 0 || x >= AW || y >= AH) return;
-            uint8_t* p = &atlas[((size_t)y * AW + x) * 4];
-            p[0] = (uint8_t)b; p[1] = (uint8_t)g; p[2] = (uint8_t)r; p[3] = (uint8_t)(a * 255.0f + 0.5f);
-        };
-        for (int s = 0; s < 5; ++s) {
-            const int ox = s * kBatW, oy = batY;
-            const bool low = s <= 1;
-            for (int y = 0; y < kBatH; ++y) for (int x = 0; x < kBatW; ++x) {
-                float a = 0.0f, cb = 0, cg = 0, cr = 0;                             // nothing behind the cell
-                const bool body = x >= 8 && x < kBatW - 16 && y >= 8 && y < kBatH - 8;
-                const bool bodyIn = x >= 12 && x < kBatW - 20 && y >= 12 && y < kBatH - 12;
-                const bool nub = x >= kBatW - 16 && x < kBatW - 9 && y >= 17 && y < kBatH - 17;
-                if ((body && !bodyIn) || nub) { cb = cg = cr = 240; a = 1.0f; }
-                if (bodyIn) {
-                    const int inner = (kBatW - 20) - 12 - 4;                        // 4 bars with 4 px gaps
-                    const int bw = (inner - 3 * 4) / 4;
-                    const int rel = x - 14;
-                    const int bar = rel / (bw + 4), within = rel % (bw + 4);
-                    if (y >= 14 && y < kBatH - 14 && rel >= 0 && bar < s && within < bw) {
-                        if (low) { cb = 60; cg = 60; cr = 255; } else { cb = 235; cg = 245; cr = 235; }
-                        a = 1.0f;
-                    }
-                }
-                put(ox + x, oy + y, cb, cg, cr, a);
-            }
-            g_batRect[s][0] = ox; g_batRect[s][1] = oy; g_batRect[s][2] = kBatW; g_batRect[s][3] = kBatH;
-        }
-        // 7 segments: a top, b top-right, c bottom-right, d bottom, e bottom-left, f top-left, g middle
-        static const uint8_t kSeg[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
-        for (int d = 0; d < 10; ++d) {
-            const int ox = d * kDigW, oy = digY;
-            for (int y = 0; y < kDigH; ++y) for (int x = 0; x < kDigW; ++x) {
-                const int L = 7, Rr = kDigW - 8, T = 7, M = kDigH / 2, B = kDigH - 8, t = 2;
-                bool on = false;
-                const uint8_t m = kSeg[d];
-                if ((m & 0x01) && y >= T - t && y <= T + t && x >= L && x <= Rr) on = true;
-                if ((m & 0x02) && x >= Rr - t && x <= Rr + t && y >= T && y <= M) on = true;
-                if ((m & 0x04) && x >= Rr - t && x <= Rr + t && y >= M && y <= B) on = true;
-                if ((m & 0x08) && y >= B - t && y <= B + t && x >= L && x <= Rr) on = true;
-                if ((m & 0x10) && x >= L - t && x <= L + t && y >= M && y <= B) on = true;
-                if ((m & 0x20) && x >= L - t && x <= L + t && y >= T && y <= M) on = true;
-                if ((m & 0x40) && y >= M - t && y <= M + t && x >= L && x <= Rr) on = true;
-                if (on) put(ox + x, oy + y, 240, 240, 240, 1.0f);
-                else    put(ox + x, oy + y, 0, 0, 0, 0.0f);                          // lit segments only
-            }
-            g_digRect[d][0] = ox; g_digRect[d][1] = oy; g_digRect[d][2] = kDigW; g_digRect[d][3] = kDigH;
-        }
     }
     XrSwapchainCreateInfo ci = {}; ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO_VALUE;
     ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT_VALUE | XR_SWAPCHAIN_USAGE_SAMPLED_BIT_VALUE;
@@ -5350,34 +5396,13 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         }
     }
 
-    // (Beta 1.1) [BATGAUGE] the camcorder is up: its battery, large, low in the view (head-locked), with the
-    // spare batteries beside it. Over the stereo picture and over the zoomed viewfinder alike.
-    XrCompositionLayerQuad batQuad[2] = {};
-    {
-        float energy = 1.0f; int spares = 0;
-        if (fs.shouldRender && !g_screenOn && !blackOnly && layerCount > 0 && layerCount < 18 &&
-            OLInteract_BatteryGauge(&energy, &spares) && EnsureMarkers() && g_mkAtlas) {
-            int bars = (int)ceilf(energy * 4.0f - 0.05f);
-            if (bars < 0) bars = 0; if (bars > 4) bars = 4;
-            if (spares < 0) spares = 0; if (spares > 9) spares = 9;
-            const float w = 0.066f, h = w * (float)kBatH / (float)kBatW;      // metres, at 0.55 m: ~7 deg wide (was 0.075)
-            for (int k = 0; k < 2; ++k) {
-                XrCompositionLayerQuad& q = batQuad[k];
-                q.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
-                q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT_VALUE |
-                               XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT_VALUE;
-                q.space = g_viewSpace; q.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
-                q.subImage.swapchain = g_mkAtlas; q.subImage.imageArrayIndex = 0;
-                const int* rc = k == 0 ? g_batRect[bars] : g_digRect[spares];
-                q.subImage.imageRect.offset = { rc[0], rc[1] }; q.subImage.imageRect.extent = { rc[2], rc[3] };
-                q.pose = IdentityPose();
-                q.pose.position = { k == 0 ? -0.0175f : 0.0325f, -0.150f, -0.55f };
-                q.size.width = k == 0 ? w : h * (float)kDigW / (float)kDigH; q.size.height = h;
-                layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
-            }
-            static ULONGLONG s_batLog = 0; const ULONGLONG t = GetTickCount64();
-            if (t - s_batLog > 10000) { s_batLog = t; XLOG("[OLVR][BATGAUGE] camcorder up: battery %.0f%% (%d bars), %d spare", energy * 100.0f, bars, spares); }
-        }
+    XrCompositionLayerQuad camcorderQuad = {};
+    OLCamcorderHudState camcorderState;
+    bool camcorderShown = false;
+    if (fs.shouldRender && !g_screenOn && !blackOnly && layerCount > 0 && layerCount < 20 &&
+        OLInteract_CamcorderHud(&camcorderState) && CamcorderHudLayer(camcorderState,camcorderQuad)) {
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&camcorderQuad);
+        camcorderShown = true;
     }
 
     // [POSEFREEZE] OLUE3_FrameTick is NOT called here any more - it ages GAME-frame counters
@@ -5397,6 +5422,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
     // result also rides the periodic log below, so a run answers this without a repro recipe.
     const double te = PerfNowMs();
     const XrResult efr = g_fn.endFrame(g_session, &fei);
+    OLInteract_CamcorderHudSubmitted(camcorderShown && XrSucceeded(efr));
     {
         const double de = PerfNowMs() - te;
         AcquireSRWLockExclusive(&g_pfLock); g_pfEnd.Add(de); ReleaseSRWLockExclusive(&g_pfLock);

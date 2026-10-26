@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <math.h>
+#include <cmath>
 #include <share.h>    // _SH_DENYWR for the [CAMPROBE] csv (readable while the game runs)
 #include <tlhelp32.h> // [BONEWATCH] thread enumeration, to set debug registers on every thread
 #include <intrin.h>   // _ReturnAddress for the call-site gate
@@ -4681,6 +4682,89 @@ static bool LS_Call(void* obj, void* fn, void* parms) {
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { if (nat) *nat = was; return false; }
 }
+// [CAMHUD] Field/function names from the Outlast SDK, resolved against the running build:
+// https://github.com/CppBunny/Outlast_SDK/blob/master/SDK_HEADERS/OLGame_classes.hpp
+// Read the existing clock; do not close/pause the movie or change bVisible, since the game's
+// UpdateRecordingTime must keep its own semantics. Only its Flash root alpha is overridden.
+extern "C" int OLUE3_CamcorderHudRead(float* seconds, int* capacity, int hide) {
+    // CamcorderState/menu checks in CamcorderHudTick own visibility, as for the old gauge.
+    // Do not resolve OLCamcorderHud.bVisible: it is a singleton bool, which the shared
+    // mask-voting resolver deliberately rejects. Keep that resolver's safety rule intact.
+    static unsigned myHud = 0, camHud = 0, clock = 0, maxBat = 0;
+    static void* setNumber = nullptr;
+    static void* getNumber = nullptr;
+    static int pathOff = -1, valueOff = -1, getPathOff = -1, resultOff = -1;
+    static ULONGLONG nextTry = 0;
+    static void* hiddenMovie = nullptr;
+    static float originalAlpha = 100;
+    if (!setNumber || !getNumber || !myHud || !camHud || !clock || !maxBat) {
+        const ULONGLONG now = GetTickCount64();
+        if (now < nextTry) return 0;
+        nextTry = now + 3000;
+        OLUE3_FindProp("PlayerController", "myHUD", &myHud, nullptr);
+        OLUE3_FindProp("OLHUD", "CamcorderHUD", &camHud, nullptr);
+        OLUE3_FindProp("OLCamcorderHud", "RecordingTimeSeconds", &clock, nullptr);
+        OLUE3_FindProp("OLPlayerController", "MaxNumBatteries", &maxBat, nullptr);
+        setNumber = LS_FindFunction("GFxMoviePlayer", "SetVariableNumber");
+        getNumber = LS_FindFunction("GFxMoviePlayer", "GetVariableNumber");
+        pathOff = LS_ParamOff(setNumber, "Path"); valueOff = LS_ParamOff(setNumber, "F");
+        getPathOff = LS_ParamOff(getNumber, "Path"); resultOff = LS_ParamOff(getNumber, "ReturnValue");
+        if (!setNumber || !getNumber || !myHud || !camHud || !clock || !maxBat ||
+            pathOff < 0 || pathOff > 48 || valueOff < 0 || valueOff > 60 ||
+            getPathOff < 0 || getPathOff > 48 || resultOff < 0 || resultOff > 60) {
+            char msg[240];
+            std::snprintf(msg,sizeof(msg),"[OLVR][CAMHUD] reflection incomplete: HUD=%X movie=%X clock=%X capacity=%X set=%d get=%d; original display retained",
+                myHud,camHud,clock,maxBat,setNumber != nullptr,getNumber != nullptr);
+            OLProxyLog(msg);
+            setNumber = nullptr;
+            return 0;
+        }
+        OLProxyLog("[OLVR][CAMHUD] game clock, capacity and camcorder movie resolved");
+    }
+    void* pc = OLUE3_PlayerController();
+    void* hud = pc ? ProbeReadPtr((char*)pc + myHud) : nullptr;
+    void* movie = hud ? ProbeReadPtr((char*)hud + camHud) : nullptr;
+    float time = 0; int max = 0;
+    const bool valid = movie && pc && BP_Read((char*)movie + clock, &time, sizeof(time)) &&
+        BP_Read((char*)pc + maxBat, &max, sizeof(max)) &&
+        std::isfinite(time) && time >= 0 && max > 0 && max <= 100;
+    if (!movie) return 0;
+    // Never keep/dereference an old UObject after travel. Operate on the controller's current HUD.
+    if (hiddenMovie != movie) hiddenMovie = nullptr;
+    wchar_t rootAlpha[] = L"_root._alpha";
+    struct ScriptString { wchar_t* data; int count, capacity; };
+    ScriptString path = { rootAlpha, 13, 13 };
+    alignas(8) unsigned char parms[64] = {};
+    if (hide && valid) {
+        if (!hiddenMovie) {
+            memcpy(parms + getPathOff, &path, sizeof(path));
+            if (!LS_Call(movie, getNumber, parms)) return 0;
+            memcpy(&originalAlpha, parms + resultOff, sizeof(originalAlpha));
+            if (!std::isfinite(originalAlpha) || originalAlpha <= 0) {
+                static ULONGLONG lastAlphaLog = 0;
+                if (GetTickCount64() - lastAlphaLog > 5000) {
+                    lastAlphaLog = GetTickCount64();
+                    OLProxyLog("[OLVR][CAMHUD] camcorder root alpha unavailable; original display retained");
+                }
+                return 0;
+            }
+        }
+        memset(parms, 0, sizeof(parms));
+        memcpy(parms + pathOff, &path, sizeof(path));
+        const float alpha = 0; memcpy(parms + valueOff, &alpha, sizeof(alpha));
+        if (!LS_Call(movie, setNumber, parms)) return 0;
+        hiddenMovie = movie;
+    } else if (hiddenMovie) {
+        memcpy(parms + pathOff, &path, sizeof(path));
+        memcpy(parms + valueOff, &originalAlpha, sizeof(originalAlpha));
+        if (!LS_Call(movie, setNumber, parms)) return 0;
+        hiddenMovie = nullptr;
+    }
+    if (!valid) return 0;
+    *seconds = time; *capacity = max;
+    return 1;
+}
+
 // a function's parameters, for the log
 static void LS_LogParams(const char* cls, const char* fn) {
     char l[300], nm[64], kn[64];
@@ -5729,20 +5813,26 @@ static volatile long g_hiResOn = 0, g_hiResHookOk = 0;
 static volatile long g_hiResW = 3456, g_hiResH = 1824;   // whole SBS backbuffer (both eyes)
 static volatile long g_hiResEyeW = 1728, g_hiResEyeH = 1824;
 static float g_hiResScale = 1.0f;
+static bool g_autoEyeResolution = true;
 static volatile long g_hiResAppliedW = 0, g_hiResAppliedH = 0;
 extern "C" int OLUE3_HiResActive() { return (g_hiResOn && g_hiResHookOk) ? 1 : 0; }
 extern "C" int OLUE3_HiResApplied() {
     return (g_hiResAppliedW == g_hiResW && g_hiResAppliedH == g_hiResH) ? 1 : 0;
 }
 static void HiResRecompute() {
-    float s = g_hiResScale; if (!(s >= 0.4f)) s = 0.4f; if (s > 1.5f) s = 1.5f;
+    // Manual dimensions are the final render size; RenderScale only affects AUTO.
+    float s = g_autoEyeResolution ? g_hiResScale : 1.0f;
+    if (!(s >= 0.4f)) s = 0.4f;
+    if (s > 1.5f) s = 1.5f;
     long w = (long)(g_hiResEyeW * s + 0.5f) & ~7L, h = (long)(g_hiResEyeH * s + 0.5f) & ~7L;
-    if (w < 480) w = 480; if (h < 480) h = 480;
+    if (w < 480) w = 480;
+    if (h < 480) h = 480;
     g_hiResW = w * 2; g_hiResH = h;
 }
 // The runtime's recommended per-eye size, once the XR session knows it. Returns 1 if the target
 // changed (the caller then nudges the engine to re-run its resize).
 extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH) {
+    if (!g_autoEyeResolution) return 0;
     if (eyeW < 480 || eyeH < 480 || eyeW > 4096 || eyeH > 4096) return 0;
     if ((long)eyeW == g_hiResEyeW && (long)eyeH == g_hiResEyeH) return 0;
     g_hiResEyeW = (long)eyeW; g_hiResEyeH = (long)eyeH;
@@ -5751,9 +5841,12 @@ extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH) {
     OLProxyLog(l);
     return 1;
 }
+extern "C" int OLUE3_AutoEyeResolution() { return g_autoEyeResolution ? 1 : 0; }
 extern "C" float OLUE3_GetRenderScale() { return g_hiResScale; }
 extern "C" int OLUE3_SetRenderScale(float s) {
-    if (!(s >= 0.4f)) s = 0.4f; if (s > 1.5f) s = 1.5f;
+    if (!g_autoEyeResolution) return 0;
+    if (!(s >= 0.4f)) s = 0.4f;
+    if (s > 1.5f) s = 1.5f;
     if (fabsf(s - g_hiResScale) < 0.001f) return 0;
     g_hiResScale = s; HiResRecompute();
     return 1;
@@ -6626,11 +6719,20 @@ static void ReadConfig() {
     g_armSmoothDt = GetPrivateProfileIntW(L"Stage3", L"ArmSmoothDt", 0, ini) ? 1 : 0;
     // [HIRES] missing keys = the old desktop-sized render
     g_hiResOn = GetPrivateProfileIntW(L"Render", L"HighResRender", 0, ini) ? 1 : 0;
+    g_autoEyeResolution = GetPrivateProfileIntW(L"Render", L"AutoEyeResolution", 1, ini) != 0;
     g_hiResEyeW = (long)GetPrivateProfileIntW(L"Render", L"EyeWidth", 1728, ini);
     g_hiResEyeH = (long)GetPrivateProfileIntW(L"Render", L"EyeHeight", 1824, ini);
+    // Bound ini input before multiplying or converting it to render-target dimensions.
+    if (g_hiResEyeW < 480) g_hiResEyeW = 480;
+    if (g_hiResEyeW > 4096) g_hiResEyeW = 4096;
+    if (g_hiResEyeH < 480) g_hiResEyeH = 480;
+    if (g_hiResEyeH > 4096) g_hiResEyeH = 4096;
     { wchar_t rv[32]; GetPrivateProfileStringW(L"Render", L"RenderScale", L"1.0", rv, 32, ini);
       g_hiResScale = (float)_wtof(rv); }
     HiResRecompute();
+    { char l[180]; sprintf_s(l, "[OLVR][HIRES] resolution mode=%s, initial target %ldx%ld per eye",
+                            g_autoEyeResolution ? "AUTO (OpenXR)" : "MANUAL", g_hiResW / 2, g_hiResH);
+      OLProxyLog(l); }
     g_lookUse = GetPrivateProfileIntW(L"Input", L"LookToUse", 0, ini);   // [LOOKUSE] missing = off
     if (g_lookUse < 0 || g_lookUse > 2) g_lookUse = 0;
     // [COMFORT] Missing keys = off = the previous camera exactly.

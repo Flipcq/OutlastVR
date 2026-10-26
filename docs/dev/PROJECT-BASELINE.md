@@ -328,9 +328,10 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   - Cost on the null HMD: render thread ~3-5% while capturing. Dev: `lenssnap <name>`, `livescreen on|off`.
   - The texture-swap approach (Screen_camera / camerahud D3D pointers) is dead: Screen_camera has no GPU
     texture, CameraScreen_INST's graph is stripped. Its dev ops (ls*) remain for research.
-- Zoom (`MapPadButtons`): only a dominant up/down push (|y| > 0.6 and > 2|x|) zooms; released below 0.35 or
-  when x dominates. `[VIEWFINDER]` fills the view (quad sized to the eye frustum x1.03) unless
-  [Motion] ViewfinderFrame=1.
+- Zoom (`MapPadButtons`): a mostly-vertical push (|y| > 0.45 and |y| > |x|) zooms; released below
+  0.25 or when x dominates. The first rule (|y| > 0.6 and > 2|x|) never fired on an ordinary push, so
+  the camcorder zoom looked dead and the W-T bar never moved. `[VIEWFINDER]` fills the view (quad sized
+  to the eye frustum x1.03) unless [Motion] ViewfinderFrame=1.
 - Vault fix: guided pacing (`paceable`) only for climbs the hands started (`s_climbByHands`); a sprint vault
   with the left grip held (sprint) froze mid-move.
 - `[ASYNCLOG]` the log is buffered and written by a thread every 200 ms, lines prefixed with seconds since
@@ -349,3 +350,46 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
 - Dev: `con <console command>` (PlayerController.ConsoleCommand, e.g. `scale set DynamicShadows False`;
   `scale set ScreenPercentage` kills the game), `mirrorfps N`, `occlskip 0|1`. Null-HMD perf runs: test ini
   PaceToHeadset=0 + OLEngine MaxSmoothedFrameRate=300; scratchpad measure.ps1 `Measure-OL`.
+
+## Beta 1.1.3 changes: camcorder HUD at reference scale
+
+- `[CAMHUD]` is the game's own fullscreen display, not a panel in front of your face. The quad used to be
+  0.60 m wide at 0.45 m (the middle ~67 deg), which made every readout look huge, close and bunched up in
+  the centre. It is now sized from the headset's horizontal FOV (`OLCamHud::PanelWidth`, clamped to 76-84
+  deg) and parked 0.75 m out, so the reference artwork spreads to the corners: REC and the clock top-left,
+  the W-T lever centred, the battery gauge top-right, the HD/AUTO/F2.4 lens markings bottom-left. The clamp
+  stops the corner readouts past ~37 deg, where they would be drawn in one eye only and read as a ghost.
+- The artwork is back on the reference screenshot's own 1920x1080 coordinates (`DynamicTop = 0`, the
+  readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
+- The display sits back from the lenses rather than against them (`PanelDistance` 1.05 m, FOV fill
+  clamped to 60-68 deg): the quad is head-locked and mono, so it has no stereo disparity and its apparent
+  distance comes only from how much of the view it fills - `PanelWidth` scales with `PanelDistance`, so
+  moving the quad on its own changes nothing on screen. It was pushed as far as 1.15 m / 56-64 deg and
+  pulled back one step, which is where it reads best. The physical width stays the reference display's
+  ~1.37 m, and the REC light and battery gauge land at ~32 deg, with clear space around the readouts and
+  well inside the ~40 deg both eyes fuse; the 46 px REC caption is 1.7 deg tall.
+  `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
+- The focusing brackets in the middle of the display are 60% of the reference's box (212x178 instead of
+  354x298, same centre and arm thickness). They are the only bright shape with nothing behind it, so the
+  reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
+  6.4 deg instead of ~13.8 x 11.6. They are drawn at 175 grey instead of the artwork's 190, which read as
+  pure white against the dark scenes and pulled the eye away from the picture.
+- The readouts sit one step further out and higher than the reference's own coordinates - REC/clock 80 px
+  left and 20 px up, the spare count and gauge 80 px right and 20 px up - because the shrinking quad put
+  the display's corners nearer the middle of the view. The brackets stay exactly where they were, which
+  is also what the extra 10 px of lift buys: distance from the box. The gauge's rim now ends 59 px from
+  the display's edge (~30.4 deg of the panel's 31.2).
+- The focusing brackets are opaque, one pixel thin, in 175 grey - a faint grey box rather than a bright
+  one. Translucency is not available on this path: the compositor multiplies the layer's colour by its
+  own alpha despite `XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT`, and a grey box meant to be soft
+  came out black at 200/255 and still dark at 235/255. The test asserts alpha 255, one-pixel strokes and
+  a grey under 200, so the box can neither go dark nor thicken again by accident.
+- Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout has no
+  edge left and vanishes. The spare count gets a 1 px rim (the same string drawn four times, once per
+  neighbour, then in grey) and the gauge a 2 px rim just outside its grey frame, terminal included. The
+  rim is 25 grey, near black but not black: the first cut used 0 and read as a hole cut in the picture.
+  Four passes, not eight: measured 0.34 ms/frame for the rim with the HUD's naive 96x72 glyph blit (the
+  whole top band is 0.54 ms), and it only runs while the camcorder is up.
+- `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
+  can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
+  visible against the track.

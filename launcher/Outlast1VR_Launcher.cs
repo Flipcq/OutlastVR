@@ -3424,6 +3424,7 @@ namespace Outlast1VR
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (vf.DragResolution(Logical(e.Location))) { Invalidate(); return; }
             bool hot = vf.MouseMove(Logical(e.Location));
             Cursor = hot ? Cursors.Hand : Cursors.Default;
         }
@@ -3439,6 +3440,10 @@ namespace Outlast1VR
             Point p = Logical(e.Location);
             int hit = vf.HitTest(p);
             if (vf.Booting && hit != Viewfinder.HitClose && hit != Viewfinder.HitMin) { vf.SkipBoot(); downHit = Viewfinder.HitNone; return; }
+            if (vf.BeginResolutionDrag(p))
+            {
+                downHit = Viewfinder.HitNone; Capture = true; Invalidate(); return;
+            }
             if (hit == Viewfinder.HitNone)
             {
                 downHit = Viewfinder.HitNone;
@@ -3454,9 +3459,19 @@ namespace Outlast1VR
         {
             base.OnMouseUp(e);
             if (e.Button != MouseButtons.Left) return;
+            if (vf.EndResolutionDrag(Logical(e.Location)))
+            {
+                downHit = Viewfinder.HitNone; Capture = false; Invalidate(); return;
+            }
             int hit = vf.HitTest(Logical(e.Location));
             if (hit != Viewfinder.HitNone && hit == downHit) vf.Click(hit);
             downHit = Viewfinder.HitNone;
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (!Capture && vf != null) { vf.CancelResolutionDrag(); Invalidate(); }
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)

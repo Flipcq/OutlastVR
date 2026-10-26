@@ -1966,13 +1966,16 @@ static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
     }
     if (!chord && (shift || (buttons & OLXR_BTN_LSTICK))) b |= 0x0100; // grip or L3 = sprint
     b = ReliablePadButtons(b, resetFace);
-    // camera up: right stick up = zoom in, down = zoom out. (Test46) Only a clearly up/down push zooms:
-    // a turn is never a perfectly level push, and "with the camcorder on I accidentally zoom when I turn".
+    // camera up: right stick up = zoom in, down = zoom out. (Test46) A turn is never a perfectly
+    // level push, so the zoom needs a mostly-vertical stick - but the first rule (|y| > 0.60 AND
+    // |y| > 2|x|) was so tight that an ordinary push never engaged and the zoom looked dead (the
+    // W-T bar never moved). Half deflection and "more vertical than horizontal" is still a
+    // deliberate push and still cannot fire while turning, where |x| dominates.
     static int s_zoom = 0;
     if (g_camcorderUp) {
         const float ax = fabsf(p.lookX), ay = fabsf(p.lookY);
-        if (s_zoom == 0) { if (ay > 0.60f && ay > ax * 2.0f) s_zoom = p.lookY > 0.0f ? 1 : -1; }
-        else if (ay < 0.35f || ax > ay) s_zoom = 0;
+        if (s_zoom == 0) { if (ay > 0.45f && ay > ax) s_zoom = p.lookY > 0.0f ? 1 : -1; }
+        else if (ay < 0.25f || ax > ay) s_zoom = 0;
     } else s_zoom = 0;
     if (s_zoom > 0) b |= 0x0001;
     else if (s_zoom < 0) b |= 0x0002;

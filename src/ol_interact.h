@@ -2,6 +2,7 @@
 // ol_interact.h - [INTERACT] (Test37/38) physical doors, the camcorder's chest holster, raise-to-eye,
 // the VR battery reload, the camcorder viewfinder, how-to labels and the developer markers.
 #include "ol_xr.h"
+#include "ol_camcorder_hud.h"
 
 void OLInteract_Init();                      // reads [Motion] from outlastvr.ini; call once at startup
 void OLInteract_Save(const wchar_t* ini);
@@ -55,10 +56,11 @@ extern "C" void OLInteract_Set(int which, int on);
 extern "C" int  OLInteract_ClimbMode();
 extern "C" void OLInteract_SetClimbMode(int m);
 extern "C" int  OLInteract_CamHold();
-// (Beta 1.1) [BATGAUGE] the camcorder is up: its battery level (0..1) and spare batteries, for the headset gauge
-extern "C" int  OLInteract_BatteryGauge(float* energy, int* spares);
-extern "C" int  OLInteract_GetBatteryGauge();
-extern "C" void OLInteract_SetBatteryGauge(int on);
+// [CAMHUD] coherent game-thread snapshot consumed by the XR compositor.
+extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state);
+extern "C" int OLInteract_GetCamcorderHud();
+extern "C" void OLInteract_SetCamcorderHud(int on);
+extern "C" void OLInteract_CamcorderHudSubmitted(int shown);
 extern "C" void OLInteract_SetCamHold(int m);
 // (Test49) [CAMBUTTON] 1 = the right grip is a camcorder button (raise / lower), the view stays the head's
 extern "C" int  OLInteract_CamButton();

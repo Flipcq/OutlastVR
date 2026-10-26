@@ -102,7 +102,7 @@ static const wchar_t* kKeys[ON_COUNT] = { L"DoorGrab", L"CamcorderRaiseGesture",
 // game's climb, paced by your pull). ClimbWithHands=0 still means the A button. [Motion] CamcorderHold:
 // 4 = free hold (default), 3 = the game's raise pose (Test42).
 static volatile long g_climbMode = 2, g_camHold = 4;   // (Beta 1.1) back to 4: the real-camcorder hold (5) was broken
-static volatile long g_batGauge = 1;        // (Beta 1.1) [BATGAUGE] [Render] CamcorderBatteryGauge
+static volatile long g_camHud = 1;        // [CAMHUD] [Render] CamcorderHud
 // (Test48) [RUNGRIP] the left grip is also sprint. Pushing the left stick, with the left hand down at the hip or
 // waist (0.45 m or more below the head), a fresh squeeze is a sprint, not a hold on the table, counter or railing
 // edge beside you - a hold stops sprint and hands Miles to your hands ("most of the time running ... does not
@@ -180,7 +180,7 @@ void OLInteract_Init() {
     else if (cm == 1 || cm == 2) { g_on[ON_CLIMB] = 1; g_climbMode = cm; }
     else g_climbMode = 2;
     g_camHold = GetPrivateProfileIntW(L"Motion", L"CamcorderHold", 4, ini) == 3 ? 3 : 4;   // (Beta 1.1) a saved 5 means 4
-    g_batGauge = GetPrivateProfileIntW(L"Render", L"CamcorderBatteryGauge", 1, ini) ? 1 : 0;   // (Beta 1.1) [BATGAUGE]
+    OLInteract_SetCamcorderHud(GetPrivateProfileIntW(L"Render", L"CamcorderHud", 1, ini));
     g_runGripLow = GetPrivateProfileIntW(L"Motion", L"RunGripIgnoresLowEdges", 1, ini) ? 1 : 0;   // (Test48)
     OLInteract_SetCamButton(GetPrivateProfileIntW(L"Motion", L"CamcorderControl", 0, ini));        // (Test49)
     ILog("[OLVR][RUNGRIP] a running squeeze at the hip is sprint, not an edge: %s", g_runGripLow ? "on" : "off");
@@ -202,7 +202,7 @@ void OLInteract_Save(const wchar_t* ini) {
     wchar_t b[32]; swprintf_s(b, L"%.3f", g_eyeReach); WritePrivateProfileStringW(L"Motion", L"RaiseToEyeReachM", b, ini);
     swprintf_s(b, L"%ld", g_on[ON_CLIMB] ? g_climbMode : 0L); WritePrivateProfileStringW(L"Motion", L"ClimbMode", b, ini);
     swprintf_s(b, L"%ld", g_camHold); WritePrivateProfileStringW(L"Motion", L"CamcorderHold", b, ini);
-    WritePrivateProfileStringW(L"Render", L"CamcorderBatteryGauge", g_batGauge ? L"1" : L"0", ini);   // (Beta 1.1)
+    WritePrivateProfileStringW(L"Render", L"CamcorderHud", g_camHud ? L"1" : L"0", ini);   // (Beta 1.1)
     WritePrivateProfileStringW(L"Motion", L"CamcorderControl", g_camButton ? L"1" : L"0", ini);   // (Test49)
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
@@ -334,18 +334,49 @@ static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
 static volatile ULONGLONG s_vfMs = 0;
 static int   s_numBat = 0, s_prevNumBat = -1;
-// (Beta 1.1) [BATGAUGE] A tester: "When I use the camera, the battery appears so small and far away that it's almost
-// impossible to see." While the camcorder is up the headset gets its own large battery gauge: 1 = show it.
-extern "C" int OLInteract_BatteryGauge(float* energy, int* spares) {
-    if (!g_batGauge || s_camUp != 1) return 0;
-    // Menus leave the last camcorder state cached when the interaction tick stops.
-    if (OLUE3_InGameMenu() || OLMenu_Visible()) return 0;
-    if (energy) *energy = s_energy;
-    if (spares) *spares = s_numBat;
-    return 1;
+// [CAMHUD] XR and gameplay may run on different threads. Publish the whole snapshot together.
+static SRWLOCK s_hudLock = SRWLOCK_INIT;
+static OLCamcorderHudState s_hudState;
+static ULONGLONG s_hudPublished = 0;
+static volatile LONG64 s_hudSubmitted = 0;
+extern "C" int OLUE3_CamcorderHudRead(float* seconds, int* capacity, int hide);
+extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state) {
+    AcquireSRWLockShared(&s_hudLock);
+    *state = s_hudState;
+    const bool fresh = s_hudState.visible && GetTickCount64() - s_hudPublished < 1000;
+    ReleaseSRWLockShared(&s_hudLock);
+    return g_camHud && fresh;
 }
-extern "C" int  OLInteract_GetBatteryGauge() { return g_batGauge ? 1 : 0; }
-extern "C" void OLInteract_SetBatteryGauge(int on) { g_batGauge = on ? 1 : 0; }
+extern "C" int OLInteract_GetCamcorderHud() { return g_camHud ? 1 : 0; }
+extern "C" void OLInteract_SetCamcorderHud(int on) {
+    g_camHud = on ? 1 : 0;
+    OLProxyLog(g_camHud ? "[OLVR][CAMHUD] custom HUD enabled" : "[OLVR][CAMHUD] custom HUD disabled");
+}
+extern "C" void OLInteract_CamcorderHudSubmitted(int shown) {
+    InterlockedExchange64(&s_hudSubmitted, shown ? (LONG64)GetTickCount64() : 0);
+}
+static void CamcorderHudTick(bool active) {
+    OLCamcorderHudState state;
+    const ULONGLONG submitted = (ULONGLONG)InterlockedCompareExchange64(&s_hudSubmitted, 0, 0);
+    const bool wanted = g_camHud && active && s_camUp == 1 && !OLUE3_InGameMenu() && !OLMenu_Visible();
+    const bool ready = OLUE3_CamcorderHudRead(&state.recordingSeconds, &state.capacity,
+        wanted && submitted && GetTickCount64() - submitted < 500);
+    state.energy = s_energy; state.zoom = s_zoom; state.spares = s_numBat;
+    state.visible = wanted && ready;
+    const int status = !g_camHud ? 0 : !active ? 1 : s_camUp != 1 ? 2 : !wanted ? 3 : !ready ? 4 : 5;
+    static int lastStatus = -1;
+    if (status != lastStatus) {
+        static const char* messages[] = {
+            "[OLVR][CAMHUD] inactive: setting off", "[OLVR][CAMHUD] waiting for gameplay/data",
+            "[OLVR][CAMHUD] hidden: camcorder lowered", "[OLVR][CAMHUD] hidden: menu open",
+            "[OLVR][CAMHUD] waiting for camcorder movie/clock", "[OLVR][CAMHUD] publishing camcorder HUD"
+        };
+        OLProxyLog(messages[status]); lastStatus = status;
+    }
+    AcquireSRWLockExclusive(&s_hudLock);
+    s_hudState = state; s_hudPublished = GetTickCount64();
+    ReleaseSRWLockExclusive(&s_hudLock);
+}
 static bool  s_gripDown[2] = { false, false };
 static bool  s_gripEdge[2] = { false, false };
 // requests to the pad merge
@@ -1983,6 +2014,7 @@ extern "C" void OLInteract_Tick() {
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
         if (s_pc) { static ULONGLONG s_offLog = 0; if (now - s_offLog > 2000) { s_offLog = now; ILog("[OLVR][PHYSCLIMB] gameplay check off for a moment while climbing - holding on"); } }
         else s_tickMs = 0;
+        CamcorderHudTick(false);
         s_rwOk = false; OLXR_RoomWalkAllow(0);
         OLXR_SetMarkers(nullptr, 0); return;
     }
@@ -1990,9 +2022,23 @@ extern "C" void OLInteract_Tick() {
     void* hero = OLUE3_Hero(); void* pc = OLUE3_PlayerController();
     unsigned char cs = 0; float z = 0.0f, en = 1.0f; int nb = 0;
     s_camUp = Rd(hero, F.camState, &cs) ? (cs == 1 ? 1 : 0) : -1;
-    s_zoom = Rd(hero, F.zoom, &z) ? z : 0.0f;
-    s_energy = Rd(hero, F.energy, &en) ? en : 1.0f;
-    s_numBat = Rd(pc, F.numBat, &nb) ? nb : 0;
+    const bool zoomRead = Rd(hero, F.zoom, &z), energyRead = Rd(hero, F.energy, &en);
+    const bool sparesRead = Rd(pc, F.numBat, &nb);
+    s_zoom = zoomRead ? z : 0.0f;
+    s_energy = energyRead ? en : 1.0f;
+    s_numBat = sparesRead ? nb : 0;
+    CamcorderHudTick(s_camUp >= 0 && zoomRead && energyRead && sparesRead &&
+        std::isfinite(z) && std::isfinite(en));
+    // [CAMHUD] "the W-T bar does not move" is answered by the log either way: one line every
+    // quarter second while the zoom is actually changing shows whether the game's own factor
+    // moves and where the thumb lands.
+    if (s_camUp == 1 && zoomRead) {
+        static float s_zoomLogged = -1.0f; static ULONGLONG s_zoomLogMs = 0;
+        if (std::fabs(z - s_zoomLogged) > 0.02f && now - s_zoomLogMs > 250) {
+            s_zoomLogged = z; s_zoomLogMs = now;
+            ILog("[OLVR][CAMHUD] zoom %.6g -> W-T thumb %.0f%% of the lever", z, OLCamHud::ZoomUnit(z) * 100.0f);
+        }
+    }
     // [VIEWFINDER] engage past a small zoom, release just above zero (hysteresis)
     {
         const bool on = g_on[ON_VIEWFINDER] && s_camUp == 1 && (s_vfZoom > 0.0f ? s_zoom > 0.01f : s_zoom > 0.03f);

@@ -113,8 +113,9 @@ HANDS
     hand" GAME POSE holds it the way Miles raises it in the game.)
     Reload: press Y. (A hands-on reload is in VR SETTINGS: "Reload with your
     hands".)
-    Can't see the battery meter when you look through it? VR SETTINGS ->
-    "Camcorder display size": smaller pulls it in from the edges.
+    "Custom camcorder HUD" shows REC/time, W-T zoom, spare batteries/capacity
+    and charge using the game's values. It replaces the large battery gauge
+    and hides the original camcorder display. Switch it off to restore it.
     Playing seated, or your arm gets tired? VR SETTINGS -> "Camcorder
     controls" GRIP BUTTON: squeeze the right grip once to raise the camcorder
     and again to lower it. You look through it with your head, so your hand
