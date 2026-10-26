@@ -111,47 +111,40 @@ int main() {
     OLCamHud::Canvas canvas;
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
-    // Focusing brackets: still hollow, small, and only just translucent. The compositor on at least one
-    // runtime multiplies the layer by its own alpha even though it asks for UNPREMULTIPLIED: at 200/255
-    // that turned them black, so the alpha has to stay high enough that a double multiply still lands on
-    // light grey. Size and centre are unchanged.
-    assert(canvas.pixels[(462*1920+855)*4+3] > 220 && canvas.pixels[(462*1920+855)*4+3] < 250);
+    // Focusing brackets: opaque, a white that leans grey. Translucency is not an option here - the
+    // compositor multiplies the layer by its own alpha despite XR_COMPOSITION_LAYER_UNPREMULTIPLIED and
+    // a 200/255 (and even a 235/255) grey box came out black, so the artwork stays at alpha 255.
+    assert(canvas.pixels[(462*1920+855)*4+3]==255);  // opaque: the blend is a plain copy
+    assert(canvas.pixels[(462*1920+855)*4+1] >= 200); // light grey, well clear of the old 175
     assert(canvas.pixels[(402*1920+784)*4+3]==0);    // the reference's oversized box is gone
     assert(canvas.pixels[(550*1920+960)*4+3]==0);    // brackets stay hollow
-    {
-        const float a = canvas.pixels[(462*1920+855)*4+3] / 255.0f;
-        const float grey = canvas.pixels[(462*1920+855)*4+1];
-        assert(a*grey > 150);                        // honouring the flag...
-        assert(a*a*grey > 150);                      // ...or multiplying twice: never dark
-    }
     s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1843)*4+3]==255); // full charge reaches right edge
-    // The readouts were pushed out toward the corners; their old coordinates are empty now.
-    assert(canvas.pixels[(100*1920+60)*4+2]==255 && canvas.pixels[(100*1920+100)*4+3]==0); // REC light
+    assert(canvas.pixels[(75*1920+1843)*4+3]==255); // full charge reaches right edge
+    // The readouts were pushed out toward the corners and up; their old coordinates are empty now.
+    assert(canvas.pixels[(80*1920+55)*4+2]==255 && canvas.pixels[(100*1920+100)*4+3]==0); // REC light
     assert(canvas.pixels[(100*1920+1599)*4+3]==0);   // the gauge no longer starts at the old x
     // The gauge and its terminal carry a thin black rim: night vision turns the scene behind the HUD
     // into a bright green wash and a light grey gauge has no edge left to read against.
-    assert(canvas.pixels[(100*1920+1860)*4]==0 && canvas.pixels[(100*1920+1860)*4+3]==255);
-    assert(canvas.pixels[(70*1920+1750)*4]==0 && canvas.pixels[(70*1920+1750)*4+3]==255);
-    assert(canvas.pixels[(100*1920+1852)*4+1]==200);  // the grey frame sits just inside the rim
-    assert(canvas.pixels[(92*1920+1677)*4]==0 && canvas.pixels[(92*1920+1677)*4+3]==255); // terminal rim
+    assert(canvas.pixels[(75*1920+1860)*4]==0 && canvas.pixels[(75*1920+1860)*4+3]==255);
+    assert(canvas.pixels[(50*1920+1750)*4]==0 && canvas.pixels[(50*1920+1750)*4+3]==255);
+    assert(canvas.pixels[(75*1920+1852)*4+1]==200);  // the grey frame sits just inside the rim
+    assert(canvas.pixels[(75*1920+1677)*4]==0 && canvas.pixels[(75*1920+1677)*4+3]==255); // terminal rim
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1703)*4+2]==255 && canvas.pixels[(100*1920+1703)*4]==60);
+    assert(canvas.pixels[(75*1920+1703)*4+2]==255 && canvas.pixels[(75*1920+1703)*4]==60);
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1703)*4+2]==canvas.pixels[(100*1920+1703)*4]);
+    assert(canvas.pixels[(75*1920+1703)*4+2]==canvas.pixels[(75*1920+1703)*4]);
     // The W-T thumb follows the zoom factor instead of sitting at one end of the lever.
     s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+820)*4+1]>=200);            // thumb at the W end
+    assert(canvas.pixels[(80*1920+820)*4+1]>=200);            // thumb at the W end
     s.zoom=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+820)*4+1]<150);             // ...and gone from it
-    assert(canvas.pixels[(100*1920+950)*4+1]>=200);            // ...sitting in the middle
+    assert(canvas.pixels[(80*1920+820)*4+1]<150);             // ...and gone from it
+    assert(canvas.pixels[(80*1920+950)*4+1]>=200);            // ...sitting in the middle
     s.zoom=1; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+950)*4+1]<150);
-    assert(canvas.pixels[(94*1920+1076)*4+3]==255);            // T endpoint
+    assert(canvas.pixels[(80*1920+950)*4+1]<150);
+    assert(canvas.pixels[(75*1920+1076)*4+3]==255);            // T endpoint
     s.energy=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(100*1920+1703)*4+3]==0); // empty battery actually empty
-    assert(canvas.pixels[(462*1920+855)*4+3] > 220 && canvas.pixels[(462*1920+855)*4+3] < 250);
-                                                    // dynamic updates preserve reticle
+    assert(canvas.pixels[(75*1920+1703)*4+3]==0); // empty battery actually empty
+    assert(canvas.pixels[(462*1920+855)*4+3]==255); // dynamic updates preserve reticle
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
     // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
     assert(OLCamHud::PanelWidth(100.0f) > 1.30f && OLCamHud::PanelWidth(100.0f) < 1.45f);
