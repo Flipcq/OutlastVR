@@ -41,6 +41,7 @@
 #include <cstdarg>
 #include "ol_xr.h"
 #include "ol_interact.h"
+#include "ol_menu.h"
 
 extern "C" void  OLProxyLog(const char* line);
 extern "C" int   OLUE3_FindProp(const char* cls, const char* prop, unsigned* off, unsigned* mask);
@@ -337,6 +338,8 @@ static int   s_numBat = 0, s_prevNumBat = -1;
 // impossible to see." While the camcorder is up the headset gets its own large battery gauge: 1 = show it.
 extern "C" int OLInteract_BatteryGauge(float* energy, int* spares) {
     if (!g_batGauge || s_camUp != 1) return 0;
+    // Menus leave the last camcorder state cached when the interaction tick stops.
+    if (OLUE3_InGameMenu() || OLMenu_Visible()) return 0;
     if (energy) *energy = s_energy;
     if (spares) *spares = s_numBat;
     return 1;
