@@ -7,6 +7,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 ue = (ROOT / 'src/ol_ue3.cpp').read_text()
 interact = (ROOT / 'src/ol_interact.cpp').read_text()
+reflection = ue[ue.index('static bool SP_FindPropIn(void* c, const char* want, unsigned* off, unsigned* mask) {'):ue.index('// -1 = unknown (not in gameplay yet') ]
 engine = ue[ue.index('extern "C" int OLUE3_CamcorderHudRead('):ue.index("// a function's parameters, for the log")]
 snapshot = interact[interact.index('// [CAMHUD] XR and gameplay'):interact.index('static bool  s_gripDown')]
 stubs = r'''
@@ -38,12 +39,16 @@ ULONGLONG now = 4000;
 ULONGLONG GetTickCount64() { return now; }
 alignas(8) char pc[128]={}, hud[128]={}, movie[128]={}, replacement[128]={};
 static std::map<std::string,unsigned> offsets = {{"myHUD",8},{"CamcorderHUD",16},{"RecordingTimeSeconds",24},{"MaxNumBatteries",32},{"bVisible",40}};
-int OLUE3_FindProp(const char*,const char* name,unsigned* off,unsigned* mask) {
-    *off=offsets[name]; if(mask)*mask=1; return *off!=0;
-}
+int OLUE3_FindProp(const char*,const char* name,unsigned* off,unsigned* mask);
+
 void* OLUE3_PlayerController() { return pc; }
 void* ProbeReadPtr(char* p) { void* v; memcpy(&v,p,8); return v; }
 bool BP_Read(char* p,void* out,size_t n) { memcpy(out,p,n); return true; }
+const unsigned g_bpUNameOff = 0x40;
+alignas(8) char hudClass[256]={}, visibleProp[256]={}, clockProp[256]={};
+bool BP_Name(unsigned idx,char* out,size_t size) {
+    std::snprintf(out,size,"%s",idx==1 ? "bVisible" : "RecordingTimeSeconds"); return true;
+}
 void OLProxyLog(const char*) {}
 void* LS_FindFunction(const char*,const char* name) { return reinterpret_cast<void*>(uintptr_t(std::string(name)=="GetVariableNumber" ? 1 : 2)); }
 int LS_ParamOff(void*,const char* name) { return std::string(name)=="Path" ? 0 : 16; }
@@ -61,6 +66,12 @@ long g_camHud=1;
 int s_camUp=1, s_numBat=10;
 float s_energy=.5f, s_zoom=.75f;
 void setup() {
+    auto put32=[](char* p,unsigned off,unsigned value){memcpy(p+off,&value,4);};
+    void* child=visibleProp; memcpy(hudClass+0x80,&child,8);
+    child=clockProp; memcpy(visibleProp+0x60,&child,8);
+    put32(visibleProp,g_bpUNameOff,1); put32(visibleProp,0x8C,40);
+    put32(visibleProp,0x88,1); put32(visibleProp,0xC0,1);
+    put32(clockProp,g_bpUNameOff,2); put32(clockProp,0x8C,24);
     void* h=hud; memcpy(pc+8,&h,8); void* m=movie; memcpy(hud+16,&m,8);
     float t=3661.25f; memcpy(movie+24,&t,4); int max=10; memcpy(pc+32,&max,4);
     unsigned visible=1; memcpy(movie+40,&visible,4);
@@ -73,6 +84,10 @@ int main() {
     OLCamHud::Timecode(360000,t); assert(std::string(t)=="00:00:00:00");
     OLCamHud::Timecode(std::numeric_limits<float>::quiet_NaN(),t); assert(std::string(t)=="00:00:00:00");
     setup(); OLCamcorderHudState s;
+    unsigned off=0,mask=0;
+    assert(SP_FindPropIn(hudClass,"bVisible",&off,nullptr) && off==40);
+    assert(!SP_FindPropIn(hudClass,"bVisible",&off,&mask)); // actual singleton-bool rejection
+
     CamcorderHudTick(true); assert(OLInteract_CamcorderHud(&s));
     assert(s.recordingSeconds==3661.25f && s.spares==10 && s.capacity==10);
     assert(s.energy==.5f && s.zoom==.75f && alpha==85); // retain native display until XR succeeds
@@ -112,7 +127,12 @@ int main() {
 '''
 with tempfile.TemporaryDirectory() as tmp:
     source=Path(tmp)/'hud.cpp'; exe=Path(tmp)/'hud-test'
-    source.write_text(stubs+engine+snapshot+checks)
+    source.write_text(stubs+reflection+r'''
+int OLUE3_FindProp(const char*,const char* name,unsigned* off,unsigned* mask) {
+    if(std::string(name)=="bVisible") return SP_FindPropIn(hudClass,name,off,mask);
+    *off=offsets[name]; if(mask)*mask=1; return *off!=0;
+}
+'''+engine+snapshot+checks)
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-I',str(ROOT/'src'),str(source),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('Camcorder HUD: clock, data, lifecycle, fallback and transparent artwork checks passed.')

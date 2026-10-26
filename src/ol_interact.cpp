@@ -180,7 +180,7 @@ void OLInteract_Init() {
     else if (cm == 1 || cm == 2) { g_on[ON_CLIMB] = 1; g_climbMode = cm; }
     else g_climbMode = 2;
     g_camHold = GetPrivateProfileIntW(L"Motion", L"CamcorderHold", 4, ini) == 3 ? 3 : 4;   // (Beta 1.1) a saved 5 means 4
-    g_camHud = GetPrivateProfileIntW(L"Render", L"CamcorderHud", 1, ini) ? 1 : 0;   // [CAMHUD]
+    OLInteract_SetCamcorderHud(GetPrivateProfileIntW(L"Render", L"CamcorderHud", 1, ini));
     g_runGripLow = GetPrivateProfileIntW(L"Motion", L"RunGripIgnoresLowEdges", 1, ini) ? 1 : 0;   // (Test48)
     OLInteract_SetCamButton(GetPrivateProfileIntW(L"Motion", L"CamcorderControl", 0, ini));        // (Test49)
     ILog("[OLVR][RUNGRIP] a running squeeze at the hip is sprint, not an edge: %s", g_runGripLow ? "on" : "off");
@@ -348,7 +348,10 @@ extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state) {
     return g_camHud && fresh;
 }
 extern "C" int OLInteract_GetCamcorderHud() { return g_camHud ? 1 : 0; }
-extern "C" void OLInteract_SetCamcorderHud(int on) { g_camHud = on ? 1 : 0; }
+extern "C" void OLInteract_SetCamcorderHud(int on) {
+    g_camHud = on ? 1 : 0;
+    OLProxyLog(g_camHud ? "[OLVR][CAMHUD] custom HUD enabled" : "[OLVR][CAMHUD] custom HUD disabled");
+}
 extern "C" void OLInteract_CamcorderHudSubmitted(int shown) {
     InterlockedExchange64(&s_hudSubmitted, shown ? (LONG64)GetTickCount64() : 0);
 }
@@ -360,6 +363,16 @@ static void CamcorderHudTick(bool active) {
         wanted && submitted && GetTickCount64() - submitted < 500);
     state.energy = s_energy; state.zoom = s_zoom; state.spares = s_numBat;
     state.visible = wanted && ready;
+    const int status = !g_camHud ? 0 : !active ? 1 : s_camUp != 1 ? 2 : !wanted ? 3 : !ready ? 4 : 5;
+    static int lastStatus = -1;
+    if (status != lastStatus) {
+        static const char* messages[] = {
+            "[OLVR][CAMHUD] inactive: setting off", "[OLVR][CAMHUD] waiting for gameplay/data",
+            "[OLVR][CAMHUD] hidden: camcorder lowered", "[OLVR][CAMHUD] hidden: menu open",
+            "[OLVR][CAMHUD] waiting for camcorder movie/clock", "[OLVR][CAMHUD] publishing camcorder HUD"
+        };
+        OLProxyLog(messages[status]); lastStatus = status;
+    }
     AcquireSRWLockExclusive(&s_hudLock);
     s_hudState = state; s_hudPublished = GetTickCount64();
     ReleaseSRWLockExclusive(&s_hudLock);
