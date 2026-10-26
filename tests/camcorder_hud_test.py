@@ -113,16 +113,33 @@ int main() {
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
     assert(canvas.pixels[(402*1920+784)*4+3]==255);
     s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(280*1920+1467)*4+3]==255); // full charge reaches right edge
+    assert(canvas.pixels[(100*1920+1764)*4+3]==255); // full charge reaches right edge
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(280*1920+1276)*4+2]==255 && canvas.pixels[(280*1920+1276)*4]==60);
+    assert(canvas.pixels[(100*1920+1623)*4+2]==255 && canvas.pixels[(100*1920+1623)*4]==60);
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(280*1920+1276)*4+2]==canvas.pixels[(280*1920+1276)*4]);
-    s.energy=0; s.zoom=1; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(280*1920+1276)*4+3]==0); // empty battery actually empty
-    assert(canvas.pixels[(273*1920+1094)*4+3]==255); // T endpoint
+    assert(canvas.pixels[(100*1920+1623)*4+2]==canvas.pixels[(100*1920+1623)*4]);
+    // The W-T thumb follows the zoom factor instead of sitting at one end of the lever.
+    s.zoom=0; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(100*1920+820)*4+1]>=200);            // thumb at the W end
+    s.zoom=.5f; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(100*1920+820)*4+1]<150);             // ...and gone from it
+    assert(canvas.pixels[(100*1920+950)*4+1]>=200);            // ...sitting in the middle
+    s.zoom=1; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(100*1920+950)*4+1]<150);
+    assert(canvas.pixels[(94*1920+1076)*4+3]==255);            // T endpoint
+    s.energy=0; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(100*1920+1623)*4+3]==0); // empty battery actually empty
     assert(canvas.pixels[(402*1920+784)*4+3]==255); // dynamic updates preserve reticle
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
+    // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
+    assert(OLCamHud::PanelWidth(100.0f) > 1.25f && OLCamHud::PanelWidth(100.0f) < 1.40f);
+    assert(std::fabs(OLCamHud::PanelWidth(84.0f)-OLCamHud::PanelWidth(180.0f)) < 1e-4f); // clamped
+    assert(OLCamHud::PanelWidth(0.0f) > 1.0f);       // no runtime FOV yet: sane floor
+    assert(OLCamHud::PanelWidth(-5.0f) > 1.0f);
+    assert(OLCamHud::ZoomUnit(std::numeric_limits<float>::quiet_NaN())==0);
+    assert(OLCamHud::ZoomUnit(-1.0f)==0 && OLCamHud::ZoomUnit(4000.0f)==1);
+    assert(std::fabs(OLCamHud::ZoomUnit(0.4f)-0.4f) < 1e-6f);
+    assert(std::fabs(OLCamHud::ZoomUnit(40.0f)-0.4f) < 1e-6f);   // a 0..100 build still moves
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

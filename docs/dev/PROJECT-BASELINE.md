@@ -328,9 +328,10 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   - Cost on the null HMD: render thread ~3-5% while capturing. Dev: `lenssnap <name>`, `livescreen on|off`.
   - The texture-swap approach (Screen_camera / camerahud D3D pointers) is dead: Screen_camera has no GPU
     texture, CameraScreen_INST's graph is stripped. Its dev ops (ls*) remain for research.
-- Zoom (`MapPadButtons`): only a dominant up/down push (|y| > 0.6 and > 2|x|) zooms; released below 0.35 or
-  when x dominates. `[VIEWFINDER]` fills the view (quad sized to the eye frustum x1.03) unless
-  [Motion] ViewfinderFrame=1.
+- Zoom (`MapPadButtons`): a mostly-vertical push (|y| > 0.45 and |y| > |x|) zooms; released below
+  0.25 or when x dominates. The first rule (|y| > 0.6 and > 2|x|) never fired on an ordinary push, so
+  the camcorder zoom looked dead and the W-T bar never moved. `[VIEWFINDER]` fills the view (quad sized
+  to the eye frustum x1.03) unless [Motion] ViewfinderFrame=1.
 - Vault fix: guided pacing (`paceable`) only for climbs the hands started (`s_climbByHands`); a sprint vault
   with the left grip held (sprint) froze mid-move.
 - `[ASYNCLOG]` the log is buffered and written by a thread every 200 ms, lines prefixed with seconds since
@@ -349,3 +350,17 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
 - Dev: `con <console command>` (PlayerController.ConsoleCommand, e.g. `scale set DynamicShadows False`;
   `scale set ScreenPercentage` kills the game), `mirrorfps N`, `occlskip 0|1`. Null-HMD perf runs: test ini
   PaceToHeadset=0 + OLEngine MaxSmoothedFrameRate=300; scratchpad measure.ps1 `Measure-OL`.
+
+## Beta 1.1.3 changes: camcorder HUD at reference scale
+
+- `[CAMHUD]` is the game's own fullscreen display, not a panel in front of your face. The quad used to be
+  0.60 m wide at 0.45 m (the middle ~67 deg), which made every readout look huge, close and bunched up in
+  the centre. It is now sized from the headset's horizontal FOV (`OLCamHud::PanelWidth`, clamped to 76-84
+  deg) and parked 0.75 m out, so the reference artwork spreads to the corners: REC and the clock top-left,
+  the W-T lever centred, the battery gauge top-right, the HD/AUTO/F2.4 lens markings bottom-left. The clamp
+  stops the corner readouts past ~37 deg, where they would be drawn in one eye only and read as a ghost.
+- The artwork is back on the reference screenshot's own 1920x1080 coordinates (`DynamicTop = 0`, the
+  readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
+- `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
+  can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
+  visible against the track.

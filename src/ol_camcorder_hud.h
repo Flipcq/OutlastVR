@@ -13,11 +13,33 @@ struct OLCamcorderHudState {
     bool visible = false;
 };
 namespace OLCamHud {
-constexpr int Width = 1920, Height = 1080, DynamicTop = 240, DynamicHeight = 160;
-// Compact, enlarged readouts inside the central field of view. Keep the dynamic band
-// above the reticle (y=402) so updates cannot erase the static artwork below it.
-constexpr float PanelDistance = 0.45f, PanelWidth = 0.60f;
+constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
+// The head-locked quad IS the game's display, not a panel floating in the middle of your view:
+// the reference artwork is the whole screen, so it has to reach the edges of what you can see.
+// A 0.60 m plane 0.45 m away covered only the central ~67 deg, which is what made every readout
+// look huge, close, and bunched up in the centre. Sized from the headset's own horizontal FOV
+// (PanelWidth) and parked at arm's length, the layout comes out like the reference.
+constexpr float PanelDistance = 0.75f;      // metres in front of the eye
+constexpr float PanelMargin = 0.97f;        // hair of margin so the corner readouts are not clipped
+// Fill the view, but stop before the corners leave the region both eyes can see (~+/-40 deg on a
+// Quest): a readout past that is drawn in one eye only and reads as a ghost. 84 deg puts the REC
+// light and the battery gauge at ~37 deg - in the corners, as in the reference, still fused.
+constexpr float PanelMinFovDeg = 76.0f, PanelMaxFovDeg = 84.0f;
+inline float PanelWidth(float hmdFovDeg) {
+    float deg = std::isfinite(hmdFovDeg) ? hmdFovDeg : 0.0f;
+    if (deg < PanelMinFovDeg) deg = PanelMinFovDeg;   // no runtime FOV yet, or a narrow headset
+    if (deg > PanelMaxFovDeg) deg = PanelMaxFovDeg;   // past this the corners sit in the lens edge
+    return 2.0f * PanelDistance * std::tan(deg * 0.5f * 3.14159265358979f / 180.0f) * PanelMargin;
+}
 inline float Unit(float v) { return std::isfinite(v) && v > 0 ? (v < 1 ? v : 1) : 0; }
+// The W-T thumb. Outlast publishes the camcorder zoom as a 0..1 factor; normalising a
+// percentage as well keeps a build that reports 0..100 from pinning the thumb at the far end,
+// which is exactly what "the W-T bar never changes" looks like.
+inline float ZoomUnit(float v) {
+    if (!std::isfinite(v) || v <= 0.0f) return 0.0f;
+    if (v <= 1.0f) return v;
+    return v <= 100.0f ? v * 0.01f : 1.0f;
+}
 inline void Timecode(float seconds, char (&text)[12]) {
     // The game owns this clock, including pause, lowering the camera and loading saves.
     const double safe = std::isfinite(seconds) && seconds > 0 ? seconds : 0;
@@ -61,47 +83,55 @@ struct Canvas {
     }
 };
 // text(canvas, x, y, pixelHeight, bold, string, red, green, blue)
+// Static artwork at the reference screenshot's own 1920x1080 positions: the lens markings sit in
+// the bottom-left corner of the display, the focusing brackets in the middle of it.
 template<class Text> void Static(Canvas& c, Text& text) {
     c.Rect(784,402,93,2); c.Rect(784,402,2,298); c.Rect(784,698,93,2);
     c.Rect(1044,402,94,2); c.Rect(1136,402,2,298); c.Rect(1044,698,94,2);
-    c.Rounded(430,660,146,70,5,215,170);
-    for (int y = 666; y <= 710; y += 22) {
-        c.Rounded(436,y,19,16,4,0,0); c.Rounded(552,y,19,16,4,0,0);
+    c.Rounded(149,819,108,52,4,215,170);
+    for (int y = 823; y <= 855; y += 16) {
+        c.Rounded(153,y,14,12,3,0,0); c.Rounded(239,y,14,12,3,0,0);
     }
-    text(c,461,663,60,true,"HD",0,0,0);
-    c.Rounded(430,754,186,73,6,221,170);
-    text(c,441,758,60,true,"AUTO",0,0,0);
-    text(c,426,846,64,true,"F2.4",200,200,200);
+    text(c,172,821,44,true,"HD",0,0,0);
+    c.Rounded(149,891,138,54,5,221,170);
+    text(c,157,893,44,true,"AUTO",0,0,0);
+    text(c,146,955,48,true,"F2.4",200,200,200);
 }
 template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& text) {
+    // Only the top readout band changes; the brackets and the lens markings below it stay put.
+    // Exactly the rows the upload refreshes (DynamicTop/DynamicHeight), so the two cannot drift.
     std::fill(c.pixels.begin() + size_t(Width)*DynamicTop*4,
               c.pixels.begin() + size_t(Width)*(DynamicTop+DynamicHeight)*4, 0);
-    for (int y = 253; y < 308; ++y) for (int x = 417; x < 472; ++x) {
-        const float d = std::sqrt((x-444.0f)*(x-444.0f) + (y-280.0f)*(y-280.0f));
-        const float coverage = Unit(26.5f-d);
+    // Record light and REC, top-left corner of the display.
+    for (int y = 90; y < 130; ++y) for (int x = 114; x < 155; ++x) {
+        const float d = std::sqrt((x-134.0f)*(x-134.0f) + (y-109.5f)*(y-109.5f));
+        const float coverage = Unit(19.5f-d);
         c.Pixel(x,y,255,0,0,uint8_t(coverage*255));
     }
-    text(c,480,244,64,true,"REC",255,0,0);
+    text(c,159,82,46,true,"REC",255,0,0);
     char time[12]; Timecode(s.recordingSeconds, time);
-    text(c,418,326,48,true,time,255,0,0);
-    text(c,734,249,58,false,"W",200,200,200);
-    text(c,1140,249,58,false,"T",200,200,200);
-    c.Rounded(810,267,306,40,1,116,80); c.Outline(810,267,306,40,2,200);
-    const int tracker = 813 + int(Unit(s.zoom)*278);
-    c.Rect(tracker,270,20,33,15); c.Rect(tracker+3,273,14,27,210);
+    text(c,310,90,34,true,time,255,0,0);
+    // Zoom lever: W (wide) on the left, T (tele) on the right, centred in the display.
+    text(c,747,78,44,false,"W",200,200,200);
+    text(c,1117,78,44,false,"T",200,200,200);
+    c.Rounded(810,90,287,28,1,116,80); c.Outline(810,90,287,28,2,200);
+    // The thumb is the game's own zoom factor: dark outline, bright body, so any move shows.
+    const int tracker = 813 + int(ZoomUnit(s.zoom)*260);
+    c.Rect(tracker,92,16,23,25); c.Rect(tracker+2,94,12,19,225);
+    // Spare batteries, then the charge gauge, top-right corner of the display.
     const int capacity = s.capacity > 0 ? s.capacity : 10;
     const int spares = s.spares < 0 ? 0 : (s.spares > capacity ? capacity : s.spares);
     char count[32]; std::snprintf(count,sizeof(count),"%d / %d",spares,capacity);
-    text(c,1300,329,38,true,count,210,210,210);
+    text(c,1504,91,25,true,count,210,210,210);
     // Terminal faces left, as in the supplied reference. Continuous charge, no 4-bar quantization.
-    c.Rect(1242,274,14,28,200); c.Outline(1252,254,240,68,6,200);
-    c.Rect(1248,280,7,16,0);
+    c.Rect(1599,96,9,20,200); c.Outline(1606,82,170,48,5,200);
+    c.Rect(1604,101,5,10,0);
     const float charge = Unit(s.energy);
     // Preserve the large gauge's low-charge warning (one bar or less), with a continuous fill.
     const bool low = std::ceil(charge*4.0f-0.05f) <= 1;
-    for (int y = 0; y < 34; ++y) for (int x = 0; x < int(192*charge); ++x) {
-        const uint8_t shade = uint8_t(215-35*y/33);
-        c.Pixel(1276+x,271+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
+    for (int y = 0; y < 24; ++y) for (int x = 0; x < int(142*charge); ++x) {
+        const uint8_t shade = uint8_t(215-35*y/23);
+        c.Pixel(1623+x,94+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
     }
 }
 }

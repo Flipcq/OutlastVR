@@ -2029,6 +2029,16 @@ extern "C" void OLInteract_Tick() {
     s_numBat = sparesRead ? nb : 0;
     CamcorderHudTick(s_camUp >= 0 && zoomRead && energyRead && sparesRead &&
         std::isfinite(z) && std::isfinite(en));
+    // [CAMHUD] "the W-T bar does not move" is answered by the log either way: one line every
+    // quarter second while the zoom is actually changing shows whether the game's own factor
+    // moves and where the thumb lands.
+    if (s_camUp == 1 && zoomRead) {
+        static float s_zoomLogged = -1.0f; static ULONGLONG s_zoomLogMs = 0;
+        if (std::fabs(z - s_zoomLogged) > 0.02f && now - s_zoomLogMs > 250) {
+            s_zoomLogged = z; s_zoomLogMs = now;
+            ILog("[OLVR][CAMHUD] zoom %.6g -> W-T thumb %.0f%% of the lever", z, OLCamHud::ZoomUnit(z) * 100.0f);
+        }
+    }
     // [VIEWFINDER] engage past a small zoom, release just above zero (hysteresis)
     {
         const bool on = g_on[ON_VIEWFINDER] && s_camUp == 1 && (s_vfZoom > 0.0f ? s_zoom > 0.01f : s_zoom > 0.03f);
