@@ -361,14 +361,14 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   stops the corner readouts past ~37 deg, where they would be drawn in one eye only and read as a ghost.
 - The artwork is back on the reference screenshot's own 1920x1080 coordinates (`DynamicTop = 0`, the
   readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
-- The display sits further back, into the view instead of against the lenses (`PanelDistance` 1.15 m, FOV
-  fill clamped to 56-64 deg instead of the first pass's 76-84): the quad is head-locked and mono, so it has
-  no stereo disparity and its apparent distance comes only from how much of the view it fills -
-  `PanelWidth` scales with `PanelDistance`, so moving the quad back on its own changes nothing on screen.
-  Keeping the physical width (the reference display's ~1.37 m) and filling less puts the REC light and the
-  battery gauge at ~28 deg (was ~37, then ~34, then ~30), with clear space around the readouts and still
-  inside the ~40 deg both eyes fuse; the 46 px REC caption is 1.6 deg tall, still well above comfortable
-  reading size. `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
+- The display sits back from the lenses rather than against them (`PanelDistance` 1.05 m, FOV fill
+  clamped to 60-68 deg): the quad is head-locked and mono, so it has no stereo disparity and its apparent
+  distance comes only from how much of the view it fills - `PanelWidth` scales with `PanelDistance`, so
+  moving the quad on its own changes nothing on screen. It was pushed as far as 1.15 m / 56-64 deg and
+  pulled back one step, which is where it reads best. The physical width stays the reference display's
+  ~1.37 m, and the REC light and battery gauge land at ~32 deg, with clear space around the readouts and
+  well inside the ~40 deg both eyes fuse; the 46 px REC caption is 1.7 deg tall.
+  `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
 - The focusing brackets in the middle of the display are 60% of the reference's box (212x178 instead of
   354x298, same centre and arm thickness). They are the only bright shape with nothing behind it, so the
   reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
@@ -379,16 +379,17 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   the display's corners nearer the middle of the view. The brackets stay exactly where they were, which
   is also what the extra 10 px of lift buys: distance from the box. The gauge's rim now ends 59 px from
   the display's edge (~30.4 deg of the panel's 31.2).
-- The focusing brackets are opaque, 215 grey - white that leans grey against the dark scenes.
-  Translucency is not available on this path: the compositor multiplies the layer's colour by its own
-  alpha despite `XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT`, and a grey box meant to be soft came
-  out black at 200/255 and still dark at 235/255. The test now asserts alpha 255 and a light grey, so
-  the box cannot quietly go dark again.
+- The focusing brackets are opaque, one pixel thin, in 175 grey - a faint grey box rather than a bright
+  one. Translucency is not available on this path: the compositor multiplies the layer's colour by its
+  own alpha despite `XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT`, and a grey box meant to be soft
+  came out black at 200/255 and still dark at 235/255. The test asserts alpha 255, one-pixel strokes and
+  a grey under 200, so the box can neither go dark nor thicken again by accident.
 - Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout has no
-  edge left and vanishes. The spare count gets a 1 px black rim (the same string drawn four times, once
-  per neighbour, then in grey) and the gauge a 2 px black rim just outside its grey frame, terminal
-  included. Four passes, not eight: measured 0.34 ms/frame for the rim with the HUD's naive 96x72 glyph
-  blit (the whole top band is 0.54 ms), and it only runs while the camcorder is up.
+  edge left and vanishes. The spare count gets a 1 px rim (the same string drawn four times, once per
+  neighbour, then in grey) and the gauge a 2 px rim just outside its grey frame, terminal included. The
+  rim is 25 grey, near black but not black: the first cut used 0 and read as a hole cut in the picture.
+  Four passes, not eight: measured 0.34 ms/frame for the rim with the HUD's naive 96x72 glyph blit (the
+  whole top band is 0.54 ms), and it only runs while the camcorder is up.
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
   can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
   visible against the track.

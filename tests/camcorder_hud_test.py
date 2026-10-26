@@ -111,11 +111,15 @@ int main() {
     OLCamHud::Canvas canvas;
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
-    // Focusing brackets: opaque, a white that leans grey. Translucency is not an option here - the
-    // compositor multiplies the layer by its own alpha despite XR_COMPOSITION_LAYER_UNPREMULTIPLIED and
-    // a 200/255 (and even a 235/255) grey box came out black, so the artwork stays at alpha 255.
+    // Focusing brackets: opaque, one pixel thin, and grey rather than white. Translucency is not an
+    // option here - the compositor multiplies the layer by its own alpha despite
+    // XR_COMPOSITION_LAYER_UNPREMULTIPLIED and a 200/255 (and even a 235/255) grey box came out black,
+    // so the artwork stays at alpha 255.
     assert(canvas.pixels[(462*1920+855)*4+3]==255);  // opaque: the blend is a plain copy
-    assert(canvas.pixels[(462*1920+855)*4+1] >= 200); // light grey, well clear of the old 175
+    assert(canvas.pixels[(462*1920+855)*4+1] > 160 && canvas.pixels[(462*1920+855)*4+1] < 200);
+    assert(canvas.pixels[(463*1920+900)*4+3]==0);    // one pixel thick: the bar is not two rows tall
+    assert(canvas.pixels[(500*1920+856)*4+3]==0);    // ...nor two columns wide
+    assert(canvas.pixels[(500*1920+855)*4+3]==255);  // the vertical arm is still there
     assert(canvas.pixels[(402*1920+784)*4+3]==0);    // the reference's oversized box is gone
     assert(canvas.pixels[(550*1920+960)*4+3]==0);    // brackets stay hollow
     s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);
@@ -123,12 +127,15 @@ int main() {
     // The readouts were pushed out toward the corners and up; their old coordinates are empty now.
     assert(canvas.pixels[(80*1920+55)*4+2]==255 && canvas.pixels[(100*1920+100)*4+3]==0); // REC light
     assert(canvas.pixels[(100*1920+1599)*4+3]==0);   // the gauge no longer starts at the old x
-    // The gauge and its terminal carry a thin black rim: night vision turns the scene behind the HUD
-    // into a bright green wash and a light grey gauge has no edge left to read against.
-    assert(canvas.pixels[(75*1920+1860)*4]==0 && canvas.pixels[(75*1920+1860)*4+3]==255);
-    assert(canvas.pixels[(50*1920+1750)*4]==0 && canvas.pixels[(50*1920+1750)*4+3]==255);
+    // The gauge and its terminal carry a thin near-black rim (25, not 0): night vision turns the scene
+    // behind the HUD into a bright green wash and a light grey gauge has no edge left to read against,
+    // but a true black rim cuts a hole in the picture.
+    assert(canvas.pixels[(75*1920+1860)*4+1] > 10 && canvas.pixels[(75*1920+1860)*4+1] < 40);
+    assert(canvas.pixels[(75*1920+1860)*4+3]==255);
+    assert(canvas.pixels[(50*1920+1750)*4+1] > 10 && canvas.pixels[(50*1920+1750)*4+1] < 40);
+    assert(canvas.pixels[(50*1920+1750)*4+3]==255);
     assert(canvas.pixels[(75*1920+1852)*4+1]==200);  // the grey frame sits just inside the rim
-    assert(canvas.pixels[(75*1920+1677)*4]==0 && canvas.pixels[(75*1920+1677)*4+3]==255); // terminal rim
+    assert(canvas.pixels[(75*1920+1677)*4+1] > 10 && canvas.pixels[(75*1920+1677)*4+1] < 40); // terminal
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
     assert(canvas.pixels[(75*1920+1703)*4+2]==255 && canvas.pixels[(75*1920+1703)*4]==60);
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
@@ -152,7 +159,7 @@ int main() {
     // (the quad is head-locked and mono, so the parking distance alone moves nothing on screen).
     auto halfDeg = [](float width){ return float(std::atan(0.5f*width/OLCamHud::PanelDistance)*57.29578f); };
     assert(halfDeg(OLCamHud::PanelWidth(100.0f)) > 28.0f);   // still spans the view
-    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) < 34.0f);   // set back, clear of the lens edge, well
+    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) < 35.0f);   // set back, clear of the lens edge, well
                                                              // inside the ~40 deg both eyes fuse
     assert(OLCamHud::PanelWidth(84.0f) == OLCamHud::PanelWidth(180.0f)); // clamped to the same fill
     assert(OLCamHud::PanelWidth(0.0f) > 1.0f);       // no runtime FOV yet: sane floor

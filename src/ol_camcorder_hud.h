@@ -23,15 +23,15 @@ constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // disparity: its apparent distance is set by how much of the view it fills, not by how many
 // centimetres away it is parked (PanelWidth scales with PanelDistance, so moving it alone changes
 // nothing on screen). Pushing it back therefore means filling a little less of the view.
-constexpr float PanelDistance = 1.15f;      // metres in front of the eye
+constexpr float PanelDistance = 1.05f;      // metres in front of the eye
 constexpr float PanelMargin = 0.97f;        // hair of margin so the corner readouts are not clipped
 // Fill the view, but stop before the corners leave the region both eyes can see (~+/-40 deg on a
-// Quest): a readout past that is drawn in one eye only and reads as a ghost. 64 deg leaves the REC
-// light and the battery gauge at ~28 deg - inside the corners, with clear space around the display,
-// which is what reads as set back into the view rather than pressed against the lenses. The
-// physical width stays at the reference display's ~1.37 m: the same screen, further out each time
-// (84 deg at 0.75 m -> 78 at 0.85 -> 68 at 1.05 -> 64 at 1.15).
-constexpr float PanelMinFovDeg = 56.0f, PanelMaxFovDeg = 64.0f;
+// Quest): a readout past that is drawn in one eye only and reads as a ghost. 68 deg leaves the REC
+// light and the battery gauge at ~32 deg - inside the corners, with clear space around the display.
+// The physical width stays at the reference display's ~1.37 m, so this is the same screen, nearer or
+// further as the taste goes (84 deg at 0.75 m -> 78 at 0.85 -> 68 at 1.05 -> 64 at 1.15 -> back to
+// 68 at 1.05, which is where it reads best).
+constexpr float PanelMinFovDeg = 60.0f, PanelMaxFovDeg = 68.0f;
 inline float PanelWidth(float hmdFovDeg) {
     float deg = std::isfinite(hmdFovDeg) ? hmdFovDeg : 0.0f;
     if (deg < PanelMinFovDeg) deg = PanelMinFovDeg;   // no runtime FOV yet, or a narrow headset
@@ -96,14 +96,14 @@ template<class Text> void Static(Canvas& c, Text& text) {
     // Focusing brackets - the one bright shape in the middle of the view, and the only one with
     // nothing behind it, so it reads as a square hanging in front of the face. The reference's
     // 354x298 box was too big for that: 212x178 (60%) on the same centre (960.5, 550.5), arms 56 px.
-    // Drawn opaque, in a white that leans grey. Translucency is not usable here: the compositor
-    // multiplies the layer's colour by its own alpha even though the layer asks for
-    // XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, and what should have been a soft grey box came
-    // out black at 200/255 and still dark at 235/255. Alpha stays 255, so the blend is a plain copy.
-    const uint8_t bracket = 215;
-    c.Rect(855,462,56,2,bracket); c.Rect(1011,462,56,2,bracket);
-    c.Rect(855,464,2,174,bracket); c.Rect(1065,464,2,174,bracket);
-    c.Rect(855,638,56,2,bracket); c.Rect(1011,638,56,2,bracket);
+    // Drawn opaque, one pixel thin, in a grey that stays grey - a light, faint box, not a bright one.
+    // Translucency is not usable here: the compositor multiplies the layer's colour by its own alpha
+    // even though the layer asks for XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, and what should
+    // have been a soft grey box came out black at 200/255 and still dark at 235/255. Alpha stays 255.
+    const uint8_t bracket = 175;
+    c.Rect(855,462,56,1,bracket);  c.Rect(1011,462,56,1,bracket);
+    c.Rect(855,463,1,176,bracket); c.Rect(1066,463,1,176,bracket);
+    c.Rect(855,639,56,1,bracket);  c.Rect(1011,639,56,1,bracket);
     c.Rounded(149,819,108,52,4,215,170);
     for (int y = 823; y <= 855; y += 16) {
         c.Rounded(153,y,14,12,3,0,0); c.Rounded(239,y,14,12,3,0,0);
@@ -143,16 +143,19 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     const int spares = s.spares < 0 ? 0 : (s.spares > capacity ? capacity : s.spares);
     char count[32]; std::snprintf(count,sizeof(count),"%d / %d",spares,capacity);
     // Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout
-    // has no edge left to read against and simply disappears. A one-pixel black rim under the count
-    // and around the gauge gives both their outline back without making them heavier. Four neighbours
-    // rather than eight: the count is redrawn every frame and each extra pass is a full glyph blit.
+    // has no edge left to read against and simply disappears. A one-pixel dark rim under the count and
+    // around the gauge gives both their outline back without making them heavier. Near black but not
+    // black (25), so it reads as a shadow around the readout instead of a hole cut in the picture.
+    // Four neighbours rather than eight: the count is redrawn every frame and each extra pass is a
+    // full glyph blit.
+    const uint8_t rim = 25;
     const int rimX[4] = { -1, 1, 0, 0 }, rimY[4] = { 0, 0, -1, 1 };
-    for (int i = 0; i < 4; ++i) text(c, 1584 + rimX[i], 61 + rimY[i], 25, true, count, 0, 0, 0);
+    for (int i = 0; i < 4; ++i) text(c, 1584 + rimX[i], 61 + rimY[i], 25, true, count, rim, rim, rim);
     text(c,1584,61,25,true,count,210,210,210);
     // Terminal faces left, as in the supplied reference. Continuous charge, no 4-bar quantization.
-    c.Outline(1677,64,13,24,2,0);                       // rim around the terminal tab
+    c.Outline(1677,64,13,24,2,rim);                     // rim around the terminal tab
     c.Rect(1679,66,9,20,200);                           // the terminal itself
-    c.Outline(1684,50,178,52,2,0);                      // rim around the gauge body
+    c.Outline(1684,50,178,52,2,rim);                    // rim around the gauge body
     c.Outline(1686,52,170,48,5,200);                    // the gauge body
     c.Rect(1684,71,5,10,0);
     const float charge = Unit(s.energy);
