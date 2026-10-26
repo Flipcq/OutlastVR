@@ -91,6 +91,16 @@ The control images above and below show the original layout.
 More hand-gesture detail is in [`release/controls/Outlast1VR_Hands_On.png`](release/controls/Outlast1VR_Hands_On.png)
 and in the [player README](release/README.txt).
 
+### Manual VR resolution
+
+In the launcher, open **VR SETTINGS > PICTURE**, keep **High-resolution rendering** ON and set
+**Eye resolution mode** to **MANUAL**. Set **Manual eye width/height** in pixels per eye (Enter
+to type; 480-4096, rounded down to multiples of 8), then restart the game. For example,
+1440 x 1600 is per eye, not the combined stereo frame. The percentage slider applies only to AUTO.
+
+**AUTO** remains the default: the mod reads the OpenXR runtime's recommended resolution, which
+can differ from the physical headset panel resolution. See [launcher instructions](launcher/README.md#choosing-the-vr-render-resolution).
+
 ## If something looks wrong
 
 | Problem | Fix |
@@ -98,7 +108,7 @@ and in the [player README](release/README.txt).
 | The world or your body feels offset | Press both stick clicks to recenter. |
 | The picture looks grainy or blurry | VR SETTINGS: turn "Film grain" off. |
 | Lamp halos show through walls | Lens flares are suppressed by default. Set `[Render] LensFlares=1` and restart to restore them, including flashlight flares. |
-| It stutters | VR SETTINGS: set "Monitor picture" to 30 FPS, and render resolution to 85-90%. |
+| It stutters | VR SETTINGS: set "Monitor picture" to 30 FPS, and AUTO render resolution to 85-90%, or lower the manual eye dimensions. |
 | Textures look wrong, or the game crashes | In `outlastvr.ini`, set `[XR] D3D9Ex=0` (slower, but very compatible). |
 | Each eye shows a distorted screen | In `outlastvr.ini`, set `[Render] LensFit=0` (Quest Link does this by itself). |
 | The camcorder, doors, climbing or labels get in the way | VR SETTINGS, HANDS: switch any of them off. |

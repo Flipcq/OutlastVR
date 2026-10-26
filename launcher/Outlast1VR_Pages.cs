@@ -178,8 +178,17 @@ namespace Outlast1VR
                    "The game's rumble in both controllers, plus the\nclicks and buzzes of the hands-on controls."),
                 T_("HANDS", "Motion", "DevMarkers", "Developer markers", 0,
                    "Coloured rings for every grab zone (door handles,\nhip pouch, hip holster). For testing."),
+                T_("PICTURE", "Render", "HighResRender", "High-resolution rendering", 0,
+                   "ON: use the AUTO or MANUAL eye resolution.\nOFF: use the old desktop-sized render.\nRestart Outlast after changing this."),
+                C_("PICTURE", "Render", "AutoEyeResolution", "Eye resolution mode", 1,
+                   new[] { "MANUAL", "AUTO" }, new double[] { 0, 1 },
+                   "AUTO: use the OpenXR runtime's recommended size.\nMANUAL: use the width and height below per eye.\nRequires high-resolution rendering. Restart game."),
+                N_("PICTURE", "Render", "EyeWidth", "Manual eye width", 1728, 480, 4096, 8, "px", null,
+                   "Width in pixels PER EYE, only in MANUAL mode.\nLeft/right: 8 pixels. ENTER: type a value.\n480-4096, rounded down to 8. Restart game."),
+                N_("PICTURE", "Render", "EyeHeight", "Manual eye height", 1824, 480, 4096, 8, "px", null,
+                   "Height in pixels PER EYE, only in MANUAL mode.\nLeft/right: 8 pixels. ENTER: type a value.\n480-4096, rounded down to 8. Restart game."),
                 N_("PICTURE", "Render", "RenderScale", "Render resolution", 1.0, 0.6, 1.0, 0.05, "%", null,
-                   "100% renders at the headset's own resolution.\nLower it if Outlast stutters in the headset."),
+                   "AUTO mode only: 100% uses the OpenXR runtime's\nrecommended size. Lower it if Outlast stutters.\nMANUAL uses the chosen pixel size directly."),
                 N_("PICTURE", "XR", "Sharpness", "Sharpening", 0.5, 0.0, 1.0, 0.1, "%", "OFF",
                    "How much the picture is sharpened on its way to\nthe headset."),
                 T_("PICTURE", "Render", "LensFit", "Lens-shaped eyes", 1,
@@ -220,6 +229,8 @@ namespace Outlast1VR
                     double p;
                     if (s.Length > 0 && double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out p)) v = p;
                 }
+                if (d.Unit == "px")
+                    v = double.IsNaN(v) || double.IsInfinity(v) ? d.Def : Math.Max(d.Min, Math.Min(d.Max, v));
                 setVals[i] = v;
             }
             if (!iniOk) SetStatus("outlastvr.ini NOT FOUND NEXT TO THE LAUNCHER", Tone.Err);
@@ -267,20 +278,65 @@ namespace Outlast1VR
                 default:
                     if (d.Off != null && Math.Abs(v) < 1e-6) return d.Off;
                     if (d.Unit == "%") return ((int)Math.Round(v * 100)).ToString(CultureInfo.InvariantCulture) + "%";
+                    if (d.Unit == "px") return ((int)v).ToString(CultureInfo.InvariantCulture) + " px";
                     if (d.Unit == "cm") return ((int)Math.Round(v * 100)).ToString(CultureInfo.InvariantCulture) + " cm";
                     return v.ToString("0.00", CultureInfo.InvariantCulture);
             }
         }
 
+        bool editingPixels;
+        bool EditPixels(SettingDef d, ref double value)
+        {
+            if (preview) return false;
+            editingPixels = true;
+            try
+            {
+                using (Form dialog = new Form())
+                using (NumericUpDown input = new NumericUpDown())
+                using (Label label = new Label())
+                using (Button save = new Button())
+                using (Button cancel = new Button())
+                {
+                    dialog.Text = d.Label;
+                    dialog.ClientSize = new Size(350, 130);
+                    dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    dialog.StartPosition = FormStartPosition.CenterParent;
+                    dialog.MaximizeBox = dialog.MinimizeBox = false;
+                    label.Text = "Pixels per eye (480-4096, rounded down to 8):";
+                    label.SetBounds(12, 12, 326, 24);
+                    input.Minimum = (decimal)d.Min; input.Maximum = (decimal)d.Max;
+                    input.Increment = (decimal)d.Step; input.Value = (decimal)value;
+                    input.SetBounds(12, 40, 326, 24);
+                    save.Text = "Save"; save.DialogResult = DialogResult.OK;
+                    save.SetBounds(176, 88, 78, 28);
+                    cancel.Text = "Cancel"; cancel.DialogResult = DialogResult.Cancel;
+                    cancel.SetBounds(260, 88, 78, 28);
+                    dialog.Controls.AddRange(new Control[] { label, input, save, cancel });
+                    dialog.AcceptButton = save; dialog.CancelButton = cancel;
+                    dialog.ActiveControl = input; input.Select(0, input.Text.Length);
+                    if (dialog.ShowDialog(Form.ActiveForm) != DialogResult.OK) return false;
+                    value = Math.Floor((double)input.Value / 8) * 8;
+                    return true;
+                }
+            }
+            finally { editingPixels = false; }
+        }
+
         void ChangeSetting(int i, int dir)
         {
+            if (editingPixels) return;
             if (i < 0 || i >= Defs.Length) return;
             SettingDef d = Defs[i];
             if (d.Kind == SetKind.Action) { if (dir != 0) RunSettingAction(d); return; }
             if (!iniOk) { SetStatus("outlastvr.ini NOT FOUND NEXT TO THE LAUNCHER", Tone.Err); if (sfx != null) sfx.Error(); return; }
             double v = setVals[i];
             string text;
-            switch (d.Kind)
+            if (d.Unit == "px" && dir == 0)
+            {
+                if (!EditPixels(d, ref v)) return;
+                text = v.ToString("0", CultureInfo.InvariantCulture);
+            }
+            else switch (d.Kind)
             {
                 case SetKind.Toggle:
                     v = v != 0 ? 0 : 1; text = v != 0 ? "1" : "0"; break;
@@ -298,7 +354,7 @@ namespace Outlast1VR
                     if (dir == 0 && steps > maxSteps) steps = 0;               // ENTER wraps round
                     if (steps < 0) steps = 0; if (steps > maxSteps) steps = maxSteps;
                     v = Math.Round(d.Min + steps * d.Step, 4);
-                    text = v.ToString("0.000", CultureInfo.InvariantCulture); break;
+                    text = v.ToString(d.Unit == "px" ? "0" : "0.000", CultureInfo.InvariantCulture); break;
                 }
             }
             if (Math.Abs(v - setVals[i]) < 1e-9) { if (sfx != null) sfx.Tick(); return; }

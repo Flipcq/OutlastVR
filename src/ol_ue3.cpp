@@ -5729,20 +5729,26 @@ static volatile long g_hiResOn = 0, g_hiResHookOk = 0;
 static volatile long g_hiResW = 3456, g_hiResH = 1824;   // whole SBS backbuffer (both eyes)
 static volatile long g_hiResEyeW = 1728, g_hiResEyeH = 1824;
 static float g_hiResScale = 1.0f;
+static bool g_autoEyeResolution = true;
 static volatile long g_hiResAppliedW = 0, g_hiResAppliedH = 0;
 extern "C" int OLUE3_HiResActive() { return (g_hiResOn && g_hiResHookOk) ? 1 : 0; }
 extern "C" int OLUE3_HiResApplied() {
     return (g_hiResAppliedW == g_hiResW && g_hiResAppliedH == g_hiResH) ? 1 : 0;
 }
 static void HiResRecompute() {
-    float s = g_hiResScale; if (!(s >= 0.4f)) s = 0.4f; if (s > 1.5f) s = 1.5f;
+    // Manual dimensions are the final render size; RenderScale only affects AUTO.
+    float s = g_autoEyeResolution ? g_hiResScale : 1.0f;
+    if (!(s >= 0.4f)) s = 0.4f;
+    if (s > 1.5f) s = 1.5f;
     long w = (long)(g_hiResEyeW * s + 0.5f) & ~7L, h = (long)(g_hiResEyeH * s + 0.5f) & ~7L;
-    if (w < 480) w = 480; if (h < 480) h = 480;
+    if (w < 480) w = 480;
+    if (h < 480) h = 480;
     g_hiResW = w * 2; g_hiResH = h;
 }
 // The runtime's recommended per-eye size, once the XR session knows it. Returns 1 if the target
 // changed (the caller then nudges the engine to re-run its resize).
 extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH) {
+    if (!g_autoEyeResolution) return 0;
     if (eyeW < 480 || eyeH < 480 || eyeW > 4096 || eyeH > 4096) return 0;
     if ((long)eyeW == g_hiResEyeW && (long)eyeH == g_hiResEyeH) return 0;
     g_hiResEyeW = (long)eyeW; g_hiResEyeH = (long)eyeH;
@@ -5751,9 +5757,12 @@ extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH) {
     OLProxyLog(l);
     return 1;
 }
+extern "C" int OLUE3_AutoEyeResolution() { return g_autoEyeResolution ? 1 : 0; }
 extern "C" float OLUE3_GetRenderScale() { return g_hiResScale; }
 extern "C" int OLUE3_SetRenderScale(float s) {
-    if (!(s >= 0.4f)) s = 0.4f; if (s > 1.5f) s = 1.5f;
+    if (!g_autoEyeResolution) return 0;
+    if (!(s >= 0.4f)) s = 0.4f;
+    if (s > 1.5f) s = 1.5f;
     if (fabsf(s - g_hiResScale) < 0.001f) return 0;
     g_hiResScale = s; HiResRecompute();
     return 1;
@@ -6626,11 +6635,20 @@ static void ReadConfig() {
     g_armSmoothDt = GetPrivateProfileIntW(L"Stage3", L"ArmSmoothDt", 0, ini) ? 1 : 0;
     // [HIRES] missing keys = the old desktop-sized render
     g_hiResOn = GetPrivateProfileIntW(L"Render", L"HighResRender", 0, ini) ? 1 : 0;
+    g_autoEyeResolution = GetPrivateProfileIntW(L"Render", L"AutoEyeResolution", 1, ini) != 0;
     g_hiResEyeW = (long)GetPrivateProfileIntW(L"Render", L"EyeWidth", 1728, ini);
     g_hiResEyeH = (long)GetPrivateProfileIntW(L"Render", L"EyeHeight", 1824, ini);
+    // Bound ini input before multiplying or converting it to render-target dimensions.
+    if (g_hiResEyeW < 480) g_hiResEyeW = 480;
+    if (g_hiResEyeW > 4096) g_hiResEyeW = 4096;
+    if (g_hiResEyeH < 480) g_hiResEyeH = 480;
+    if (g_hiResEyeH > 4096) g_hiResEyeH = 4096;
     { wchar_t rv[32]; GetPrivateProfileStringW(L"Render", L"RenderScale", L"1.0", rv, 32, ini);
       g_hiResScale = (float)_wtof(rv); }
     HiResRecompute();
+    { char l[180]; sprintf_s(l, "[OLVR][HIRES] resolution mode=%s, initial target %ldx%ld per eye",
+                            g_autoEyeResolution ? "AUTO (OpenXR)" : "MANUAL", g_hiResW / 2, g_hiResH);
+      OLProxyLog(l); }
     g_lookUse = GetPrivateProfileIntW(L"Input", L"LookToUse", 0, ini);   // [LOOKUSE] missing = off
     if (g_lookUse < 0 || g_lookUse > 2) g_lookUse = 0;
     // [COMFORT] Missing keys = off = the previous camera exactly.

@@ -108,6 +108,26 @@ endings. A file is only rewritten if its bytes would change. On copies of real c
 byte-identical to the .bat's own PowerShell commands (with `Fullscreen=False`). Missing files are skipped with
 a warning, and a failed backup aborts before anything is edited.
 
+## Choosing the VR render resolution
+
+In **VR SETTINGS > PICTURE**, leave **High-resolution rendering** ON and choose:
+
+- **Eye resolution mode: AUTO** (default): OpenXR supplies the recommended size per eye.
+  It includes the runtime's quality settings, so it can differ from the physical panel resolution.
+  **Render resolution** scales this recommendation to trade sharpness for performance.
+- **Eye resolution mode: MANUAL**: set **Manual eye width** and **Manual eye height** in pixels
+  per eye. Left/right changes by 8 pixels; Enter opens a numeric entry box (Save or Cancel).
+  Values are limited to 480-4096 and rounded down to multiples of 8. Render resolution (%) is
+  ignored in this mode. Restart Outlast after changing the mode or manual dimensions.
+
+For example, 1440 x 1600 means **each eye** renders at 1440 x 1600; the engine draws both
+in a 2880 x 1600 frame. The OpenXR output size remains the runtime recommendation, and the
+mod scales the rendered picture to it. The desktop window size is a separate setting.
+
+The settings are saved in `[Render]` as `AutoEyeResolution` (1 = AUTO, 0 = MANUAL), `EyeWidth`
+and `EyeHeight`. Existing configs without the new key keep AUTO behavior. With `HighResRender=0`,
+the legacy desktop render path is used and these eye settings do not apply.
+
 ## Optional background from the user's install
 
 If `..\..\Engine\Splash\PCConsole\Splash.bmp` (or an `OLGame\Splash` equivalent) exists in the user's own

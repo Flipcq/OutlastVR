@@ -60,6 +60,7 @@ extern "C" void  OLProxy_GetHudFit(float* scale, float* offX, float* offY);
 extern "C" void  OLProxy_SetHudFit(float scale, float offX, float offY);
 extern "C" int   OLProxy_SaveSettings();
 extern "C" int   OLUE3_HiResActive();
+extern "C" int   OLUE3_AutoEyeResolution();
 extern "C" float OLUE3_GetRenderScale();
 extern "C" int   OLUE3_SetRenderScale(float s);
 extern "C" void  OLUE3_GetHiResTarget(long* w, long* h);
@@ -749,7 +750,11 @@ static void BuildUI() {
     // [HIRES] How many pixels the game draws for each eye. Changing it resizes the game's
     // render (a brief hitch), so the slider applies once it has been left alone for a moment.
     Section("RESOLUTION");
-    if (OLUE3_HiResActive()) {
+    if (OLUE3_HiResActive() && !OLUE3_AutoEyeResolution()) {
+        long tw = 0, th = 0; OLUE3_GetHiResTarget(&tw, &th);
+        ImGui::Text("Manual resolution: %ld x %ld per eye", tw / 2, th);
+        Help("Change the manual size or select AUTO in the launcher, then restart Outlast.");
+    } else if (OLUE3_HiResActive()) {
         static float s_pending = -1.0f; static double s_changedAt = 0.0;
         float s = s_pending > 0.0f ? s_pending : OLUE3_GetRenderScale();
         long tw = 0, th = 0; OLUE3_GetHiResTarget(&tw, &th);
