@@ -94,8 +94,10 @@ and in the [player README](release/README.txt).
 ### Manual VR resolution
 
 In the launcher, open **VR SETTINGS > PICTURE**, keep **High-resolution rendering** ON and set
-**Eye resolution mode** to **MANUAL**. Set **Manual eye width/height** in pixels per eye (Enter
-to type; 480-4096, rounded down to multiples of 8), then restart the game. For example,
+**Eye resolution mode** to **MANUAL**. Drag the **Eye resolution** slider left/right; the pixel
+size per eye appears beside it (for example, `2496 x 2688`). Both dimensions scale together,
+keeping the saved pair's aspect ratio within 8-pixel rounding. Release to save, then restart.
+Arrow keys and the controller D-pad also adjust it. Values stay within 480-4096 per axis. For example,
 1440 x 1600 is per eye, not the combined stereo frame. The percentage slider applies only to AUTO.
 
 **AUTO** remains the default: the mod reads the OpenXR runtime's recommended resolution, which

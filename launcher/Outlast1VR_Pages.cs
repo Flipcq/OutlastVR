@@ -25,7 +25,7 @@ using System.Windows.Forms;
 
 namespace Outlast1VR
 {
-    enum SetKind { Toggle, Choice, Number, Action }
+    enum SetKind { Toggle, Choice, Number, Action, Resolution }
 
     sealed class SettingDef
     {
@@ -63,6 +63,42 @@ namespace Outlast1VR
         public static readonly string[] LearnedKeys = { "LearnedTakeCamcorder", "LearnedRaise", "LearnedEject", "LearnedInsert", "LearnedDoor", "LearnedClimb", "LearnedCoverMouth" };
     }
 
+    // One slider scales both eye dimensions, preserving the saved pair's aspect ratio.
+    sealed class EyeResolutionRange
+    {
+        readonly double ratio;
+        readonly bool wide;
+        public readonly int MinMajor;
+        public const int MaxMajor = 4096;
+
+        public static int Normalize(int value)
+        {
+            return Math.Max(480, Math.Min(MaxMajor, value)) / 8 * 8;
+        }
+
+        public EyeResolutionRange(int width, int height)
+        {
+            width = Normalize(width); height = Normalize(height);
+            wide = width >= height;
+            ratio = (double)Math.Max(width, height) / Math.Min(width, height);
+            MinMajor = Math.Min(MaxMajor, (int)Math.Ceiling(480 * ratio / 8) * 8);
+        }
+
+        public double Position(int width, int height)
+        {
+            return MaxMajor == MinMajor ? 0 :
+                Math.Max(0, Math.Min(1, (double)(Math.Max(width, height) - MinMajor) / (MaxMajor - MinMajor)));
+        }
+
+        public void SizeAt(double position, out int width, out int height)
+        {
+            position = double.IsNaN(position) ? 0 : Math.Max(0, Math.Min(1, position));
+            int major = (int)Math.Round((MinMajor + position * (MaxMajor - MinMajor)) / 8) * 8;
+            int minor = Normalize((int)Math.Round(major / ratio / 8) * 8);
+            width = wide ? major : minor; height = wide ? minor : major;
+        }
+    }
+
     sealed partial class Viewfinder
     {
         // ---------------- pages ----------------
@@ -77,6 +113,7 @@ namespace Outlast1VR
         void OpenPage(int p)
         {
             if (p == page) return;
+            CancelResolutionDrag();
             page = p; pageAt = T;
             hover = HitNone;
             if (p == PageSettings) LoadSettings();
@@ -87,6 +124,7 @@ namespace Outlast1VR
         void ClosePage()
         {
             if (page == PageMain) return;
+            CancelResolutionDrag();
             page = PageMain; pageAt = T;
             if (sfx != null) sfx.Tick();
         }
@@ -182,11 +220,10 @@ namespace Outlast1VR
                    "ON: use the AUTO or MANUAL eye resolution.\nOFF: use the old desktop-sized render.\nRestart Outlast after changing this."),
                 C_("PICTURE", "Render", "AutoEyeResolution", "Eye resolution mode", 1,
                    new[] { "MANUAL", "AUTO" }, new double[] { 0, 1 },
-                   "AUTO: use the OpenXR runtime's recommended size.\nMANUAL: use the width and height below per eye.\nRequires high-resolution rendering. Restart game."),
-                N_("PICTURE", "Render", "EyeWidth", "Manual eye width", 1728, 480, 4096, 8, "px", null,
-                   "Width in pixels PER EYE, only in MANUAL mode.\nLeft/right: 8 pixels. ENTER: type a value.\n480-4096, rounded down to 8. Restart game."),
-                N_("PICTURE", "Render", "EyeHeight", "Manual eye height", 1824, 480, 4096, 8, "px", null,
-                   "Height in pixels PER EYE, only in MANUAL mode.\nLeft/right: 8 pixels. ENTER: type a value.\n480-4096, rounded down to 8. Restart game."),
+                   "AUTO: use the OpenXR runtime's recommended size.\nMANUAL: move the resolution slider below.\nRequires high-resolution rendering. Restart game."),
+                new SettingDef { Group = "PICTURE", Section = "Render", Key = "EyeWidth",
+                    Label = "Eye resolution", Kind = SetKind.Resolution,
+                    Help = "MANUAL mode: drag the circle left or right.\nBoth dimensions change together, per eye.\nArrow keys / D-pad also adjust. Restart game." },
                 N_("PICTURE", "Render", "RenderScale", "Render resolution", 1.0, 0.6, 1.0, 0.05, "%", null,
                    "AUTO mode only: 100% uses the OpenXR runtime's\nrecommended size. Lower it if Outlast stutters.\nMANUAL uses the chosen pixel size directly."),
                 N_("PICTURE", "XR", "Sharpness", "Sharpening", 0.5, 0.0, 1.0, 0.1, "%", "OFF",
@@ -221,7 +258,7 @@ namespace Outlast1VR
             for (int i = 0; i < Defs.Length; i++)
             {
                 SettingDef d = Defs[i];
-                if (d.Kind == SetKind.Action) continue;
+                if (d.Kind == SetKind.Action || d.Kind == SetKind.Resolution) continue;
                 double v = d.Def;
                 if (iniOk)
                 {
@@ -229,10 +266,9 @@ namespace Outlast1VR
                     double p;
                     if (s.Length > 0 && double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out p)) v = p;
                 }
-                if (d.Unit == "px")
-                    v = double.IsNaN(v) || double.IsInfinity(v) ? d.Def : Math.Max(d.Min, Math.Min(d.Max, v));
                 setVals[i] = v;
             }
+            LoadManualResolution();
             if (!iniOk) SetStatus("outlastvr.ini NOT FOUND NEXT TO THE LAUNCHER", Tone.Err);
             else if (SysInfo.GameRunning()) SetStatus("OUTLAST IS RUNNING - CHANGES APPLY NEXT START", Tone.Warn);
             else SetStatus("CHANGES ARE SAVED THE MOMENT YOU MAKE THEM", Tone.Info);
@@ -270,6 +306,7 @@ namespace Outlast1VR
         {
             SettingDef d = Defs[i];
             if (d.Kind == SetKind.Action) return "PRESS";
+            if (d.Kind == SetKind.Resolution) return manualEyeW + " x " + manualEyeH;
             double v = i < setVals.Length ? setVals[i] : d.Def;
             switch (d.Kind)
             {
@@ -278,65 +315,138 @@ namespace Outlast1VR
                 default:
                     if (d.Off != null && Math.Abs(v) < 1e-6) return d.Off;
                     if (d.Unit == "%") return ((int)Math.Round(v * 100)).ToString(CultureInfo.InvariantCulture) + "%";
-                    if (d.Unit == "px") return ((int)v).ToString(CultureInfo.InvariantCulture) + " px";
                     if (d.Unit == "cm") return ((int)Math.Round(v * 100)).ToString(CultureInfo.InvariantCulture) + " cm";
                     return v.ToString("0.00", CultureInfo.InvariantCulture);
             }
         }
 
-        bool editingPixels;
-        bool EditPixels(SettingDef d, ref double value)
+        // ---------------- manual resolution slider ----------------
+        EyeResolutionRange eyeRange;
+        int manualEyeW = 1728, manualEyeH = 1824;
+        bool resolutionDragging;
+        int dragStartW, dragStartH;
+
+        void LoadManualResolution()
         {
-            if (preview) return false;
-            editingPixels = true;
-            try
+            int w, h;
+            if (!int.TryParse(ModIni.Read(iniPath, "Render", "EyeWidth", ""), out w)) w = 1728;
+            if (!int.TryParse(ModIni.Read(iniPath, "Render", "EyeHeight", ""), out h)) h = 1824;
+            manualEyeW = EyeResolutionRange.Normalize(w); manualEyeH = EyeResolutionRange.Normalize(h);
+            eyeRange = new EyeResolutionRange(manualEyeW, manualEyeH);
+        }
+
+        bool ManualResolutionEnabled()
+        {
+            if (!iniOk) return false;
+            bool highRes = false, manual = false;
+            for (int i = 0; i < Defs.Length; i++)
             {
-                using (Form dialog = new Form())
-                using (NumericUpDown input = new NumericUpDown())
-                using (Label label = new Label())
-                using (Button save = new Button())
-                using (Button cancel = new Button())
+                if (Defs[i].Key == "HighResRender") highRes = setVals[i] != 0;
+                if (Defs[i].Key == "AutoEyeResolution") manual = setVals[i] == 0;
+            }
+            return highRes && manual;
+        }
+
+        static Rectangle ResolutionTrack(Rectangle row)
+        {
+            return new Rectangle(row.X + 220, row.Y, row.Width - 390, row.Height);
+        }
+
+        Rectangle ResolutionRow()
+        {
+            List<SetLine> lines = SetLines();
+            for (int k = 0; k < VisibleLines && setTop + k < lines.Count; k++)
+                if (lines[setTop + k].Def >= 0 && Defs[lines[setTop + k].Def].Kind == SetKind.Resolution)
+                    return new Rectangle(SetListX, SetListY + k * SetRowH, SetListW, SetRowH - 3);
+            return Rectangle.Empty;
+        }
+
+        public bool BeginResolutionDrag(Point p)
+        {
+            if (page != PageSettings || !ManualResolutionEnabled()) return false;
+            Rectangle row = ResolutionRow();
+            Rectangle hit = ResolutionTrack(row); hit.Inflate(8, 0);
+            if (row.IsEmpty || !hit.Contains(p)) return false;
+            for (int i = 0; i < Defs.Length; i++) if (Defs[i].Kind == SetKind.Resolution) SettingsSelect(i);
+            dragStartW = manualEyeW; dragStartH = manualEyeH;
+            resolutionDragging = true;
+            SetStatus("DRAG TO CHOOSE - RELEASE TO SAVE", Tone.Info);
+            DragResolution(p);
+            return true;
+        }
+
+        public bool DragResolution(Point p)
+        {
+            if (!resolutionDragging) return false;
+            Rectangle track = ResolutionTrack(ResolutionRow());
+            eyeRange.SizeAt((double)(p.X - track.Left) / track.Width, out manualEyeW, out manualEyeH);
+            return true;
+        }
+
+        public bool EndResolutionDrag(Point p)
+        {
+            if (!resolutionDragging) return false;
+            DragResolution(p);
+            resolutionDragging = false;
+            if (manualEyeW != dragStartW || manualEyeH != dragStartH) SaveManualResolution();
+            else SetStatus("EYE RESOLUTION UNCHANGED", Tone.Info);
+            return true;
+        }
+
+        public void CancelResolutionDrag()
+        {
+            if (!resolutionDragging) return;
+            resolutionDragging = false;
+            manualEyeW = dragStartW; manualEyeH = dragStartH;
+            SetStatus("RESOLUTION CHANGE CANCELLED", Tone.Info);
+        }
+
+        void StepResolution(int dir)
+        {
+            if (!ManualResolutionEnabled())
+            {
+                SetStatus("SELECT MANUAL MODE AND ENABLE HIGH-RES RENDERING", Tone.Warn);
+                return;
+            }
+            int w = manualEyeW, h = manualEyeH;
+            double step = 8.0 / Math.Max(8, EyeResolutionRange.MaxMajor - eyeRange.MinMajor);
+            eyeRange.SizeAt(eyeRange.Position(w, h) + (dir < 0 ? -step : step), out manualEyeW, out manualEyeH);
+            if (w != manualEyeW || h != manualEyeH) SaveManualResolution();
+        }
+
+        void SaveManualResolution()
+        {
+            if (!preview || settingsWriteTest)
+            {
+                string oldW = ModIni.Read(iniPath, "Render", "EyeWidth", "");
+                bool wroteW = ModIni.Write(iniPath, "Render", "EyeWidth", manualEyeW.ToString(CultureInfo.InvariantCulture));
+                if (!wroteW || !ModIni.Write(iniPath, "Render", "EyeHeight", manualEyeH.ToString(CultureInfo.InvariantCulture)))
                 {
-                    dialog.Text = d.Label;
-                    dialog.ClientSize = new Size(350, 130);
-                    dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
-                    dialog.StartPosition = FormStartPosition.CenterParent;
-                    dialog.MaximizeBox = dialog.MinimizeBox = false;
-                    label.Text = "Pixels per eye (480-4096, rounded down to 8):";
-                    label.SetBounds(12, 12, 326, 24);
-                    input.Minimum = (decimal)d.Min; input.Maximum = (decimal)d.Max;
-                    input.Increment = (decimal)d.Step; input.Value = (decimal)value;
-                    input.SetBounds(12, 40, 326, 24);
-                    save.Text = "Save"; save.DialogResult = DialogResult.OK;
-                    save.SetBounds(176, 88, 78, 28);
-                    cancel.Text = "Cancel"; cancel.DialogResult = DialogResult.Cancel;
-                    cancel.SetBounds(260, 88, 78, 28);
-                    dialog.Controls.AddRange(new Control[] { label, input, save, cancel });
-                    dialog.AcceptButton = save; dialog.CancelButton = cancel;
-                    dialog.ActiveControl = input; input.Select(0, input.Text.Length);
-                    if (dialog.ShowDialog(Form.ActiveForm) != DialogResult.OK) return false;
-                    value = Math.Floor((double)input.Value / 8) * 8;
-                    return true;
+                    // Restore the first key if the second write failed; reload the actual file on any error.
+                    if (wroteW) ModIni.Write(iniPath, "Render", "EyeWidth", oldW.Length == 0 ? null : oldW);
+                    LoadManualResolution();
+                    SetStatus("COULD NOT SAVE EYE RESOLUTION - CHECK outlastvr.ini", Tone.Err);
+                    if (sfx != null) sfx.Error();
+                    return;
                 }
             }
-            finally { editingPixels = false; }
+            setChangeAt = T;
+            SetStatus("SAVED: " + manualEyeW + " x " + manualEyeH + " PER EYE - RESTART GAME", Tone.Ok);
+            if (sfx != null) sfx.Confirm();
         }
+        // ---------------- other settings ----------------
 
         void ChangeSetting(int i, int dir)
         {
-            if (editingPixels) return;
+            if (resolutionDragging) return;
             if (i < 0 || i >= Defs.Length) return;
             SettingDef d = Defs[i];
             if (d.Kind == SetKind.Action) { if (dir != 0) RunSettingAction(d); return; }
+            if (d.Kind == SetKind.Resolution) { StepResolution(dir); return; }
             if (!iniOk) { SetStatus("outlastvr.ini NOT FOUND NEXT TO THE LAUNCHER", Tone.Err); if (sfx != null) sfx.Error(); return; }
             double v = setVals[i];
             string text;
-            if (d.Unit == "px" && dir == 0)
-            {
-                if (!EditPixels(d, ref v)) return;
-                text = v.ToString("0", CultureInfo.InvariantCulture);
-            }
-            else switch (d.Kind)
+            switch (d.Kind)
             {
                 case SetKind.Toggle:
                     v = v != 0 ? 0 : 1; text = v != 0 ? "1" : "0"; break;
@@ -354,7 +464,7 @@ namespace Outlast1VR
                     if (dir == 0 && steps > maxSteps) steps = 0;               // ENTER wraps round
                     if (steps < 0) steps = 0; if (steps > maxSteps) steps = maxSteps;
                     v = Math.Round(d.Min + steps * d.Step, 4);
-                    text = v.ToString(d.Unit == "px" ? "0" : "0.000", CultureInfo.InvariantCulture); break;
+                    text = v.ToString("0.000", CultureInfo.InvariantCulture); break;
                 }
             }
             if (Math.Abs(v - setVals[i]) < 1e-9) { if (sfx != null) sfx.Tick(); return; }
@@ -414,6 +524,7 @@ namespace Outlast1VR
 
         void SettingsSelect(int i)
         {
+            if (resolutionDragging) return;
             if (i < 0) i = 0; if (i >= Defs.Length) i = Defs.Length - 1;
             if (i == setSel) return;
             setSel = i; setSelTime = T;
@@ -435,6 +546,7 @@ namespace Outlast1VR
 
         public void Wheel(int delta)
         {
+            if (resolutionDragging) return;
             if (page == PageSettings)
             {
                 int max = Math.Max(0, SetLines().Count - VisibleLines);
@@ -505,6 +617,7 @@ namespace Outlast1VR
             {
                 int i = hit - HitRow0;
                 SettingsSelect(i);
+                if (Defs[i].Kind == SetKind.Resolution) return;
                 // the left arrow of the value lowers it, anywhere else raises / toggles it
                 int dir = lastMouse.X < SetListX + SetListW - 168 + 24 && lastMouse.X > SetListX + SetListW - 190 ? -1 : 1;
                 ChangeSetting(i, dir);
@@ -515,6 +628,7 @@ namespace Outlast1VR
 
         bool PageKey(Keys k, bool shift)
         {
+            if (resolutionDragging) return true;
             if (k == Keys.Escape || k == Keys.Back) { ClosePage(); return true; }
             if (page == PageSettings)
             {
@@ -576,7 +690,7 @@ namespace Outlast1VR
             DrawBack(g, t, pa);
             if (page == PageSettings) DrawSettings(g, t, pa);
             else DrawControls(g, t, pa);
-            string hint = page == PageSettings ? "↑↓ SELECT    ◄► CHANGE    ENTER TOGGLE    ESC / B BACK    F11 FULL SCREEN" : "◄► STEP THROUGH THE CONTROLS    ESC / B BACK    F11 FULL SCREEN";
+            string hint = page == PageSettings ? "↑↓ SELECT    ◄► CHANGE    ENTER CHANGE    ESC / B BACK    F11 FULL SCREEN" : "◄► STEP THROUGH THE CONTROLS    ESC / B BACK    F11 FULL SCREEN";
             TextCenter(g, hint, fHint, U.A(Color.FromArgb(150, 160, 215, 168), pa), 640, 690, true);
         }
 
@@ -653,6 +767,20 @@ namespace Outlast1VR
             else Fill(g, U.A(Color.FromArgb(hot ? 150 : 110, 1, 10, 4), a), r);
             Color lc = selected ? Hi : (d.Kind == SetKind.Action ? Color.FromArgb(225, 170, 220, 175) : Color.FromArgb(225, 150, 214, 156));
             Text(g, d.Label, fStatB, U.A(lc, a), r.X + 16, r.Y + 6, true);
+            if (d.Kind == SetKind.Resolution)
+            {
+                Rectangle track = ResolutionTrack(r);
+                bool enabled = ManualResolutionEnabled();
+                Color color = U.A(enabled ? (selected ? Hi : NvMain) : NvDim, a);
+                float cy = r.Y + r.Height / 2f;
+                float knobX = track.Left + (float)eyeRange.Position(manualEyeW, manualEyeH) * track.Width;
+                pen.Width = 2; pen.Color = U.A(NvDim, a);
+                g.DrawLine(pen, track.Left, cy, track.Right, cy);
+                pen.Color = color; g.DrawLine(pen, track.Left, cy, knobX, cy);
+                sb.Color = color; g.FillEllipse(sb, knobX - 6, cy - 6, 12, 12);
+                TextCenter(g, ValueText(i), fStatB, color, r.Right - 78, r.Y + 6, true);
+                return;
+            }
             // value: ◄ VALUE ► when selected
             string v = ValueText(i);
             Color vc;

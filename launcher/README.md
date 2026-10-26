@@ -50,7 +50,7 @@ Mouse, keyboard or an XInput controller. A controller is read only while the lau
   and deletes `d3d9.dll` and `openxr_loader.dll`, exactly like the .bat uninstall.
   If `OLGame.ini.bak-outlastvr` is missing, it reports "not installed" and changes nothing.
 - **VR SETTINGS** (tape 02) lists the mod's main settings from `outlastvr.ini` next to the launcher: up/down picks,
-  left/right (or Enter / a click) changes, and every change is written at once with WritePrivateProfileString, so
+  left/right (or Enter / a click) changes, and changes are written with WritePrivateProfileString (the resolution slider saves on release), so
   the comments in the file stay. Its TOOLS rows reset the in-headset how-to labels and open `%LOCALAPPDATA%\OutlastVR`.
 - **QUEST 3 CONTROLS** (tape 03) draws both Touch Plus controllers (from Meta's product photos: round face, stick,
   face buttons, Menu / Meta, trigger under the face, grip on the inner side), steps through every control with its
@@ -115,10 +115,14 @@ In **VR SETTINGS > PICTURE**, leave **High-resolution rendering** ON and choose:
 - **Eye resolution mode: AUTO** (default): OpenXR supplies the recommended size per eye.
   It includes the runtime's quality settings, so it can differ from the physical panel resolution.
   **Render resolution** scales this recommendation to trade sharpness for performance.
-- **Eye resolution mode: MANUAL**: set **Manual eye width** and **Manual eye height** in pixels
-  per eye. Left/right changes by 8 pixels; Enter opens a numeric entry box (Save or Cancel).
-  Values are limited to 480-4096 and rounded down to multiples of 8. Render resolution (%) is
-  ignored in this mode. Restart Outlast after changing the mode or manual dimensions.
+- **Eye resolution mode: MANUAL**: use the **Eye resolution** slider, shown as a line with a
+  circular handle and `width x height` beside it. Drag left for fewer pixels or right for more.
+  The dimensions update while dragging and are saved on release. Left/right arrows or the D-pad
+  also adjust it. Both dimensions scale together using the aspect ratio of the saved
+  `EyeWidth`/`EyeHeight` pair, with 8-pixel rounding and limits of 480-4096 per axis. Losing
+  mouse capture cancels an unfinished drag. The slider is enabled when MANUAL and high-resolution
+  rendering are enabled. Render resolution (%) is ignored in this mode. Restart Outlast after
+  changing the mode or manual size.
 
 For example, 1440 x 1600 means **each eye** renders at 1440 x 1600; the engine draws both
 in a 2880 x 1600 frame. The OpenXR output size remains the runtime recommendation, and the
