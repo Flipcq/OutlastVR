@@ -3499,9 +3499,10 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
     q.subImage.swapchain = g_hudSc;
     q.subImage.imageRect.extent = {OLCamHud::Width,OLCamHud::Height};
     q.pose = IdentityPose(); q.pose.position.z = -OLCamHud::PanelDistance;
-    // The reference artwork is a fullscreen display, not a panel: size the quad to the edges of
-    // what this headset can actually show, at arm's length, so the readouts land in the corners
-    // like the reference instead of growing into a tight cluster in front of the face.
+    // The reference artwork is a fullscreen display, not a panel: size the quad from this headset's
+    // own field of view so the readouts land in the corners like the reference instead of growing
+    // into a tight cluster in front of the face - stopping just short of the edges, which is what
+    // makes the display read as set back rather than pressed against the lenses.
     float hmdFovX = 0.0f;
     OLXR_GetHmdFovDeg(&hmdFovX, nullptr);
     q.size.width = OLCamHud::PanelWidth(hmdFovX);

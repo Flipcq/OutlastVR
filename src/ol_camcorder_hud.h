@@ -19,12 +19,18 @@ constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // A 0.60 m plane 0.45 m away covered only the central ~67 deg, which is what made every readout
 // look huge, close, and bunched up in the centre. Sized from the headset's own horizontal FOV
 // (PanelWidth) and parked at arm's length, the layout comes out like the reference.
-constexpr float PanelDistance = 0.75f;      // metres in front of the eye
+// The quad is head-locked and uses the same picture in both eyes, so it carries no stereo
+// disparity: its apparent distance is set by how much of the view it fills, not by how many
+// centimetres away it is parked (PanelWidth scales with PanelDistance, so moving it alone changes
+// nothing on screen). Pushing it back therefore means filling a little less of the view.
+constexpr float PanelDistance = 0.85f;      // metres in front of the eye
 constexpr float PanelMargin = 0.97f;        // hair of margin so the corner readouts are not clipped
 // Fill the view, but stop before the corners leave the region both eyes can see (~+/-40 deg on a
-// Quest): a readout past that is drawn in one eye only and reads as a ghost. 84 deg puts the REC
-// light and the battery gauge at ~37 deg - in the corners, as in the reference, still fused.
-constexpr float PanelMinFovDeg = 76.0f, PanelMaxFovDeg = 84.0f;
+// Quest): a readout past that is drawn in one eye only and reads as a ghost. 78 deg keeps the REC
+// light and the battery gauge just inside the corners (~34 deg), and leaves the display reading as
+// arm's length rather than pressed against the lenses; the display's physical width comes out the
+// same as the earlier 84 deg at 0.75 m, i.e. the same screen moved a little further away.
+constexpr float PanelMinFovDeg = 70.0f, PanelMaxFovDeg = 78.0f;
 inline float PanelWidth(float hmdFovDeg) {
     float deg = std::isfinite(hmdFovDeg) ? hmdFovDeg : 0.0f;
     if (deg < PanelMinFovDeg) deg = PanelMinFovDeg;   // no runtime FOV yet, or a narrow headset

@@ -361,6 +361,12 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   stops the corner readouts past ~37 deg, where they would be drawn in one eye only and read as a ghost.
 - The artwork is back on the reference screenshot's own 1920x1080 coordinates (`DynamicTop = 0`, the
   readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
+- The display sits a little further away (`PanelDistance` 0.85 m, FOV fill clamped to 70-78 deg instead of
+  76-84): the quad is head-locked and mono, so it has no stereo disparity and its apparent distance comes
+  only from how much of the view it fills - `PanelWidth` scales with `PanelDistance`, so moving the quad
+  back on its own changes nothing on screen. The same physical width at a longer distance puts the REC
+  light and the battery gauge at ~34 deg (was ~37), just inside the corners and inside the ~40 deg both
+  eyes fuse. `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
   can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
   visible against the track.
