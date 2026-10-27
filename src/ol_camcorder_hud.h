@@ -19,18 +19,29 @@ constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // A 0.60 m plane 0.45 m away covered only the central ~67 deg, which is what made every readout
 // look huge, close, and bunched up in the centre. Sized from the headset's own horizontal FOV
 // (PanelWidth) and parked at arm's length, the layout comes out like the reference.
-// The quad is head-locked and uses the same picture in both eyes, so it carries no stereo
-// disparity: its apparent distance is set by how much of the view it fills, not by how many
-// centimetres away it is parked (PanelWidth scales with PanelDistance, so moving it alone changes
-// nothing on screen). Pushing it back therefore means filling a little less of the view.
-constexpr float PanelDistance = 1.05f;      // metres in front of the eye
+// PanelDistance is the display's STEREO DEPTH, not just its size, and that is why it is 2 m and
+// not 1. A quad layer submitted in the VIEW space is composited into EACH eye from that eye's own
+// head-relative pose, so a plane d metres ahead asks the eyes to converge on d (the picture is a
+// single texture, but the two projections are not identical). That is the spec's model: a quad
+// layer is "a posable planar rectangle in the virtual world", and the VIEW space is the centroid of
+// the two eye origins in stereo, not an eye. An earlier revision called the quad
+// "mono, so it has no stereo disparity" and treated the distance as a size-only knob; that is not
+// how a quad layer is composited, and it is exactly what "the focusing brackets read double" was.
+// The brackets are the one thin, bright, dead-centre shape, and the middle of a near plane is where
+// its disparity is largest: ~3.4 deg at 1.05 m. While the player's eyes are converged on the room
+// behind the display, the two copies cannot fuse and read as two squares - not always, only when
+// the scene is further away than the display (which is most of the time).
+// 2.00 m asks for ~1.8 deg, about what a corridor or an ordinary room asks for anyway, so the box
+// fuses with the scene instead of hanging in front of it (3.4 deg at 1.05 m, 2.4 at 1.5, 1.8 at
+// 2.0, 1.4 at 2.5). PanelWidth scales with PanelDistance, so the display covers exactly the same
+// part of the view as before - only the depth the eyes are asked for changes, which no monitor can
+// show. If the brackets ever read double again, move this further out, never back to the lenses.
+constexpr float PanelDistance = 2.00f;      // metres in front of the eye
 constexpr float PanelMargin = 0.97f;        // hair of margin so the corner readouts are not clipped
-// Fill the view, but stop before the corners leave the region both eyes can see (~+/-40 deg on a
-// Quest): a readout past that is drawn in one eye only and reads as a ghost. 68 deg leaves the REC
-// light and the battery gauge at ~32 deg - inside the corners, with clear space around the display.
-// The physical width stays at the reference display's ~1.37 m, so this is the same screen, nearer or
-// further as the taste goes (84 deg at 0.75 m -> 78 at 0.85 -> 68 at 1.05 -> 64 at 1.15 -> back to
-// 68 at 1.05, which is where it reads best).
+// Fill the view, but stop short of the lens edge, where a readout smears and pulls the eye away
+// from the picture. 68 deg leaves the REC light and the battery gauge at ~32 deg - inside the
+// corners, with clear space around the display, which is ~2.6 m wide at the 2 m parking distance.
+// (PanelWidth scales with PanelDistance, so this clamp alone sets the fill, not the depth.)
 constexpr float PanelMinFovDeg = 60.0f, PanelMaxFovDeg = 68.0f;
 inline float PanelWidth(float hmdFovDeg) {
     float deg = std::isfinite(hmdFovDeg) ? hmdFovDeg : 0.0f;

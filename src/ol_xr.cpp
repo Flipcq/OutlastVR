@@ -3498,7 +3498,12 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
     q.space = g_viewSpace; q.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
     q.subImage.swapchain = g_hudSc;
     q.subImage.imageRect.extent = {OLCamHud::Width,OLCamHud::Height};
-    q.pose = IdentityPose(); q.pose.position.z = -OLCamHud::PanelDistance;
+    q.pose = IdentityPose();
+    // Head-locked, PanelDistance straight ahead. That distance is also the STEREO DEPTH: a quad
+    // layer in the VIEW space is composited into each eye from that eye's own head-relative pose,
+    // so a plane parked at 1 m asks the eyes to converge on 1 m. See ol_camcorder_hud.h - this is
+    // why the focusing brackets used to read as a doubled square.
+    q.pose.position.z = -OLCamHud::PanelDistance;
     // The reference artwork is a fullscreen display, not a panel: size the quad from this headset's
     // own field of view so the readouts land in the corners like the reference instead of growing
     // into a tight cluster in front of the face - stopping just short of the edges, which is what
@@ -3507,6 +3512,16 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
     OLXR_GetHmdFovDeg(&hmdFovX, nullptr);
     q.size.width = OLCamHud::PanelWidth(hmdFovX);
     q.size.height = q.size.width * OLCamHud::Height / OLCamHud::Width;
+    // [CAMHUD] The one property of this layer a monitor cannot show, so it belongs in the log:
+    // the convergence the display asks the eyes for. "The focus brackets look doubled" is this
+    // number being larger than the scene's own (see ol_camcorder_hud.h).
+    static bool s_depthLogged = false;
+    if (!s_depthLogged) {
+        s_depthLogged = true;
+        const float conv = 2.0f * atanf(0.0315f / OLCamHud::PanelDistance) * 57.2957795f;
+        XLOG("[OLVR][CAMHUD] display %.2f x %.2f m, parked %.2f m out: %.1f deg of convergence",
+             q.size.width, q.size.height, OLCamHud::PanelDistance, conv);
+    }
     return true;
 }
 

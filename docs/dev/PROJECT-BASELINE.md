@@ -355,20 +355,30 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
 
 - `[CAMHUD]` is the game's own fullscreen display, not a panel in front of your face. The quad used to be
   0.60 m wide at 0.45 m (the middle ~67 deg), which made every readout look huge, close and bunched up in
-  the centre. It is now sized from the headset's horizontal FOV (`OLCamHud::PanelWidth`, clamped to 76-84
-  deg) and parked 0.75 m out, so the reference artwork spreads to the corners: REC and the clock top-left,
+  the centre. It is now sized from the headset's horizontal FOV (`OLCamHud::PanelWidth`, clamped to 60-68
+  deg) and parked 2.00 m out, so the reference artwork spreads to the corners: REC and the clock top-left,
   the W-T lever centred, the battery gauge top-right, the HD/AUTO/F2.4 lens markings bottom-left. The clamp
-  stops the corner readouts past ~37 deg, where they would be drawn in one eye only and read as a ghost.
+  keeps the corner readouts clear of the lens edge, where they smear.
 - The artwork is back on the reference screenshot's own 1920x1080 coordinates (`DynamicTop = 0`, the
   readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
-- The display sits back from the lenses rather than against them (`PanelDistance` 1.05 m, FOV fill
-  clamped to 60-68 deg): the quad is head-locked and mono, so it has no stereo disparity and its apparent
-  distance comes only from how much of the view it fills - `PanelWidth` scales with `PanelDistance`, so
-  moving the quad on its own changes nothing on screen. It was pushed as far as 1.15 m / 56-64 deg and
-  pulled back one step, which is where it reads best. The physical width stays the reference display's
-  ~1.37 m, and the REC light and battery gauge land at ~32 deg, with clear space around the readouts and
-  well inside the ~40 deg both eyes fuse; the 46 px REC caption is 1.7 deg tall.
-  `tests/camcorder_hud_test.py` asserts the panel's half-angle stays in that band.
+- `PanelDistance` is the display's **stereo depth**, not just its size. A quad layer submitted in the
+  VIEW space is composited into each eye from that eye's own head-relative pose, so a plane d metres
+  ahead asks the eyes to converge on d - a single texture, but two different projections (OpenXR calls
+  a quad layer "a posable planar rectangle in the virtual world"; VIEW is the centroid of the two eye
+  origins in stereo, and the spec warns that head-locked content "may be uncomfortable to view if too
+  large"). The earlier
+  note here ("head-locked and mono, so it has no stereo disparity ... moving the quad on its own changes
+  nothing on screen") was wrong, and it is what "the focusing brackets sometimes look doubled" was: the
+  brackets are the one thin, bright, dead-centre shape, and the middle of a near plane is where its
+  disparity is largest (~3.4 deg at 1.05 m). With the eyes converged on the room behind the display, the
+  two copies do not fuse and read as two squares. At 2.00 m the display asks for ~1.8 deg - about what a
+  corridor or an ordinary room asks for anyway - so the box fuses with the scene (3.4 deg at 1.05 m, 2.4
+  at 1.5, 1.8 at 2.0, 1.4 at 2.5). `PanelWidth` scales with `PanelDistance`, so the fill is unchanged:
+  the same ~2.6 m plane covers the same part of the view, and only the depth the eyes are asked for
+  moves - which no monitor can show. The start-up log now prints it: `[CAMHUD] display W x H m, parked
+  D m out: N deg of convergence`. The REC light and battery gauge land at ~32 deg, with clear space
+  around the readouts; the 46 px REC caption is 1.7 deg tall. `tests/camcorder_hud_test.py` asserts the
+  panel's half-angle and that the convergence demand stays in the 1.5-2.2 deg band.
 - The focusing brackets in the middle of the display are 60% of the reference's box (212x178 instead of
   354x298, same centre and arm thickness). They are the only bright shape with nothing behind it, so the
   reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
