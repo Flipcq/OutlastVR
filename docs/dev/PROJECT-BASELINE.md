@@ -363,7 +363,10 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   readout band is the top 160 rows again); the enlarged/inward layout of the previous test build is gone.
 - `PanelDistance` is the display's **stereo depth**, not just its size. A quad layer submitted in the
   VIEW space is composited into each eye from that eye's own head-relative pose, so a plane d metres
-  ahead asks the eyes to converge on d - a single texture, but two different projections. The earlier
+  ahead asks the eyes to converge on d - a single texture, but two different projections (OpenXR calls
+  a quad layer "a posable planar rectangle in the virtual world"; VIEW is the centroid of the two eye
+  origins in stereo, and the spec warns that head-locked content "may be uncomfortable to view if too
+  large"). The earlier
   note here ("head-locked and mono, so it has no stereo disparity ... moving the quad on its own changes
   nothing on screen") was wrong, and it is what "the focusing brackets sometimes look doubled" was: the
   brackets are the one thin, bright, dead-centre shape, and the middle of a near plane is where its

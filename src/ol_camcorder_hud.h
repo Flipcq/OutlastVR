@@ -22,7 +22,9 @@ constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // PanelDistance is the display's STEREO DEPTH, not just its size, and that is why it is 2 m and
 // not 1. A quad layer submitted in the VIEW space is composited into EACH eye from that eye's own
 // head-relative pose, so a plane d metres ahead asks the eyes to converge on d (the picture is a
-// single texture, but the two projections are not identical). An earlier revision called the quad
+// single texture, but the two projections are not identical). That is the spec's model: a quad
+// layer is "a posable planar rectangle in the virtual world", and the VIEW space is the centroid of
+// the two eye origins in stereo, not an eye. An earlier revision called the quad
 // "mono, so it has no stereo disparity" and treated the distance as a size-only knob; that is not
 // how a quad layer is composited, and it is exactly what "the focusing brackets read double" was.
 // The brackets are the one thin, bright, dead-centre shape, and the middle of a near plane is where
