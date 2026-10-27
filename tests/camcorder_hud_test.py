@@ -154,13 +154,21 @@ int main() {
     assert(canvas.pixels[(462*1920+855)*4+3]==255); // dynamic updates preserve reticle
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
     // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
-    assert(OLCamHud::PanelWidth(100.0f) > 1.30f && OLCamHud::PanelWidth(100.0f) < 1.45f);
-    // ...and it stops short of the corners, which is the only thing that sets how far away it reads
-    // (the quad is head-locked and mono, so the parking distance alone moves nothing on screen).
+    // The width follows PanelDistance (2 m now), so the same fill is a wider plane than it was at 1 m.
+    assert(OLCamHud::PanelWidth(100.0f) > 2.55f && OLCamHud::PanelWidth(100.0f) < 2.70f);
+    // ...and it stops short of the lens edge, which is what sets the fill (PanelWidth scales with
+    // PanelDistance, so the clamp, not the parking distance, is what puts the readouts at ~32 deg).
     auto halfDeg = [](float width){ return float(std::atan(0.5f*width/OLCamHud::PanelDistance)*57.29578f); };
     assert(halfDeg(OLCamHud::PanelWidth(100.0f)) > 28.0f);   // still spans the view
-    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) < 35.0f);   // set back, clear of the lens edge, well
-                                                             // inside the ~40 deg both eyes fuse
+    assert(halfDeg(OLCamHud::PanelWidth(100.0f)) < 35.0f);   // set back, clear of the lens edge
+    // A quad layer in the VIEW space is composited per eye, so PanelDistance IS the convergence the
+    // display asks the eyes for. At 1.05 m that demand was 3.4 deg - more than any room - and the
+    // thin centre brackets could not fuse against the scene, which read as a doubled square. Keep
+    // it near a room's own convergence; pulling it back under ~1.6 m (over 2.2 deg) is the old
+    // doubled-square report coming back.
+    const float kHalfIpd = 0.0315f;                          // a textbook 63 mm IPD
+    const float convDeg = 2.0f * std::atan(kHalfIpd / OLCamHud::PanelDistance) * 57.29578f;
+    assert(convDeg > 1.5f && convDeg < 2.2f);
     assert(OLCamHud::PanelWidth(84.0f) == OLCamHud::PanelWidth(180.0f)); // clamped to the same fill
     assert(OLCamHud::PanelWidth(0.0f) > 1.0f);       // no runtime FOV yet: sane floor
     assert(OLCamHud::PanelWidth(-5.0f) > 1.0f);
