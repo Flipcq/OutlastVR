@@ -588,9 +588,9 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
             RequestCamToggle(now, 120); s_camByGesture = false;
             ILog("[OLVR][HOLSTER] camcorder lowered - it is back on your hip");
         }
-    // During face-release grace period, keep the camcorder in the hand so the lower animation is
-    // visible instead of snapping back to the hip holster immediately.
-    else if ((!s_gripDown[1] || !rOk) && now >= s_camFaceReleaseGrace) {
+    } else if ((!s_gripDown[1] || !rOk) && now >= s_camFaceReleaseGrace) {
+        // During face-release grace period, keep the camcorder in the hand so the lower animation
+        // is visible instead of snapping back to the hip holster immediately.
         s_hState = H_HOLSTERED; s_blendSpeed = 1.0f / 0.28f; s_returnClick = true;
         if (s_camUp == 1 && s_camByGesture && now > s_camCooldown) { RequestCamToggle(now, 120); s_camByGesture = false; }
         OLXR_HapticPulse(1, 0.25f, 20);
