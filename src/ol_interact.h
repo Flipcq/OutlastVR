@@ -7,7 +7,7 @@
 // (Beta 1.1.4) [FACECAM] How long the right stick click is held before it raises / lowers the
 // camcorder at his face. A shorter click stays the night-vision switch it always was. Shared with
 // d3d9_proxy.cpp, which withholds the game's night-vision press until it knows the click was short.
-constexpr ULONGLONG OLVR_CAM_HOLD_MS = 800;
+constexpr ULONGLONG OLVR_CAM_HOLD_MS = 500;
 
 void OLInteract_Init();                      // reads [Motion] from outlastvr.ini; call once at startup
 void OLInteract_Save(const wchar_t* ini);
