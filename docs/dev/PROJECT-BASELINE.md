@@ -396,15 +396,15 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   came out black at 200/255 and still dark at 235/255. The test asserts alpha 255, one-pixel strokes and
   the exact grey, so the box can neither go dark nor thicken again by accident.
 - Palette: two inks, from the reference artwork. `#A71000` is the recording red - the REC lamp, its
-  caption, the timecode and the spare-battery count - and `#808079` is every other mark that is drawn
-  (brackets, W/T, the lever, the gauge, the HD/AUTO badges, F2.4). There are no dark rims around the
-  count or the gauge any more: on a transparent layer a black outline is a black line drawn on the
-  picture, not a shadow, and the count is red now, so it does not need one to survive the night-vision
-  wash. The HD badge's perforations are real holes (alpha 0), not black squares.
-- The charge gauge is the reference's long cell: a rounded frame with a transparent window, the contact
-  on the LEFT as a bracket that opens into the body, and the charge draining left to right - the bar
-  empties at the contact end, so what is left of it sits against the far (right) end. Continuous, no
-  four-bar quantization; the low-charge warning (a quarter or less) is now in the recording red.
+  caption and the timecode - and `#808079` is every other mark that is drawn (brackets, W/T, the lever,
+  the spare count, the gauge, the HD/AUTO badges, F2.4). There are no dark rims around the count or the
+  gauge any more: on a transparent layer a black outline is a black line drawn on the picture, not a
+  shadow. The HD badge's perforations are real holes (alpha 0), not black squares.
+- The charge gauge is the reference's long, thin cell: 212x48 (it was 64 tall), a rounded frame with a
+  transparent window, the contact on the LEFT as a bracket that opens into the body, and the charge
+  draining left to right - the bar empties at the contact end, so what is left of it sits against the far
+  (right) end. Continuous, no four-bar quantization; the low-charge warning (a quarter or less) is in the
+  recording red, and the spare count beside it stays in the HUD grey.
 - Two night-vision tell-tales sit under the gauge's right end - the eye and the speaker from the
   reference - and are drawn only while night vision is running. They live inside the dynamic band, which
   is cleared every frame, so switching night vision off takes them away again. The state comes from

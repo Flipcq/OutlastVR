@@ -113,6 +113,12 @@ int main() {
     callOk=true; CamcorderHudTick(true); assert(alpha==0);
     CamcorderHudTick(false); assert(alpha==85 && !OLInteract_CamcorderHud(&s));
     auto noText=[](OLCamHud::Canvas&,int,int,int,bool,const char*,uint8_t,uint8_t,uint8_t){};
+    // Same no-op blit, but it remembers the ink each string was drawn in, so the palette itself can be
+    // asserted (the real glyph raster is a Windows GDI concern, the colour is this file's).
+    static std::map<std::string,std::string> ink;
+    auto inkText=[](OLCamHud::Canvas&,int,int,int,bool,const char* s,uint8_t r,uint8_t g,uint8_t b){
+        ink[s]=std::to_string(r)+"/"+std::to_string(g)+"/"+std::to_string(b);
+    };
     OLCamHud::Canvas canvas;
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
@@ -135,7 +141,13 @@ int main() {
     assert(canvas.pixels[(836*1920+158)*4+3]==255);  // ...and the plate between them
     assert(canvas.pixels[(836*1920+158)*4+2]==128);  // #808079, like every other HUD icon
     assert(canvas.pixels[(825*1920+245)*4+3]==0);    // the right column is a hole too
-    s.energy=1; s.zoom=0; s.nightVision=false; OLCamHud::Top(canvas,s,noText);
+    s.energy=1; s.zoom=0; s.nightVision=false; OLCamHud::Top(canvas,s,inkText);
+    // The palette, on the strings themselves: the REC caption and the clock are the recording red,
+    // everything else - the spare count included - is the HUD grey.
+    assert(ink["REC"]=="167/16/0");
+    assert(ink["01:01:01:25"]=="167/16/0");
+    assert(ink["2 / 2"]=="128/128/121");
+    assert(ink["W"]=="128/128/121" && ink["T"]=="128/128/121");
     assert(canvas.pixels[(75*1920+1836)*4+3]==255);  // full charge reaches the right end
     assert(canvas.pixels[(75*1920+1650)*4+3]==255);  // ...and the left end, next to the contact
     // The readouts were pushed out toward the corners and up; their old coordinates are empty now.
@@ -152,7 +164,7 @@ int main() {
     assert(canvas.pixels[(75*1920+1641)*4+3]==0);    // ...and its window is transparent
     // Contact on the left, a bracket that opens into the body: bar and arms solid, notch transparent.
     assert(canvas.pixels[(75*1920+1620)*4+3]==255 && canvas.pixels[(75*1920+1630)*4+3]==0);
-    assert(canvas.pixels[(58*1920+1630)*4+3]==255);
+    assert(canvas.pixels[(64*1920+1630)*4+3]==255);
     // The charge DRAINS LEFT TO RIGHT: at half charge the bar that is left sits against the far end,
     // and the contact end is already empty.
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
@@ -163,14 +175,14 @@ int main() {
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
     assert(canvas.pixels[(75*1920+1800)*4+2]==167 && canvas.pixels[(75*1920+1800)*4+1]==16);
     // Night-vision tell-tales: gone while night vision is off...
-    assert(canvas.pixels[(112*1920+1800)*4+3]==0);
+    assert(canvas.pixels[(106*1920+1800)*4+3]==0);
     s.energy=.5f; s.nightVision=true; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(112*1920+1800)*4+3]==255);  // the speaker's frame
-    assert(canvas.pixels[(112*1920+1730)*4+3]==255);  // the eye's frame
-    assert(canvas.pixels[(120*1920+1720)*4+3]==0);    // hollow inside
-    assert(canvas.pixels[(112*1920+1800)*4+2]==128);  // #808079, right-aligned under the gauge
+    assert(canvas.pixels[(106*1920+1800)*4+3]==255);  // the speaker's frame
+    assert(canvas.pixels[(106*1920+1730)*4+3]==255);  // the eye's frame
+    assert(canvas.pixels[(110*1920+1720)*4+3]==0);    // hollow inside
+    assert(canvas.pixels[(106*1920+1800)*4+2]==128);  // #808079, right-aligned under the gauge
     s.nightVision=false; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(112*1920+1800)*4+3]==0);    // switched off, and the band clears them
+    assert(canvas.pixels[(106*1920+1800)*4+3]==0);    // switched off, and the band clears them
     // The W-T thumb follows the zoom factor instead of sitting at one end of the lever.
     s.zoom=0; OLCamHud::Top(canvas,s,noText);
     assert(canvas.pixels[(80*1920+820)*4+1]>=120);            // thumb at the W end

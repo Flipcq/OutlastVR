@@ -163,7 +163,7 @@ template<class Text> void Static(Canvas& c, Text& text) {
 // display itself says which mode it is in. Both live inside the dynamic band, which is cleared every
 // frame, so switching night vision off takes them away again.
 inline void NightVisionIcons(Canvas& c) {
-    const int iconY = 112, iconH = 40, iconW = 62;
+    const int iconY = 106, iconH = 40, iconW = 62;   // just under the gauge, which now ends at y=99
     const int speakerX = 1848 - iconW;          // right-aligned with the gauge's right edge
     const int eyeX = speakerX - 8 - iconW;
     for (int x : { eyeX, speakerX }) {          // the two frames: a rounded outline, hollow inside
@@ -243,19 +243,20 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     const int capacity = s.capacity > 0 ? s.capacity : 10;
     const int spares = s.spares < 0 ? 0 : (s.spares > capacity ? capacity : s.spares);
     char count[32]; std::snprintf(count,sizeof(count),"%d / %d",spares,capacity);
-    // The count sits immediately left of the contact, in the recording red like the REC and the clock.
+    // The count sits immediately left of the contact, in the HUD grey like the gauge it belongs to -
+    // the recording red is for the record light and the clock only.
     // No dark rim: the display is a transparent layer over the scene, so a black outline around a
     // readout is a black line drawn on the picture, not a shadow.
-    text(c,1524,61,25,true,count,RecRed,RecGreen,RecBlue);
-    // The gauge: the reference's long cell, contact on the LEFT, drawn as a rounded frame with a
-    // transparent window - no black body behind it and no rim around it.
-    const int gaugeX = 1636, gaugeY = 44, gaugeW = 212, gaugeH = 64;
-    c.RoundFill(gaugeX, gaugeY, gaugeW, gaugeH, 8.0f, IconRed, IconGreen, IconBlue);
-    c.Clear(gaugeX+5, gaugeY+5, gaugeW-10, gaugeH-10, 4.0f);
+    text(c,1524,61,25,true,count,IconRed,IconGreen,IconBlue);
+    // The gauge: the reference's long, thin cell, contact on the LEFT as a bracket that opens into the
+    // body, drawn as a rounded frame with a transparent window - no black body behind it, no rim.
+    const int gaugeX = 1636, gaugeY = 52, gaugeW = 212, gaugeH = 48;
+    c.RoundFill(gaugeX, gaugeY, gaugeW, gaugeH, 7.0f, IconRed, IconGreen, IconBlue);
+    c.Clear(gaugeX+4, gaugeY+4, gaugeW-8, gaugeH-8, 4.0f);
     // Contact: a bracket that opens into the body, exactly as in the reference.
-    c.RoundFill(gaugeX-20, gaugeY+11, 20, 42, 3.0f, IconRed, IconGreen, IconBlue);
-    c.Clear(gaugeX-10, gaugeY+21, 10, 22);
-    const int barX = gaugeX + 11, barY = gaugeY + 11, barW = gaugeW - 22, barH = gaugeH - 22;
+    c.RoundFill(gaugeX-18, gaugeY+9, 18, 30, 3.0f, IconRed, IconGreen, IconBlue);
+    c.Clear(gaugeX-9, gaugeY+18, 9, 12);
+    const int barX = gaugeX + 10, barY = gaugeY + 10, barW = gaugeW - 20, barH = gaugeH - 20;
     const float charge = Unit(s.energy);
     // Preserve the large gauge's low-charge warning (one bar or less), with a continuous fill.
     const bool low = std::ceil(charge*4.0f-0.05f) <= 1;
