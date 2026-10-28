@@ -435,9 +435,9 @@ static bool s_faceLock = false;              // the game's camcorder is up and p
 static bool s_facePending = false;           // a held click asked for the raise; waiting for the game
 static bool s_faceLowering = false;          // a held right stick click asked for the lower
 static ULONGLONG s_facePendingAt = 0, s_faceLowerAt = 0;
-// enter at the reach, lower 14 cm further out, re-arm 7 cm out
+// enter at the reach, lower 8 cm further out, re-arm 7 cm out
 static float EyeEnter() { return g_eyeReach; }
-static float EyeLeave() { return g_eyeReach + 0.14f; }
+static float EyeLeave() { return g_eyeReach + 0.08f; }
 static void RequestCamToggle(ULONGLONG now, ULONGLONG pulseMs) { s_camPulseUntil = now + pulseMs; s_camCooldown = now + pulseMs + 500; }
 
 // [HOLSTER] (Test39) Right hip: 20 cm right of the head's centre line, 60 cm below the eyes.
