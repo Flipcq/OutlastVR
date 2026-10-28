@@ -169,8 +169,7 @@ SETTINGS
 
   Comfort favourites: Turning SMOOTH or SNAP, "Smooth turn speed" (60
   degrees a second up to MAX, the game's fastest), snap angle, "Blink while
-  snapping", "Reduce head bob" (100% = none, walking or running), "Keep the
-  horizon level", "Crouch when you duck" (crouch for real), "Walk around for
+  snapping", "Keep the horizon level", "Crouch when you duck" (crouch for real), "Walk around for
   real" (roomscale), "Body turns with you" (turn your body or chair and Miles
   turns to match after a moment - no recentering needed for that).
 

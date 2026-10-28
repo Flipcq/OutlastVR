@@ -3037,12 +3037,8 @@ static float ArmPer(float f, float frames) {
 // ol_motion.cpp) instead of lowering the view twice.
 static volatile float g_crouchLiftM = 0.0f;
 extern "C" void OLUE3_SetCrouchLift(float m) { g_crouchLiftM = (m > 0.0f && m < 1.0f) ? m : 0.0f; }
-// [COMFORT] Head-bob reduction strength (0 off .. 1) and the level horizon switch.
-static volatile float g_bobReduce = 0.0f;
+// [COMFORT] Level horizon switch.
 static volatile long  g_levelHorizon = 0;
-static volatile float g_bobCorrZ = 0.0f;   // uu, applied to the view this frame; the arms follow it
-extern "C" float OLUE3_GetBobReduce() { return g_bobReduce; }
-extern "C" void  OLUE3_SetBobReduce(float v) { g_bobReduce = (v > 0.0f) ? (v < 1.0f ? v : 1.0f) : 0.0f; }
 extern "C" int   OLUE3_GetLevelHorizon() { return g_levelHorizon ? 1 : 0; }
 extern "C" void  OLUE3_SetLevelHorizon(int v) { g_levelHorizon = v ? 1 : 0; }
 
@@ -3061,138 +3057,7 @@ static void ViewLeanM(float out[3]) {
     }
 }
 
-// [COMFORT] Head bob is the Hero-Camera bone riding the walk cycle. A level+trend (Holt) filter
-// follows stairs, slopes and crouch moves without lag, so only the oscillation is removed, and the
-// correction is capped at 10 uu (10 cm) so jumps, falls and scripted moves always pass through.
-// Called once per frame, at the first eye; both eyes use the same value.
-static volatile float g_bobZMax = 0.0f;   // (Beta 1.1.1) the largest vertical correction since the last [BOB2] report
-static float BobCorrection(float z, float w) {
-    static bool s_init = false;
-    static float s_level = 0.0f, s_trend = 0.0f;
-    static LARGE_INTEGER s_last = {}, s_f = {};
-    LARGE_INTEGER now; QueryPerformanceCounter(&now);
-    if (!s_f.QuadPart) QueryPerformanceFrequency(&s_f);
-    float dt = s_last.QuadPart ? (float)((double)(now.QuadPart - s_last.QuadPart) / (double)s_f.QuadPart) : 0.0f;
-    s_last = now;
-    if (g_bobReduce <= 0.001f || w <= 0.0f || dt <= 0.0f || dt > 0.25f || !s_init ||
-        fabsf(z - s_level) > 60.0f) {
-        s_level = z; s_trend = 0.0f; s_init = true;
-        return 0.0f;
-    }
-    if (dt < 0.002f) dt = 0.002f;
-    const float a = 1.0f - expf(-dt / 0.20f);   // level: removes the ~2 Hz walk bob
-    const float b = 1.0f - expf(-dt / 0.50f);   // trend: tracks stairs and slopes
-    const float prev = s_level;
-    const float pred = s_level + s_trend * dt;
-    s_level = pred + (z - pred) * a;
-    s_trend += ((s_level - prev) / dt - s_trend) * b;
-    float corr = s_level - z;
-    // (Beta 1.1.1) "head bob is still there while running": a sprint's bounce is bigger than the 10 uu that
-    // lets jumps and falls through, so the top of every stride came through. Plain walking or running (no
-    // jump, vault or other move of the game's) takes up to 30 uu out; anything else keeps the 10.
-    const float cap = (g_sMoveMode == 0 && g_sSpecialMove <= 0) ? 30.0f : 10.0f;
-    if (corr > cap) corr = cap; else if (corr < -cap) corr = -cap;
-    if (fabsf(corr) > g_bobZMax) g_bobZMax = fabsf(corr);
-    return corr * g_bobReduce * w;
-}
 
-// [BOB2] (Beta 1.1) Testers: "an option to disable head bobbing when running", "couldn't disable the
-// viewbob". The filter above only takes the camera bone's up-down bounce out. A stride also rocks the
-// view (the bone pitches and yaws) and sways it sideways and back and forth. Each is measured against
-// what does not bob - the controller's own rotation and Miles's position - and split the same way:
-// what moves slowly (turning, a deliberate camera move, the camera leading a sprint) stays, what
-// swings with the stride goes, scaled by the same ReduceHeadBob strength. A jump bigger than a
-// stride's swing passes untouched. Plain walking and running only; climbs and scenes are the game's.
-static volatile int   g_bobRotCorr[2] = { 0, 0 };          // pitch, yaw (UE3 units) added to the view
-static volatile float g_bobXYCorr[2] = { 0.0f, 0.0f };     // uu added to the view location (world X, Y)
-static volatile float g_bobSF[2] = { 0.0f, 0.0f };         // the same, along the body: right, forward (uu)
-static unsigned g_bobLocOff = 0;
-static bool g_bobLocTried = false;
-static struct { float maxOsc[4], maxCorr[4]; long frames, passed; } g_bobStat = {};
-static void BobStabilize(void* pc, const float* loc, const int* rot, float w) {
-    static bool s_init = false;
-    static float s_lp[4] = { 0, 0, 0, 0 };   // pitch, yaw (units), side, forward (uu)
-    static LARGE_INTEGER s_last = {}, s_f = {};
-    LARGE_INTEGER now; QueryPerformanceCounter(&now);
-    if (!s_f.QuadPart) QueryPerformanceFrequency(&s_f);
-    float dt = s_last.QuadPart ? (float)((double)(now.QuadPart - s_last.QuadPart) / (double)s_f.QuadPart) : 0.0f;
-    s_last = now;
-    g_bobRotCorr[0] = g_bobRotCorr[1] = 0;
-    g_bobXYCorr[0] = g_bobXYCorr[1] = 0.0f;
-    g_bobSF[0] = g_bobSF[1] = 0.0f;
-    if (!g_bobLocTried && g_ssRotation) {
-        g_bobLocTried = true;
-        unsigned o = 0;
-        if (SP_FindPropAny("Actor", "Location", &o, nullptr) && SS_Plausible(o)) g_bobLocOff = o;
-    }
-    int crot[3] = { 0, 0, 0 };
-    float hloc[3] = { 0, 0, 0 };
-    bool ok = g_bobReduce > 0.001f && w > 0.0f && dt > 0.0f && dt < 0.25f && g_ssRotation && g_bobLocOff &&
-              ArmMoveClass() == 0 && g_sCinematic <= 0 && pc;
-    // (Beta 1.1.1) Only plain walking and running are steadied - a jump, a vault or a landing is the game's own
-    // camera move - and the steadying fades in and out over a quarter second instead of switching.
-    static float s_gate = 0.0f;
-    {
-        const bool plain = g_sMoveMode == 0 && g_sSpecialMove <= 0;
-        const float step = (dt > 0.0f && dt < 0.25f ? dt : 0.016f) / 0.25f;
-        s_gate = plain ? (s_gate + step > 1.0f ? 1.0f : s_gate + step) : (s_gate - step < 0.0f ? 0.0f : s_gate - step);
-    }
-    if (ok) {
-        __try {
-            memcpy(crot, (const char*)pc + g_ssRotation, sizeof(crot));
-            const char* hero = *(const char* const*)((const char*)pc + kCtrlHeroOff);
-            if (!hero || *(void* const*)(hero + kHeroCtrlOff) != pc) ok = false;
-            else memcpy(hloc, hero + g_bobLocOff, sizeof(hloc));
-        } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
-    }
-    if (!ok) { s_init = false; return; }
-    const float yawR = (float)(crot[1] & 0xFFFF) * (6.28318531f / 65536.0f);
-    const float fx = cosf(yawR), fy = sinf(yawR), rx = -sinf(yawR), ry = cosf(yawR);
-    const float ox = loc[0] - hloc[0], oy = loc[1] - hloc[1];
-    const float v[4] = { (float)WrapUE(rot[0] - crot[0]), (float)WrapUE(rot[1] - crot[1]),
-                         ox * rx + oy * ry, ox * fx + oy * fy };
-    static int s_prevCtrl[2] = { 0, 0 };
-    const float ctrlRate[2] = { fabsf((float)WrapUE(crot[0] - s_prevCtrl[0])) / (dt > 0.002f ? dt : 0.002f),
-                                fabsf((float)WrapUE(crot[1] - s_prevCtrl[1])) / (dt > 0.002f ? dt : 0.002f) };
-    s_prevCtrl[0] = crot[0]; s_prevCtrl[1] = crot[1];
-    if (!s_init) { for (int i = 0; i < 4; ++i) s_lp[i] = v[i]; s_init = true; return; }
-    if (dt < 0.002f) dt = 0.002f;
-    // While the controller itself turns (a snap or smooth turn, the pitch leveler) the bone trails it a
-    // little: that gap is the turn, not a stride, and taking it out would make the turn end with a jerk.
-    for (int i = 0; i < 2; ++i) if (ctrlRate[i] > 3640.0f) s_lp[i] = v[i];   // 20 deg/s
-    const float a = 1.0f - expf(-dt / 0.30f);   // a stride is ~0.3-0.5 s; turning and leading are slower
-    static const float kSwing[4] = { 2730.0f, 2730.0f, 45.0f, 45.0f };   // (Beta 1.1.1) 15 deg, 15 deg, 45 cm, 45 cm
-    float c[4];
-    for (int i = 0; i < 4; ++i) {
-        s_lp[i] += (v[i] - s_lp[i]) * a;
-        float osc = v[i] - s_lp[i];
-        if (fabsf(osc) > kSwing[i]) { s_lp[i] = v[i]; osc = 0.0f; ++g_bobStat.passed; }   // a real move
-        c[i] = -osc * g_bobReduce * w * s_gate;
-        if (fabsf(osc) > g_bobStat.maxOsc[i]) g_bobStat.maxOsc[i] = fabsf(osc);
-        if (fabsf(c[i]) > g_bobStat.maxCorr[i]) g_bobStat.maxCorr[i] = fabsf(c[i]);
-    }
-    ++g_bobStat.frames;
-    g_bobRotCorr[0] = (int)c[0];
-    g_bobRotCorr[1] = (int)c[1];
-    g_bobXYCorr[0] = rx * c[2] + fx * c[3];
-    g_bobXYCorr[1] = ry * c[2] + fy * c[3];
-    g_bobSF[0] = c[2]; g_bobSF[1] = c[3];
-    static ULONGLONG s_rep = 0;
-    const ULONGLONG t = GetTickCount64();
-    if (t - s_rep > 5000 && g_bobStat.frames > 30) {
-        s_rep = t;
-        char l[300];
-        sprintf_s(l, "[OLVR][BOB2] last 5 s (%ld frames): swing pitch %.1f yaw %.1f deg, side %.1f fwd %.1f uu | "
-                     "taken out pitch %.1f yaw %.1f deg, side %.1f fwd %.1f uu, up-down %.1f uu | real moves passed %ld | strength %.2f",
-                  g_bobStat.frames, g_bobStat.maxOsc[0] * (360.0f / 65536.0f), g_bobStat.maxOsc[1] * (360.0f / 65536.0f),
-                  g_bobStat.maxOsc[2], g_bobStat.maxOsc[3], g_bobStat.maxCorr[0] * (360.0f / 65536.0f),
-                  g_bobStat.maxCorr[1] * (360.0f / 65536.0f), g_bobStat.maxCorr[2], g_bobStat.maxCorr[3],
-                  (float)g_bobZMax, g_bobStat.passed, g_bobReduce);
-        g_bobZMax = 0.0f;
-        OLProxyLog(l);
-        memset(&g_bobStat, 0, sizeof(g_bobStat));
-    }
-}
 
 static VIk3 IVSub(VIk3 a, VIk3 b) { return { a.x-b.x, a.y-b.y, a.z-b.z }; }
 static VIk3 IVAdd(VIk3 a, VIk3 b) { return { a.x+b.x, a.y+b.y, a.z+b.z }; }
@@ -4072,8 +3937,7 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
     const VIk3 up = { 0, 0, 1 };
     auto map = [&](float px, float py, float pz) -> VIk3 {
         const float dR = (px - headRef[0]) * kMetersToUU, dU = (py - headRef[1]) * kMetersToUU, dF = -(pz - headRef[2]) * kMetersToUU;
-        VIk3 t = IVAdd(cam, IVAdd(IVScale(right, dR + g_bobSF[0]), IVAdd(IVScale(up, dU), IVScale(fwd, dF + g_bobSF[1]))));
-        t.z += g_bobCorrZ;
+        VIk3 t = IVAdd(cam, IVAdd(IVScale(right, dR), IVAdd(IVScale(up, dU), IVScale(fwd, dF))));
         return t;
     };
     const QIk4 heldRot = IQEulerDeg(g_camHeldRot);
@@ -4089,9 +3953,9 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
     }
     {   // back into the recenter frame, for the glow and the grab
         const VIk3 d = IVSub(chestT, cam);
-        g_camChestTrack[0] = headRef[0] + (IVDot(d, right) - g_bobSF[0]) / kMetersToUU;
-        g_camChestTrack[1] = headRef[1] + (d.z - g_bobCorrZ) / kMetersToUU;
-        g_camChestTrack[2] = headRef[2] - (IVDot(d, fwd) - g_bobSF[1]) / kMetersToUU;
+        g_camChestTrack[0] = headRef[0] + IVDot(d, right) / kMetersToUU;
+        g_camChestTrack[1] = headRef[1] + d.z / kMetersToUU;
+        g_camChestTrack[2] = headRef[2] - IVDot(d, fwd) / kMetersToUU;
         g_camChestMs = GetTickCount64();
     }
     const QIk4 chestQ = IQMul(IQMul(PoseUprightHand(fwd), IQEulerDeg(g_camChestRot)), heldRot);
@@ -4132,9 +3996,9 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
             const VIk3 sc = IVAdd(T, IVAdd(IVScale(ax, g_flipScr[0]), IVAdd(IVScale(ay, g_flipScr[1]), IVScale(az, g_flipScr[2]))));
             auto dirT = [&](VIk3 d) -> VIk3 { return IVNorm({ IVDot(d, right), d.z, -IVDot(d, fwd) }); };
             const VIk3 dp = IVSub(sc, cam);
-            fsc.pos[0] = headRef[0] + (IVDot(dp, right) - g_bobSF[0]) / kMetersToUU;
-            fsc.pos[1] = headRef[1] + (dp.z - g_bobCorrZ) / kMetersToUU;
-            fsc.pos[2] = headRef[2] - (IVDot(dp, fwd) - g_bobSF[1]) / kMetersToUU;
+            fsc.pos[0] = headRef[0] + IVDot(dp, right) / kMetersToUU;
+            fsc.pos[1] = headRef[1] + dp.z / kMetersToUU;
+            fsc.pos[2] = headRef[2] - IVDot(dp, fwd) / kMetersToUU;
             const VIk3 lens = dirT(ax), up = dirT(az), side = dirT(IVScale(ay, -1.0f));
             const float yr = g_flipScr[3] * 0.0174533f;
             VIk3 n = IVNorm(IVAdd(IVScale(lens, -cosf(yr)), IVScale(side, sinf(yr))));      // the screen faces back, turned toward its side
@@ -4406,13 +4270,12 @@ static bool PoseApplyVisible(void* comp) {
             // cumulative game yaw here: SpaceBases are component-local, so doing so counter-
             // rotated the hands during smooth turning in Test 15 instead of carrying them with
             // the body.  This is the same body-relative construction used by Outlast 2 VR.
-            const float dR=(pad.handPose[hand].px-headRef[0])*kMetersToUU+g_bobSF[0];   // [BOB2] the steadied view
+            const float dR=(pad.handPose[hand].px-headRef[0])*kMetersToUU;
             const float dU=(pad.handPose[hand].py-headRef[1])*kMetersToUU;
-            const float dF=-(pad.handPose[hand].pz-headRef[2])*kMetersToUU+g_bobSF[1];
+            const float dF=-(pad.handPose[hand].pz-headRef[2])*kMetersToUU;
             VIk3 rawTarget=IVAdd(cam,IVAdd(IVScale(cameraRight,dR),
                                      IVAdd(IVScale(worldUp,dU),
                                            IVScale(cameraForward,dF))));
-            rawTarget.z+=g_bobCorrZ;   // [COMFORT] the view was moved off the bone by this much
             if (hand == 1 && camHold > 0.0f && (g_camAdjOff[0] != 0.0f || g_camAdjOff[1] != 0.0f || g_camAdjOff[2] != 0.0f)) {
                 // [CAMADJUST] the player's own placement: the hand, and the camcorder in it, moved by this much
                 const VIk3 o = IVAdd(IVScale(cameraForward, g_camAdjOff[0]), IVAdd(IVScale(worldUp, g_camAdjOff[1]), IVScale(cameraRight, g_camAdjOff[2])));
@@ -6089,11 +5952,6 @@ static void __fastcall Hook_GetViewPoint(void* actor, float* outLoc, int* outRot
         // The head offset is applied in the BASE (gamepad) frame, so it must be read before the
         // head rotation goes in - that is what makes leaning sideways stay sideways relative to
         // where the stick is pointing, instead of rotating with your own head.
-        // [BOB2] (Beta 1.1) the stride's rock and sway come out first, so the base yaw, the lean and
-        // the hands all use the steadied camera.
-        if (g_eyePhase == 1) BobStabilize(actor, outLoc, outRot, g_injW);
-        outRot[0] += g_bobRotCorr[0]; outRot[1] += g_bobRotCorr[1];
-        outLoc[0] += g_bobXYCorr[0];  outLoc[1] += g_bobXYCorr[1];
         const float baseYaw = (float)(outRot[1] & 0xFFFF) * kToRad;
 
         const float injW = g_injW;   // one read; the tick thread may move it between calls
@@ -6103,8 +5961,6 @@ static void __fastcall Hook_GetViewPoint(void* actor, float* outLoc, int* outRot
             const int roll = (short)(outRot[2] & 0xFFFF);   // signed: 65200 is -2 deg, not +358
             outRot[2] = (int)((float)roll * (1.0f - injW));
         }
-        if (g_eyePhase == 1) g_bobCorrZ = BobCorrection(outLoc[2], injW);
-        outLoc[2] += g_bobCorrZ;
         if (g_headTrack && g_olPoseValid && injW > 0.0f) {
             outRot[0] += (int)(g_olPitchRad * injW * kToUnits);   // up is positive in both systems
             // YAW SIGN, corrected 2026-07-22 after left/right was found inverted in testing. UE3 yaw
@@ -6752,8 +6608,6 @@ static void ReadConfig() {
     if (g_lookUse < 0 || g_lookUse > 2) g_lookUse = 0;
     // [COMFORT] Missing keys = off = the previous camera exactly.
     g_levelHorizon = GetPrivateProfileIntW(L"Comfort", L"LevelHorizon", 0, ini) ? 1 : 0;
-    { wchar_t bv[32]; GetPrivateProfileStringW(L"Comfort", L"ReduceHeadBob", L"1", bv, 32, ini);
-      OLUE3_SetBobReduce((float)_wtof(bv)); }
     GetPrivateProfileStringW(L"Stage3", L"LeanGain", L"1.0", val, 64, ini);
     OLUE3_SetLeanGain((float)_wtof(val));
     GetPrivateProfileStringW(L"Stage3", L"GetViewPointRva", L"0", val, 64, ini);

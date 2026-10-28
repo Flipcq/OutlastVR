@@ -74,7 +74,6 @@ extern "C" const char* OLProxy_PadName(int mask);
 extern "C" int   OLUE3_GetArmImproved();  extern "C" void OLUE3_SetArmImproved(int on);
 extern "C" float OLUE3_GetWorldSize(); extern "C" void OLUE3_SetWorldSize(float s); extern "C" float OLUE3_GetEyeSpacingCm();   // (Beta 1.1)
 extern "C" int OLUE3_GetBodyTurn(); extern "C" void OLUE3_SetBodyTurn(int on);   // (Beta 1.1) [BODYTURN]
-extern "C" float OLUE3_GetBobReduce();    extern "C" void OLUE3_SetBobReduce(float v);
 extern "C" int   OLUE3_GetLevelHorizon(); extern "C" void OLUE3_SetLevelHorizon(int v);
 extern "C" int   OLUE3_GetLookUse();      extern "C" void OLUE3_SetLookUse(int v);
 extern "C" int   OLUE3_LookUseReady();
@@ -517,11 +516,6 @@ static void BuildUI() {
           float d = OLMotion_GetCrouchDepth();
           if (ImGui::SliderFloat("How far to duck", &d, 0.15f, 0.60f, "%.2f m")) OLMotion_SetCrouchDepth(d);
       } }
-    { float v = OLUE3_GetBobReduce();
-      if (ImGui::SliderFloat("Reduce head bob", &v, 0.0f, 1.0f, v <= 0.001f ? "off" : "%.2f")) OLUE3_SetBobReduce(v);
-      Help(
-          "1.00 = no head bob walking or running: no bounce, rocking or sway.\n"
-          "off = the game's own bob. Stairs, jumps and falls still move you normally."); }
     { bool b = OLUE3_GetLevelHorizon() != 0;
       if (ImGui::Checkbox("Keep the horizon level", &b)) OLUE3_SetLevelHorizon(b ? 1 : 0);
       Help(

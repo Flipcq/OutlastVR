@@ -2305,7 +2305,7 @@ extern "C" int   OLXR_GetHandCam();         extern "C" float OLXR_GetHandCamStre
 extern "C" void  OLUE3_GetArmFlags(int* handSync, int* leanFix, int* smoothDt);
 extern "C" float OLUE3_GetWorldSize();   // (Beta 1.1) [WORLDSIZE]
 extern "C" int   OLUE3_GetBodyTurn();    // (Beta 1.1) [BODYTURN]
-extern "C" float OLUE3_GetBobReduce();      extern "C" int OLUE3_GetLevelHorizon();
+extern "C" int OLUE3_GetLevelHorizon();
 extern "C" int   OLUE3_GetLookUse();        extern "C" int OLUE3_GetWideFov();
 extern "C" int   OLXR_GetUpscaler();        extern "C" float OLXR_GetSharpness();
 
@@ -2455,7 +2455,6 @@ extern "C" int OLProxy_SaveSettings() {
       WriteI(L"Stage3", L"ArmHandSync", hs, ini);
       WriteI(L"Stage3", L"ArmLeanFix",  lf, ini);
       WriteI(L"Stage3", L"ArmSmoothDt", sd, ini); }
-    WriteF(L"Comfort", L"ReduceHeadBob", OLUE3_GetBobReduce(),   ini);
     WritePrivateProfileStringW(L"Motion", L"BodyFollowsHead", OLUE3_GetBodyTurn() ? L"1" : L"0", ini);   // (Beta 1.1)
     WriteI(L"Comfort", L"LevelHorizon",  OLUE3_GetLevelHorizon(), ini);
     OLMotion_Save(ini);

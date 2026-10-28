@@ -169,8 +169,6 @@ namespace Outlast1VR
                    "The view darkens for the instant a snap turn\ntakes, so your eyes never see the jump."),
                 N_("COMFORT", "Render", "WorldSize", "World size", 1.0, 0.6, 1.5, 0.05, "%", null,
                    "100% = true size, your own eye spacing.\nThings look too big or zoomed in? Lower it.\nToo small? Raise it."),
-                N_("COMFORT", "Comfort", "ReduceHeadBob", "Reduce head bob", 1.0, 0.0, 1.0, 0.1, "%", "OFF",
-                   "100% = no head bob walking or running: no\nbounce, rocking or sway. OFF = the game's own.\nStairs, jumps and falls still move you."),
                 T_("COMFORT", "Comfort", "LevelHorizon", "Keep the horizon level", 1,
                    "Removes the game's own camera tilt during play.\nYour head still tilts freely."),
                 C_("MOVEMENT", "Input", "WalkDirection", "Walk direction", 0, new[] { "BODY", "HEAD", "LEFT HAND" }, new double[] { 0, 1, 2 },

@@ -6,13 +6,6 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
 
 ## On `main`, not in a release yet
 
-- **Head bob fully off while running (Beta 1.1.1).** In Beta 1.1, running strides still swung the
-  view by about 13-14 cm, just under the 14 cm "that was a real move" limit, so they passed through.
-  Plain walking and running now take out up to 45 cm and 15 deg of sway and up to 30 cm of bounce.
-  Jumps, vaults and landings fade the steadying out over 0.25 s. This is `[BOB2]` in
-  `src/ol_ue3.cpp` (`BobStabilize`, `BobCorrection`). It has **not been tested in a headset yet**.
-  The `[BOB2]` log line every 5 s shows what was taken out.
-
 ## Done in Beta 1.1.4 (camcorder enhancement)
 
 - **GAME POSE is upright.** The camcorder's base pose no longer inherits the raise animation's

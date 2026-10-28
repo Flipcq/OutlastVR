@@ -39,7 +39,7 @@
 
 Also included:
 - Smooth or snap turning, with a speed you choose.
-- Comfort options: keep the horizon level, no head bob, and crouch for real when you duck.
+- Comfort options: keep the horizon level, and crouch for real when you duck.
 - World size: 100% is true size, with your own eye spacing read from the headset. Lower it if things look too big.
 - Your body turns with you: turn your real body or chair and Miles turns to match, so his arms stay lined up.
 - A film grain on/off switch.
