@@ -433,7 +433,7 @@ static float s_dEye = 9.0f;
 static bool s_faceLock = false;              // the game's camcorder is up and pinned at his face
 static bool s_facePending = false;           // a held click asked for the raise; waiting for the game
 static bool s_faceLowering = false;          // a held click / a grab at the face asked for the lower
-static ULONGLONG s_facePendingAt = 0;
+static ULONGLONG s_facePendingAt = 0, s_faceLowerAt = 0;
 // enter at the reach, lower 14 cm further out, re-arm 7 cm out
 static float EyeEnter() { return g_eyeReach; }
 static float EyeLeave() { return g_eyeReach + 0.14f; }
@@ -478,6 +478,7 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
     if (s_faceLock) {
         if (!s_faceLowering && s_gripEdge[1] && s_dEye < EyeLeave() && now > s_camCooldown) {
             s_faceLowering = true;
+            s_faceLowerAt = now;
             s_eyeArmed = false; s_inEyeSince = 0;
             RequestCamToggle(now);
             OLXR_HapticPulse(1, 0.55f, 40);
@@ -526,6 +527,7 @@ static void CamHoldGesture(ULONGLONG now, const OLXrPad& p) {
             if (s_faceLock) {
                 if (!s_faceLowering) {
                     s_faceLowering = true;
+                    s_faceLowerAt = now;
                     s_eyeArmed = false; s_inEyeSince = 0;
                     RequestCamToggle(now);
                     OLXR_HapticPulse(1, 0.65f, 45);
@@ -2119,6 +2121,10 @@ extern "C" void OLInteract_Tick() {
     } else if (s_facePending && now - s_facePendingAt > 3000) {
         s_facePending = false;
         ILog("[OLVR][FACECAM] the game did not raise the camcorder - the face pin was dropped");
+    }
+    if (s_faceLowering && s_camUp == 1 && now - s_faceLowerAt > 2500) {
+        s_faceLowering = false;
+        ILog("[OLVR][FACECAM] the game did not lower the camcorder - the face pin stays; try again");
     }
     if (s_camUp == 0 && s_faceLock) {
         s_faceLock = false; s_faceLowering = false; s_facePending = false;

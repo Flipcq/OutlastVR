@@ -22,7 +22,7 @@ constexpr ULONGLONG OLVR_CAM_HOLD_MS = 800;
 static ULONGLONG now = 1000;
 static int s_camUp = 0;
 static bool s_faceLock = false, s_facePending = false, s_faceLowering = false;
-static ULONGLONG s_facePendingAt = 0;
+static ULONGLONG s_facePendingAt = 0, s_faceLowerAt = 0;
 static bool s_camByGesture = false, s_eyeArmed = true;
 static ULONGLONG s_inEyeSince = 0, s_camPulseUntil = 0, s_camCooldown = 0;
 static int toggles = 0, haptics = 0;
@@ -38,7 +38,7 @@ static void Step(bool pressed, ULONGLONG ms) {
 }
 static void Reset() {
     s_camUp = 0; s_faceLock = s_facePending = s_faceLowering = false;
-    s_facePendingAt = 0; s_camByGesture = false; s_eyeArmed = true; s_inEyeSince = 0;
+    s_facePendingAt = 0; s_faceLowerAt = 0; s_camByGesture = false; s_eyeArmed = true; s_inEyeSince = 0;
     s_camPulseUntil = s_camCooldown = 0; toggles = haptics = 0;
     s_rsDown = s_rsLong = s_rsShort = false; s_rsDownAt = 0;
 }
