@@ -616,7 +616,10 @@ static void BuildUI() {
           "Hands-on: take the camcorder from your right hip and bring it to your eye.\n"
           "Grip button: squeeze the right grip once to raise it, again to lower it. You\n"
           "look through it with your head, so your hand can rest - for seated play or\n"
-          "arms that tire. The right grip then never grabs doors or edges."); }
+          "arms that tire. The right grip then never grabs doors or edges.\n"
+          "Either way, hold the right stick click to raise it with the game's own\n"
+          "animation and pin it at your face; hold it again, or squeeze at your face,\n"
+          "to lower it. A short click is still night vision."); }
     if (!OLInteract_CamButton()) {   // the hands-on camcorder settings
     { bool b = OLXR_GetHandCam() != 0;
       if (ImGui::Checkbox("Hold it in your hand", &b)) OLXR_SetHandCam(b);
@@ -634,9 +637,10 @@ static void BuildUI() {
     { bool b = OLInteract_Get(6) != 0;
       if (ImGui::Checkbox("Camcorder on your hip", &b)) OLInteract_Set(6, b);
       Help(
-          "Reach to your right hip and squeeze the grip: the camcorder glides into\n"
-          "your hand. Bring it to your eye to look through it. Let go and it goes back.\n"
-          "Off: lift your right hand to your eye, or squeeze the right grip."); }
+          "Reach to your right hip (or your lap, when you play seated) and squeeze\n"
+          "the grip: the camcorder glides into your hand. Bring it to your eye to look\n"
+          "through it. Let go and it goes back. Off: lift your right hand to your eye,\n"
+          "or squeeze the right grip."); }
     { bool b = OLInteract_GetCamcorderHud() != 0;
       if (ImGui::Checkbox("Custom camcorder HUD", &b)) OLInteract_SetCamcorderHud(b);
       Help("Reference-style HUD with the game's recording time, zoom and batteries."); }
@@ -646,8 +650,9 @@ static void BuildUI() {
       if (ImGui::Combo("Camcorder in your hand", &hold, kHold, 2)) OLInteract_SetCamHold(hold ? 3 : 4);
       Help(
           "Free: it moves and turns exactly with your controller, like holding a real\n"
-          "camcorder, its flip screen open toward you. The game's pose: held the way\n"
-          "Miles holds it as he raises it; turning the controller does not turn it."); }
+          "camcorder, its flip screen open toward you. The game's pose: held upright in\n"
+          "front of you with the lens ahead, the way Miles raises it; turning the\n"
+          "controller does not turn it."); }
     // (Test45) [CAMADJUST] the player places it
     { float r[3], o[3]; OLInteract_GetCamAdjust(r, o);
       bool ch = false;

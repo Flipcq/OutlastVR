@@ -71,7 +71,9 @@ QUEST 3 CONTROLS
   LEFT CONTROLLER                          RIGHT CONTROLLER
   Stick: walk                              Stick: turn (smooth or snap,
                                              at the speed you set)
-  Stick click: sprint                      Stick click: night vision
+  Stick click: sprint                      Stick click: night vision;
+                                             hold it: raise / lower the
+                                             camcorder at your face
   Grip (hold): sprint; on a ledge or       Grip at your right hip: take the
     a handle: hold on                        camcorder (see HANDS below);
   X: crouch / drop                          on a ledge or a handle: hold on
@@ -79,9 +81,7 @@ QUEST 3 CONTROLS
   Trigger: lean left / look back           B: use / open / close / pick up
   Menu: pause                              Trigger: lean right / look back
                                            Meta button: the headset's menu
-  Left grip + X: notes
   Left grip + Y: documents                 Both stick clicks: recenter
-  Left grip + B: reporter's notebook
   Left grip + Menu: VR settings menu
 
   With the camcorder up: push the right stick straight up / down to zoom (a
@@ -92,8 +92,8 @@ QUEST 3 CONTROLS
   B goes back.
 
   During gameplay, B uses the left mouse input. Keep interaction bound to Left
-  Mouse Button in the game's settings. Menu controls and left grip shortcuts
-  keep their original bindings. Set [Input] MouseUse=0 in outlastvr.ini to
+  Mouse Button in the game's settings. Menu controls and the remaining left grip
+  shortcut keep their original bindings. Set [Input] MouseUse=0 in outlastvr.ini to
   restore X for use and B for crouch. The control images show the old layout.
 
 --------------------------------------------------------------------------------
@@ -101,16 +101,21 @@ HANDS
 --------------------------------------------------------------------------------
 
   THE CAMCORDER
-    It hangs on Miles's right hip. Reach your right hand to your right hip and
-    squeeze the grip: the camcorder glides into your hand. It moves and turns
+    It hangs on Miles's right hip. Reach your right hand to your right hip
+    (or to your lap, if you play seated) and squeeze the grip: the camcorder
+    glides into your hand. It moves and turns
     exactly with your controller, like holding a real one - the lens points
     where your controller points. To place it differently in your hand: VR
     SETTINGS in the game (left grip + Menu) > CAMCORDER: tilt, turn, roll,
     forward, up, right.
     Bring it up to your eye to look through it (filming, night vision, zoom);
-    take it away from your eye and it is back in your hand. Open your hand
-    anywhere and it goes back to your hip. (VR SETTINGS: "Camcorder in your
-    hand" GAME POSE holds it the way Miles raises it in the game.)
+    take it away from your eye and it is back in your hand. Or hold the right
+    stick click for a moment: Miles raises it with the game's own animation and
+    it stays at his face with your hand resting. Hold the right stick click
+    again, or squeeze the right grip at your face, to lower it again. A short
+    click is still the night-vision switch. Open your hand anywhere and it goes
+    back to your hip. (VR SETTINGS: "Camcorder in your hand" GAME POSE holds it
+    upright in front of you with the lens ahead, the way Miles raises it.)
     Reload: press Y. (A hands-on reload is in VR SETTINGS: "Reload with your
     hands".)
     "Custom camcorder HUD" shows REC/time, W-T zoom, spare batteries/capacity

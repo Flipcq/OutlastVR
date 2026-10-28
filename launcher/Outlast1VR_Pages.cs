@@ -192,7 +192,7 @@ namespace Outlast1VR
                 T_("HANDS", "Motion", "CamcorderHolster", "Camcorder on your hip", 1,
                    "Reach to your right hip and squeeze the grip: the\ncamcorder glides into your hand. Bring it to your\neye to look through it. Let go: it goes back."),
                 C_("HANDS", "Motion", "CamcorderHold", "Camcorder in your hand", 4, new[] { "FREE", "GAME POSE" }, new double[] { 4, 3 },
-                   "FREE: it moves and turns exactly with your\ncontroller, like a real camcorder. GAME POSE: held\nthe way Miles holds it as he raises it."),
+                   "FREE: it moves and turns exactly with your\ncontroller, like a real camcorder. GAME POSE: held\nupright in front of you, lens ahead, the way Miles\nraises it (your hand still places it)."),
                 N_("HANDS", "Motion", "RaiseToEyeReachM", "Camcorder to eye distance", 0.14, 0.08, 0.25, 0.01, "cm", null,
                    "How close the camcorder has to come to your eye\nbefore you are looking through it."),
                 T_("HANDS", "Motion", "BatteryGesture", "Reload with your hands", 0,
@@ -690,8 +690,8 @@ namespace Outlast1VR
         };
         static readonly string[,] CallSub =
         {
-            { "trigger · look back while running", "+ left grip: documents", "click the stick: sprint", "+ left grip: notes", "+ left grip: VR settings menu", "hold to sprint · handles, ledges" },
-            { "trigger · look back while running", "+ left grip: notebook", "camcorder up: zoom · click: night vision", "climb, vault", "the headset's own menu", "from your hip · handles, ledges" },
+            { "trigger · look back while running", "+ left grip: documents", "click the stick: sprint", "", "+ left grip: VR settings menu", "hold to sprint · handles, ledges" },
+            { "trigger · look back while running", "", "click: NV · hold: camera at face", "climb, vault", "the headset's own menu", "from your hip · handles, ledges" },
         };
         int calloutPick = -1; double calloutPickAt = -10;
 

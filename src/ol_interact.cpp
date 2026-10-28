@@ -426,6 +426,14 @@ static ULONGLONG s_gesturePauseUntil = 0;   // after a reload, while the game sw
 static bool s_rearmAfterPause = false;       // it was up when you reloaded: bring it back up once
 static V3 s_eyeZone;
 static float s_dEye = 9.0f;
+// (Beta 1.1.4) [FACECAM] Hold the right stick click and the camcorder is raised by the game and
+// stays at Miles's face with the hand resting; the game's own arm plays its raise pose. Another
+// held click, or a squeeze at the face, runs the game's lower animation. A held click while it is
+// already up only pins it (no animation) and buzzes the right controller.
+static bool s_faceLock = false;              // the game's camcorder is up and pinned at his face
+static bool s_facePending = false;           // a held click asked for the raise; waiting for the game
+static bool s_faceLowering = false;          // a held click / a grab at the face asked for the lower
+static ULONGLONG s_facePendingAt = 0;
 // enter at the reach, lower 14 cm further out, re-arm 7 cm out
 static float EyeEnter() { return g_eyeReach; }
 static float EyeLeave() { return g_eyeReach + 0.14f; }
@@ -433,7 +441,21 @@ static void RequestCamToggle(ULONGLONG now) { s_camPulseUntil = now + 120; s_cam
 
 // [HOLSTER] (Test39) Right hip: 20 cm right of the head's centre line, 60 cm below the eyes.
 static const V3 kHolsterOff = { 0.20f, -0.60f, 0.0f };    // right, up, forward (torso frame)
-static const float kHolsterReach = 0.16f;
+// (Beta 1.1.4) [WAIST] The grab area is a waist-shaped box, not a 16 cm ball: a hand coming down
+// or across to the hip, and a hand resting in the lap when you play seated, both count. Measured
+// in the torso frame around the holster (and around the model the game draws, below).
+static const float kWaistSideM = 0.26f, kWaistUpM = 0.24f, kWaistDownM = 0.32f,
+                   kWaistFwdM = 0.34f, kWaistBackM = 0.20f;
+static bool InWaistZone(V3 p, V3 center) {
+    const V3 d = Sub(p, center);
+    const V3 r = TorsoRight();
+    const float side = d.x * r.x + d.z * r.z;
+    const float fwd = d.x * s_torsoF.x + d.z * s_torsoF.z;
+    const float ns = side / kWaistSideM;
+    const float nu = d.y / (d.y >= 0.0f ? kWaistUpM : kWaistDownM);
+    const float nf = fwd / (fwd >= 0.0f ? kWaistFwdM : kWaistBackM);
+    return ns * ns + nu * nu + nf * nf <= 1.0f;
+}
 enum { H_HOLSTERED = 0, H_IN_HAND };
 static int s_hState = H_HOLSTERED;
 static float s_camBlend = 0.0f;              // 0 on the chest .. 1 in the hand (animated)
@@ -449,10 +471,25 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
     s_eyeZone = Add(s_headT, QRot(head, { 0.035f, -0.035f, -0.11f }));   // just in front of the right eye
     const bool rOk = (fh.valid & 2u) != 0;
     s_dEye = rOk ? Len(Sub(P3(fh.hand[1]), s_eyeZone)) : 9.0f;
+    if (s_dEye > EyeEnter() + 0.07f) s_eyeArmed = true;                       // the hand left the eye
+    // (Beta 1.1.4) [FACECAM] Pinned to the face by a held right stick click: the hand can rest, so
+    // the distance to the eye must not lower it. A fresh squeeze with the right hand at the face
+    // takes it off him again (the game's own lower animation).
+    if (s_faceLock) {
+        if (!s_faceLowering && s_gripEdge[1] && s_dEye < EyeLeave() && now > s_camCooldown) {
+            s_faceLowering = true;
+            s_eyeArmed = false; s_inEyeSince = 0;
+            RequestCamToggle(now);
+            OLXR_HapticPulse(1, 0.55f, 40);
+            ILog("[OLVR][FACECAM] camcorder taken off his face with the right hand (%.2f m)", s_dEye);
+        }
+        s_inEyeSince = 0;
+        return;
+    }
+    if (s_facePending) { s_inEyeSince = 0; return; }   // the game's raise is playing
     const bool holster = HolsterOn();
     const bool allowed = holster ? (s_hState == H_IN_HAND) : (g_on[ON_RAISE] != 0 && !g_camButton);   // (Test49) no gesture
     if (!allowed || s_camUp < 0) { s_inEyeSince = 0; return; }
-    if (s_dEye > EyeEnter() + 0.07f) s_eyeArmed = true;                       // the hand left the eye
     if (now < s_gesturePauseUntil) { s_inEyeSince = 0; return; }
     if (s_rearmAfterPause) { s_rearmAfterPause = false; s_eyeArmed = true; }
     if (s_camUp == 0) {
@@ -473,6 +510,49 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
     }
 }
 
+// (Beta 1.1.4) [FACECAM] Hold the right stick click for OLVR_CAM_HOLD_MS. Handled on the game
+// thread with the frame's pad, but the proxy withholds the game's night-vision press until release
+// and only sends it for a short click, so a held click never flips night vision as a side effect.
+static bool s_rsDown = false, s_rsLong = false, s_rsShort = false;
+static ULONGLONG s_rsDownAt = 0;
+static void CamHoldGesture(ULONGLONG now, const OLXrPad& p) {
+    const bool rs = (p.buttons & OLXR_BTN_RSTICK) != 0;
+    if (rs && !s_rsDown) { s_rsDown = true; s_rsDownAt = now; s_rsLong = false; return; }
+    if (rs && s_rsDown) {
+        if (s_rsLong || now - s_rsDownAt < OLVR_CAM_HOLD_MS) return;
+        s_rsLong = true;
+        if (s_camUp < 0) { ILog("[OLVR][FACECAM] right stick held, but the game's camcorder state is not known yet"); return; }
+        if (s_camUp == 1) {
+            if (s_faceLock) {
+                if (!s_faceLowering) {
+                    s_faceLowering = true;
+                    s_eyeArmed = false; s_inEyeSince = 0;
+                    RequestCamToggle(now);
+                    OLXR_HapticPulse(1, 0.65f, 45);
+                    ILog("[OLVR][FACECAM] right stick held: the camcorder comes off his face (the game's lower animation)");
+                }
+            } else {
+                s_faceLock = true; s_facePending = false; s_faceLowering = false;
+                s_camByGesture = false;
+                OLXR_HapticPulse(1, 0.65f, 45);
+                ILog("[OLVR][FACECAM] right stick held: the camcorder is pinned at his face (it was already up, no animation)");
+            }
+        } else {
+            s_facePending = true; s_facePendingAt = now; s_faceLowering = false;
+            s_camByGesture = false;
+            s_eyeArmed = false; s_inEyeSince = 0;
+            RequestCamToggle(now);
+            ILog("[OLVR][FACECAM] right stick held: Miles raises the camcorder - it will stay at his face");
+        }
+        return;
+    }
+    if (!rs && s_rsDown) {
+        s_rsDown = false;
+        if (!s_rsLong) s_rsShort = true;   // a short click: still the night-vision switch
+        s_rsLong = false;
+    }
+}
+
 static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
     s_holster = OnBody(kHolsterOff.x, kHolsterOff.y, kHolsterOff.z);
     float hv[3];
@@ -482,7 +562,7 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
     const float dReal = rOk ? Len(Sub(P3(fh.hand[1]), s_holster)) : 9.0f;
     const float dVis = rOk ? Len(Sub(P3(fh.hand[1]), s_holsterVis)) : 9.0f;
     s_dHolster = dReal < dVis ? dReal : dVis;
-    s_inHolster = s_dHolster < kHolsterReach;
+    s_inHolster = rOk && (InWaistZone(P3(fh.hand[1]), s_holster) || InWaistZone(P3(fh.hand[1]), s_holsterVis));
     const float dt = s_lastBlendMs ? (float)(now - s_lastBlendMs) * 0.001f : 0.0f;
     s_lastBlendMs = now;
     if (!HolsterOn() || s_camUp < 0) { s_hState = H_HOLSTERED; s_camBlend = 0.0f; return; }
@@ -1708,14 +1788,18 @@ extern "C" void OLInteract_DevLedges() {
 // eye carries back into your hand.
 static int s_handNV = -1;                       // -1: not known yet (taken from the game)
 static ULONGLONG s_nvUpMs = 0, s_nvPulseUntil = 0, s_nvAdoptAt = 0;
-static bool s_rsDown = false, s_nvSynced = false;
+static bool s_nvSynced = false;
 extern "C" int OLInteract_HandNV() { return s_handNV > 0 ? 1 : 0; }
 static void HandNV(ULONGLONG now, const OLXrPad& p, void* hero) {
+    (void)p;
+    // (Beta 1.1.4) [FACECAM] CamHoldGesture owns the right stick's press and hold. A short click
+    // is still the night-vision switch; a held one raised/lowered the camcorder and must not also
+    // toggle it.
+    const bool shortClick = s_rsShort;
+    s_rsShort = false;
     unsigned char mode = 0;
     const bool modeOk = F.camMode && Rd(hero, F.camMode, &mode);
     if (s_handNV < 0 && modeOk) s_handNV = mode != 0 ? 1 : 0;
-    const bool rs = (p.buttons & OLXR_BTN_RSTICK) != 0, rsEdge = rs && !s_rsDown;
-    s_rsDown = rs;
     if (s_camUp == 1) {
         if (!s_nvUpMs) { s_nvUpMs = now; s_nvSynced = false; }
         // once per raise: the game's night vision takes the hand's setting (one click if they differ) ...
@@ -1731,7 +1815,7 @@ static void HandNV(ULONGLONG now, const OLXrPad& p, void* hero) {
         return;
     }
     s_nvUpMs = 0;
-    if (rsEdge && CamInRightHand()) {
+    if (shortClick && CamInRightHand()) {
         s_handNV = s_handNV > 0 ? 0 : 1;
         OLXR_HapticPulse(1, 0.3f, 25);
         ILog("[OLVR][HANDNV] night vision %s on the camcorder in your hand", s_handNV ? "ON" : "OFF");
@@ -1805,7 +1889,7 @@ static void Markers(ULONGLONG now, const OLXrFrameHands& fh) {
         if (HolsterOn() && s_camUp >= 0) {
             if (s_hState == H_HOLSTERED) {
                 // where the camcorder is: a glow when your right hand comes near, the label until learned
-                if (rOk && s_dHolster < 0.32f) add(s_holsterVis, s_inHolster ? 0.11f : 0.09f, OLMK_GLOW, 0.0f);
+                if (rOk && s_dHolster < 0.42f) add(s_holsterVis, s_inHolster ? 0.11f : 0.09f, OLMK_GLOW, 0.0f);
                 // the label floats up in front of your hip, where a glance down finds it; its arrow points at the holster
                 if (Teach(LN_TAKECAM) && rOk && s_dHolster < 0.60f && s_camBlend < 0.01f)
                     teachLabel(OnBody(kHolsterOff.x, kHolsterOff.y + 0.18f, kHolsterOff.z + 0.18f), OLMK_L_TAKE_CAM);
@@ -2026,6 +2110,20 @@ extern "C" void OLInteract_Tick() {
     void* hero = OLUE3_Hero(); void* pc = OLUE3_PlayerController();
     unsigned char cs = 0; float z = 0.0f, en = 1.0f; int nb = 0;
     s_camUp = Rd(hero, F.camState, &cs) ? (cs == 1 ? 1 : 0) : -1;
+    // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
+    // a lower (ours, the game's, a reload, a cutscene) releases it.
+    if (s_facePending && s_camUp == 1) {
+        s_facePending = false; s_faceLock = true; s_faceLowering = false;
+        OLXR_HapticPulse(1, 0.5f, 40);
+        ILog("[OLVR][FACECAM] the camcorder is at his face - it stays there with your hand resting");
+    } else if (s_facePending && now - s_facePendingAt > 3000) {
+        s_facePending = false;
+        ILog("[OLVR][FACECAM] the game did not raise the camcorder - the face pin was dropped");
+    }
+    if (s_camUp == 0 && s_faceLock) {
+        s_faceLock = false; s_faceLowering = false; s_facePending = false;
+        ILog("[OLVR][FACECAM] the camcorder is down - the face pin is released");
+    }
     const bool zoomRead = Rd(hero, F.zoom, &z), energyRead = Rd(hero, F.energy, &en);
     const bool sparesRead = Rd(pc, F.numBat, &nb);
     s_zoom = zoomRead ? z : 0.0f;
@@ -2073,6 +2171,7 @@ extern "C" void OLInteract_Tick() {
     static ULONGLONG s_lastTick = 0;
     float dt = s_lastTick ? (float)(now - s_lastTick) * 0.001f : 0.014f; s_lastTick = now;
     if (dt < 0.002f) dt = 0.002f; if (dt > 0.05f) dt = 0.05f;
+    CamHoldGesture(now, p);      // (Beta 1.1.4) [FACECAM] a held right stick click: raise / pin / lower
     Holster(now, fh);           // first: a squeeze at the hip is the camcorder's, not a door's
     CamRaise(now, head, fh);
     Battery(now, fh, p);
@@ -2195,11 +2294,16 @@ extern "C" float OLInteract_ViewfinderZoom() {
     if (!s_vfMs || GetTickCount64() - s_vfMs > 250) return 0.0f;
     return s_vfZoom;
 }
-// While the camcorder is up and the right hand is at the eye, the right arm is the game's.
+// While the camcorder is up and the right hand is at the eye - or it is pinned at his face by a
+// held right stick click - the right arm is the game's.
 extern "C" int OLInteract_RightArmNative() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
-    if (HolsterOn() && s_hState != H_IN_HAND) return 0;
-    return (s_camUp == 1 && s_dEye < EyeLeave() + 0.05f) ? 1 : 0;
+    if (HolsterOn() && s_hState != H_IN_HAND && !s_faceLock) return 0;
+    return (s_camUp == 1 && (s_faceLock || s_dEye < EyeLeave() + 0.05f)) ? 1 : 0;
+}
+extern "C" int OLInteract_FaceCamPinned() {
+    if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
+    return (s_camUp == 1 && s_faceLock) ? 1 : 0;
 }
 // [ANCHOR] (Test40) the world point a hand holds (an edge, a handle, the panel it pushes) and how much
 // (eased 0..1); ol_ue3's arm solve reaches there instead of the controller. Game thread.

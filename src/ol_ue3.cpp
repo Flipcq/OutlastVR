@@ -165,6 +165,7 @@ static volatile ULONGLONG g_fvTick = 0;
 extern "C" float OLInteract_ViewfinderZoom();
 extern "C" void OLInteract_Tick();
 extern "C" int OLInteract_RightArmNative();
+extern "C" int OLInteract_FaceCamPinned();             // (Beta 1.1.4) [FACECAM] let the game's arm play
 extern "C" int OLInteract_HandNV();                    // (Test43) [HANDNV] the camcorder's night vision
 extern "C" void OLPrompts_Install(uintptr_t base);   // [PROMPTS] ol_prompts.cpp
 extern "C" void OLSound_Install();                     // [SOUND] (Test43) ol_sound.cpp: Wwise - breath, audio report
@@ -3655,7 +3656,12 @@ static float g_camHeldRot[3]  = { 0.0f, 0.0f, 0.0f };
 //    (its ring) toward your face is the camcorder's back, the lens points away from you along the handle,
 //    the camcorder upright, Miles's hand in the game's own grip around it. The sliders adjust it the same way.
 static int g_camHoldMode = 4;
-static float g_camHold3[3] = { 0.35f, 12.0f, -60.0f };   // pitch share, roll (deg), turn across (deg)
+// (Beta 1.1.4) [CAMHOLD] GAME POSE was crooked in the headset. Its base came from the raise
+// animation's own roll (12 deg) and 60 deg turn across the body, which look right on Miles's arm but
+// not when the camcorder is what you aim with: the lens pointed off to the side and the horizon
+// leaned. The pose is now upright around world up with the lens along the way you face, still
+// following the hand's height a little (pitch share); roll and turn stay tuneable but default to 0.
+static float g_camHold3[3] = { 0.35f, 0.0f, 0.0f };      // pitch share, roll (deg), turn across (deg)
 static float g_camHold4[3] = { 0.0f, 0.0f, 0.0f };      // roll, pitch, yaw (deg) from the controller to the camcorder
 // [CAMADJUST] (Test45) "We need to get the camcorder in the right position and maybe add a setting where I can
 // position it myself." Free hold now takes the controller's AIM pose (where it points) instead of its grip pose:
@@ -4274,7 +4280,11 @@ static bool PoseApplyVisible(void* comp) {
         // (Beta 1.1) [CAMTUCK] But that pose holds a camcorder that is hidden at the eye, so in the headset's wide
         // view the EMPTY hand hung beside the picture: "the hand I put it there with sticks out during the
         // camera view". While you look through it the right arm now rests at Miles's side instead.
+        // (Beta 1.1.4) [FACECAM] When a held right stick click pins it at his face, the hand is not at
+        // your eye and nothing was put there: hand the right arm back to the game so its own raise /
+        // lower animation plays, exactly as in the game.
         const bool camTuck = OLInteract_RightArmNative() != 0;
+        const bool facePin = OLInteract_FaceCamPinned() != 0;
         // [CLIMB] (Test40) in a climb, a hand that holds on (the edge, a rung) plays the game's own arm
         const int moveClass = ArmMoveClass();
         if (moveClass == 1)
@@ -4294,7 +4304,9 @@ static bool PoseApplyVisible(void* comp) {
             for (int i = 0; i < 3; ++i) headRef[i] -= leanApplied[i];
         }
 
-        if (camTuck) {   // [CAMTUCK] right hand low at the side, pointing down (recenter frame, metres)
+        if (facePin) {   // [FACECAM] the game's own raise / lower arm animation plays
+            pad.handValid &= ~2u;
+        } else if (camTuck) {   // [CAMTUCK] right hand low at the side, pointing down (recenter frame, metres)
             pad.handPose[1] = { -0.7071f, 0.0f, 0.0f, 0.7071f, headRef[0] + 0.20f, headRef[1] - 0.64f, headRef[2] + 0.05f };
             pad.handValid |= 2u;
         }
@@ -4509,14 +4521,14 @@ static bool PoseApplyVisible(void* comp) {
                 }
                 if (g_camHoldMode == 2) camQ = CamUpright(camQ);
                 if (g_camHoldMode == 3) {
-                    // the way Miles faces, turned / tilted a little toward the hand (eye -> hand)
+                    // (Beta 1.1.4) [CAMHOLD] Game pose, upright in front of you: the lens follows
+                    // the way you face (not the hand's sideways position, which used to swivel it
+                    // off the view) and only its height tilts it a little. No inherited roll/turn.
                     const VIk3 look = IVSub(target, cam);
                     const float hl = sqrtf(look.x * look.x + look.y * look.y);
                     if (hl > 1.0f) {
-                        const VIk3 lh = { look.x / hl, look.y / hl, 0.0f };
-                        const VIk3 h = IVNorm(IVAdd(IVScale(cameraForward, 0.75f), IVScale(lh, 0.25f)));
                         const float pitch = atan2f(look.z, hl) * g_camHold3[0];
-                        const VIk3 f = IVNorm(IVAdd(h, { 0.0f, 0.0f, tanf(pitch) }));
+                        const VIk3 f = IVNorm(IVAdd(cameraForward, { 0.0f, 0.0f, tanf(pitch) }));
                         const float roll[3] = { g_camHold3[1], 0.0f, 0.0f }, turn[3] = { 0.0f, 0.0f, g_camHold3[2] };
                         camQ = IQMul(IQMul(IQMul(CamUpright(IQFromTo({ 1, 0, 0 }, f)), IQEulerDeg(roll)), IQEulerDeg(turn)), IQEulerDeg(g_camHeldRot));
                     }
@@ -4526,10 +4538,12 @@ static bool PoseApplyVisible(void* comp) {
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
         }
-        // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip
+        // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip.
+        // (Beta 1.1.4) [FACECAM] Only while a held click pins it at his face does the game's own arm
+        // actually play; the hand-at-eye pose is the tucked one above and must not be captured.
         {
             static ULONGLONG s_nativeSince = 0; static bool s_took = false;
-            if (OLInteract_RightArmNative()) {
+            if (OLInteract_FaceCamPinned()) {
                 const ULONGLONG nowMs = GetTickCount64();
                 if (!s_nativeSince) { s_nativeSince = nowMs; s_took = false; }
                 else if (!s_took && nowMs - s_nativeSince > 900) { GripCapture(space, mesh); s_took = true; }

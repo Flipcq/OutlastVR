@@ -11,8 +11,8 @@
 //  - whole hints that a hand gesture now does are replaced ("Grab the handle to open, or press
 //    X"), each only while that gesture is switched on;
 //  - every remaining {OLA_<action>} becomes the Quest 3 control the mod maps to it (d3d9_proxy
-//    MapPadButtons: A/B/X/Y pass straight through, LB = left grip, RB = right grip, Back and the
-//    D-pad = left grip + B/X/Y, Start = Menu), so no Xbox icon is left to draw.
+//    MapPadButtons: A/B/X/Y pass straight through, LB = left grip, RB = right grip, Y alone still
+//    has a left-grip chord = documents, Start = Menu), so no Xbox icon is left to draw.
 // The rewritten text lives on this call's stack; the original copies it into its own FString, so
 // the game never holds a pointer to it. Anything this does not recognise passes through untouched.
 // =============================================================================
@@ -50,7 +50,9 @@ static const ActionWord kActions[] = {
     { L"ZoomImpulseIn", L"right stick up" },     { L"ZoomImpulseOut", L"right stick down" },
     { L"AnalogLeanLeft", L"the left trigger" },  { L"AnalogLeanRight", L"the right trigger" },
     { L"LeanLeft", L"the left trigger" },        { L"LeanRight", L"the right trigger" },
-    { L"ShowTabMenu", L"left grip + B" },        { L"ShowRecordingMenu", L"left grip + X" },
+    // (Beta 1.1.4) the left-grip chords for the notebook and recordings are removed: the hints say
+    // so instead of naming a button that now does nothing.
+    { L"ShowTabMenu", L"no shortcut" },          { L"ShowRecordingMenu", L"no shortcut" },
     { L"ShowEvidenceMenu", L"left grip + Y" },   { L"ShowMenu", L"the Menu button" },
     { L"MoveForward", L"the left stick" },       { L"MoveBackward", L"the left stick" },
     { L"StrafeLeft", L"the left stick" },        { L"StrafeRight", L"the left stick" },
@@ -69,13 +71,13 @@ static const Sentence kSentences[] = {
                L"To open a door, grab its handle and push or pull it. B still opens it in one go." },
     // (Test38) the chest holster and the hands-on reload come first; without them, Test37's wording
     { G_HOLSTER, L"To raise your camcorder, press {OLA_ToggleCamcorder}",
-                 L"Your camcorder is on your right hip: take it with your right hand and bring it to your eye" },
+                 L"Your camcorder is on your right hip: take it with your right hand and bring it to your eye, or hold the right stick click" },
     { G_HOLSTER_BATTERY, L"Press {OLA_Reload} to reload batteries",
                  L"To reload, pull the old battery out of the camcorder, take a new one from your left hip and slide it in, or press Y" },
     { G_HOLSTER_BATTERY, L"Batteries are used for the infrared light of your camcorder. You can reload by pressing {OLA_Reload}",
                  L"Batteries are used for the infrared light of your camcorder. To reload, pull the old one out of the camcorder with your left hand, take a new one from your left hip and slide it in, or press Y" },
     { G_RAISE, L"To raise your camcorder, press {OLA_ToggleCamcorder}",
-               L"To raise your camcorder, lift your right hand to your eye, or squeeze the right grip" },
+               L"To raise your camcorder, lift your right hand to your eye, squeeze the right grip, or hold the right stick click" },
     { G_BATTERY, L"Press {OLA_Reload} to reload batteries",
                  L"To reload, take a battery from your left hip to the camcorder, or press Y" },
     { G_BATTERY, L"Batteries are used for the infrared light of your camcorder. You can reload by pressing {OLA_Reload}",
@@ -114,7 +116,7 @@ static bool Put(wchar_t* out, size_t cap, size_t* n, const wchar_t* s, size_t le
     memcpy(out + *n, s, len * sizeof(wchar_t)); *n += len; out[*n] = 0;
     return true;
 }
-// A control named right after a noun reads as a label ("Notebook (left grip + B)"); after a verb
+// A control named right after a noun reads as a label ("Notebook (the Menu button)"); after a verb
 // or a conjunction it is the object ("press X", "hold the left trigger or the right trigger").
 static bool AfterVerb(const wchar_t* s, size_t at) {
     size_t e = at;

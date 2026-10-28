@@ -1923,32 +1923,45 @@ static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
     const bool mouseLayout = OLProxy_MouseUseEnabled() && !inMenu;
     const unsigned buttons = OLProxy_MouseUseEnabled() ? g_faceGate.Apply(p.buttons, inMenu) : p.buttons;
     WORD b = 0;
-    static bool nvButtonDown = false;
+    // (Beta 1.1.4) [FACECAM] R3 is both the night-vision switch (a click) and the camcorder's
+    // raise / lower at the face (hold it). The game's night-vision press is withheld until the
+    // click is released, and only a short click sends it: a held click must not flip night vision
+    // while it raises or lowers the camcorder. ol_interact.cpp measures the same hold.
+    static bool nvDown = false;
+    static ULONGLONG nvDownAt = 0, nvPulseUntil = 0;
     const bool nvNow = (buttons & OLXR_BTN_RSTICK) != 0;
-    if (nvNow && !nvButtonDown && g_camcorderUp) g_nvRequested = !g_nvRequested;
-    nvButtonDown = nvNow;
+    const ULONGLONG nowMs = GetTickCount64();
+    if (nvNow && !nvDown) { nvDown = true; nvDownAt = nowMs; }
+    else if (!nvNow && nvDown) {
+        nvDown = false;
+        if (nowMs - nvDownAt < OLVR_CAM_HOLD_MS) {
+            nvPulseUntil = nowMs + 120;
+            if (g_camcorderUp) g_nvRequested = !g_nvRequested;
+        }
+    }
+    if (nowMs < nvPulseUntil) b |= 0x0080;              // R3 = OLA_ToggleNightVision (short click)
     const bool shift = p.gripL > 0.6f;
     // (Test48) A is not a left-grip chord: nothing is on left grip + A, and the left grip is also sprint, so
     // counting it dropped BOTH the sprint and the jump the moment A was pressed while running - "most of the time
-    // running and vaulting with A does not work". Only X, Y and B have grip chords.
-    const bool chord = shift && (buttons & (OLXR_BTN_B | OLXR_BTN_X | OLXR_BTN_Y));
-    if (shift) {
-        if (buttons & OLXR_BTN_X) b |= 0x0004;           // left grip + X = recordings
-        if (buttons & OLXR_BTN_Y) b |= 0x0008;           // left grip + Y = evidence/documents
-        if (buttons & OLXR_BTN_B) b |= 0x0020;           // left grip + B = tab/inventory
-    }
+    // running and vaulting with A does not work".
+    // (Beta 1.1.4) left grip + B and left grip + X are gone: they opened the notebook / recordings
+    // (the documents menu) by accident while sprinting. Only Y still has a grip chord. B and X stay
+    // silent while the grip is held, so the sprint cannot also crouch, use or open a menu.
+    const bool chord = shift && (buttons & OLXR_BTN_Y);
+    if (shift && (buttons & OLXR_BTN_Y)) b |= 0x0008;   // left grip + Y = evidence/documents
     if (!chord) {
         if (buttons & OLXR_BTN_A) b |= 0x1000;           // A  = OLA_Jump
-        if (mouseLayout) {
-            if (buttons & OLXR_BTN_X) b |= 0x2000;       // physical X = crouch
-            // Physical B is delivered as RAW mouse down/up by the XR sampler.
-        } else {
-            if (buttons & OLXR_BTN_B) b |= 0x2000;       // menus/legacy: B
-            if (buttons & OLXR_BTN_X) b |= 0x4000;       // menus/legacy: X
+        if (!shift) {
+            if (mouseLayout) {
+                if (buttons & OLXR_BTN_X) b |= 0x2000;   // physical X = crouch
+                // Physical B is delivered as RAW mouse down/up by the XR sampler.
+            } else {
+                if (buttons & OLXR_BTN_B) b |= 0x2000;   // menus/legacy: B
+                if (buttons & OLXR_BTN_X) b |= 0x4000;   // menus/legacy: X
+            }
         }
         if (buttons & OLXR_BTN_Y) b |= 0x8000;           // Y  = OLA_Reload (camcorder battery)
     }
-    if (buttons & OLXR_BTN_RSTICK) b |= 0x0080;         // R3 = OLA_ToggleNightVision
     // START = pause menu. Left grip + Menu is the mod menu instead ([TOUCHMENU]). (Test39) Start is
     // sent when Menu is RELEASED, and only if the left grip never joined the press: squeezing the
     // grip a moment after Menu used to open the game's pause menu AND the mod menu together.

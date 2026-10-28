@@ -4,6 +4,11 @@
 #include "ol_xr.h"
 #include "ol_camcorder_hud.h"
 
+// (Beta 1.1.4) [FACECAM] How long the right stick click is held before it raises / lowers the
+// camcorder at his face. A shorter click stays the night-vision switch it always was. Shared with
+// d3d9_proxy.cpp, which withholds the game's night-vision press until it knows the click was short.
+constexpr ULONGLONG OLVR_CAM_HOLD_MS = 800;
+
 void OLInteract_Init();                      // reads [Motion] from outlastvr.ini; call once at startup
 void OLInteract_Save(const wchar_t* ini);
 
@@ -23,6 +28,9 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out);
 extern "C" float OLInteract_ViewfinderZoom();
 // The right arm should play the game's own camcorder animation instead of following the controller.
 extern "C" int OLInteract_RightArmNative();
+// (Beta 1.1.4) [FACECAM] The camcorder is pinned at Miles's face by a held right stick click: let the
+// game's own raise / lower arm animation play (instead of the tucked empty hand used at the eye).
+extern "C" int OLInteract_FaceCamPinned();
 
 // [HOLSTER] (Test38) What to do with the game's handycam model this frame. Game thread.
 //   mode 0: leave it to the game (holster off, menus, cutscenes)

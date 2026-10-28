@@ -74,7 +74,7 @@ Run the launcher again after Steam updates or verifies Outlast, because Steam ca
 | Left controller | Right controller |
 |---|---|
 | Stick: walk | Stick: turn (smooth or snap) |
-| Stick click: sprint | Stick click: night vision |
+| Stick click: sprint | Stick click: night vision; hold it: camcorder at your face |
 | X: crouch / drop | A: jump, climb, vault |
 | Y: reload the camcorder battery | B: use / open / close / pick up |
 | Trigger: lean left / look back | Trigger: lean right / look back |
@@ -83,8 +83,12 @@ Run the launcher again after Steam updates or verifies Outlast, because Steam ca
 
 With the camcorder up, push the right stick straight up or down to zoom.
 
+Hold the right stick click for a moment to raise the camcorder with the game's own animation; it stays
+at Miles's face with your hand resting. Hold it again, or squeeze the right grip at your face, to lower
+it. A short click stays the night-vision switch.
+
 During gameplay, B uses the left mouse input; keep interaction bound to **Left Mouse Button**
-in the game's settings. Menus and left grip shortcuts retain their original controls.
+in the game's settings. Menus and the left grip + Menu shortcut keep their original controls.
 Set `[Input] MouseUse=0` in `outlastvr.ini` to restore X for use and B for crouch.
 The control images above and below show the original layout.
 

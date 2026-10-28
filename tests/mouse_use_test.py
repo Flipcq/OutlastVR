@@ -74,6 +74,7 @@ static std::vector<std::string> logs;
 static void Log(const char* fmt,...) { char s[1024]; va_list ap;va_start(ap,fmt);vsnprintf(s,sizeof(s),fmt,ap);va_end(ap);logs.emplace_back(s); }
 #define XLOG Log
 static bool g_camcorderUp=false,g_nvRequested=false;
+static constexpr ULONGLONG OLVR_CAM_HOLD_MS=800;
 static LONG g_menuChordLatch=0;
 static OLXrPad published={};
 static bool motionReady=true,padReady=true;
@@ -150,15 +151,17 @@ int main() {
     now+=11;Publish();assert(Poll()==0x2000); // retain the base gamepad extension for crouch
     now+=100;Publish();assert(Poll()==0);assert(events.empty());
     Idle();Publish(OLXR_BTN_A|OLXR_BTN_Y);assert(Poll()==0x9000);
-    Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0004 && !DropRequested());
-    Idle();Publish(OLXR_BTN_B,1);assert(Poll()==0x0020);
+    // (Beta 1.1.4) left grip + X and left grip + B no longer open the notes / notebook menus; the
+    // grip is still sprint, so those presses leave the run alone.
+    Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0100 && !DropRequested());
+    Idle();Publish(OLXR_BTN_B,1);assert(Poll()==0x0100);
     Idle();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0008);
     assert(events.empty());
     // Releasing the modifier under a held B never creates a mouse click.
     Publish(OLXR_BTN_B,1);Publish(OLXR_BTN_B,0);assert(events.empty());
     Idle();Publish(OLXR_BTN_B);assert(events.size()==1);Publish(OLXR_BTN_B,1);
     assert((events==std::vector<bool>{true,false}));Publish(OLXR_BTN_B,0);assert(events.size()==2);
-    puts("PASS: X crouch, original gamepad timing, A/Y and grip+X/B/Y shortcuts");
+    puts("PASS: X crouch, original gamepad timing, A/Y and grip+Y only (grip+X/B removed)");
 
     Idle();events.clear();gameMenu=true;Publish();Poll();
     Publish(OLXR_BTN_B);assert(Poll()==0x2000);assert(events.empty());
@@ -211,8 +214,8 @@ int main() {
     Hint(L"Pressione {OLA_Use} para fechar",L"Pressione (B) para fechar");
     Hint(L"Press {OLA_CrouchToggle}",L"Press X");
     Hint(L"Press {OLA_Crouch}",L"Press X");
-    Hint(L"Press {OLA_ShowTabMenu}",L"Press left grip + B");
-    Hint(L"Press {OLA_ShowRecordingMenu}",L"Press left grip + X");
+    Hint(L"Press {OLA_ShowTabMenu}",L"Press no shortcut");
+    Hint(L"Press {OLA_ShowRecordingMenu}",L"Press no shortcut");
     Hint(L"Press {OLA_Use} to close",L"Grab the handle to close, or press B");
     gameMenu=true;Hint(L"Press {OLA_Use}",L"Press X");Hint(L"Press {OLA_CrouchToggle}",L"Press B");
     gameMenu=false;g_mouseUse=0;Hint(L"Press {OLA_Use} to close",L"Grab the handle to close, or press X");

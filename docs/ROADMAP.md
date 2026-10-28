@@ -13,6 +13,20 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
   `src/ol_ue3.cpp` (`BobStabilize`, `BobCorrection`). It has **not been tested in a headset yet**.
   The `[BOB2]` log line every 5 s shows what was taken out.
 
+## Done in Beta 1.1.4 (camcorder enhancement)
+
+- **GAME POSE is upright.** The camcorder's base pose no longer inherits the raise animation's
+  12 deg roll and 60 deg turn, and its lens follows the way you face instead of the hand's sideways
+  position. `g_camHold3` in `src/ol_ue3.cpp`.
+- **Hold the right stick click** for about 0.8 s: Miles raises the camcorder with the game's own
+  animation and it stays at his face with your hand resting. Hold it again, or squeeze the right
+  grip at your face, to lower it. A short click is still night vision. `[FACECAM]` in
+  `src/ol_interact.cpp`, `src/ol_ue3.cpp` and `src/d3d9_proxy.cpp`.
+- **A waist-shaped camcorder grab zone**, wider down and forward so it also covers a hand resting
+  in the lap when you play seated. `kWaist*` in `src/ol_interact.cpp`.
+- **Left grip + B and left grip + X are removed** (they opened the notebook / recordings by
+  accident while sprinting). Left grip + Y is still documents.
+
 ## Bugs players reported
 
 - **Spotlights bleed through walls in the sewers.** Not investigated yet. The mod does not change
@@ -59,13 +73,6 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
 
 ## Requested features
 
-- **Keep the camcorder in hand without holding the grip.** For example, a "camcorder stays in hand"
-  option: squeeze at the hip to take it or to put it back. The holster state machine is `Holster()`
-  in `src/ol_interact.cpp`. `[Motion] CamcorderControl=1` (grip toggles the game's camcorder) already
-  exists as an accessibility mode.
-- **A bigger camcorder grab zone for seated play.** The hip zone is `kHolsterOff` (20 cm right,
-  60 cm below the eyes) with `kHolsterReach` = 16 cm, in `src/ol_interact.cpp`. Ideas: about 26 cm,
-  and a "Holster: Hip / Chest" option. The very first version had the holster on the chest.
 - **Running and jumping that players can find.** Sprint is a left stick click, or left grip while
   walking. Vault and jump is A while moving. Several players did not know this.
 - **More headsets and controllers tested:** Pimax, Index, Vive, WMR and Pico. The bindings are all
