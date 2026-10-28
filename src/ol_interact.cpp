@@ -479,6 +479,17 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
     // not removed. It only comes off his face with a held right stick click (the game's own lower
     // animation) or when the game itself lowers it.
     if (s_faceLock) {
+        // (V1) grabbing the pinned camcorder at the face with the right hand takes it off his face
+        // and into your hand (physical hold). It becomes visible in the hand instead of disappearing.
+        if (!s_faceLowering && s_gripEdge[1] && s_dEye < EyeLeave() && now > s_camCooldown) {
+            s_faceLock = false;
+            s_faceLowering = false;
+            s_eyeArmed = false; s_inEyeSince = 0;
+            // Put the camera visibly in the hand, not snapped back to the hip.
+            s_hState = H_IN_HAND; s_camBlend = 1.0f; s_blendSpeed = 1.0f / 0.18f;
+            OLXR_HapticPulse(1, 0.55f, 40);
+            ILog("[OLVR][FACECAM] camcorder taken off his face into your hand (%.2f m)", s_dEye);
+        }
         s_inEyeSince = 0;
         return;
     }
@@ -2134,7 +2145,10 @@ extern "C" void OLInteract_Tick() {
     }
     if (s_camUp == 0 && s_faceLock) {
         s_faceLock = false; s_faceLowering = false; s_facePending = false;
-        ILog("[OLVR][FACECAM] the camcorder is down - the face pin is released");
+        // The camcorder came off Miles's face: put it visibly in the player's hand so the lower
+        // animation can be seen, instead of snapping it instantly back to the hip holster.
+        s_hState = H_IN_HAND; s_camBlend = 1.0f; s_blendSpeed = 1.0f / 0.28f;
+        ILog("[OLVR][FACECAM] the camcorder is down - face pin released, camera now in hand");
     }
     const bool zoomRead = Rd(hero, F.zoom, &z), energyRead = Rd(hero, F.energy, &en);
     const bool sparesRead = Rd(pc, F.numBat, &nb);
