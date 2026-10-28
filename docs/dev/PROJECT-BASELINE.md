@@ -379,27 +379,38 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   D m out: N deg of convergence`. The REC light and battery gauge land at ~32 deg, with clear space
   around the readouts; the 46 px REC caption is 1.7 deg tall. `tests/camcorder_hud_test.py` asserts the
   panel's half-angle and that the convergence demand stays in the 1.5-2.2 deg band.
-- The focusing brackets in the middle of the display are 60% of the reference's box (212x178 instead of
-  354x298, same centre and arm thickness). They are the only bright shape with nothing behind it, so the
-  reference size read as a big empty square hanging in front of the face; the brackets now subtend ~7.7 x
-  6.4 deg instead of ~13.8 x 11.6. They are drawn at 175 grey instead of the artwork's 190, which read as
-  pure white against the dark scenes and pulled the eye away from the picture.
+- The focusing brackets in the middle of the display are 167x139 (was 212x178, and 354x298 in the
+  reference) on the same centre (960.5, 550.5), with 44 px arms and one-pixel strokes - the one shape in the
+  middle of the view with nothing behind it, so anything bigger read as an empty square hanging in front
+  of the face. They subtend ~6.5 x 5.4 deg. They are drawn in the HUD grey (#808079) instead of the
+  artwork's 190 or the 175 they had, which read as pure white against the dark scenes and pulled the eye
+  away from the picture.
 - The readouts sit one step further out and higher than the reference's own coordinates - REC/clock 80 px
   left and 20 px up, the spare count and gauge 80 px right and 20 px up - because the shrinking quad put
-  the display's corners nearer the middle of the view. The brackets stay exactly where they were, which
-  is also what the extra 10 px of lift buys: distance from the box. The gauge's rim now ends 59 px from
-  the display's edge (~30.4 deg of the panel's 31.2).
-- The focusing brackets are opaque, one pixel thin, in 175 grey - a faint grey box rather than a bright
+  the display's corners nearer the middle of the view. The gauge is pulled ~40 px left of where it was
+  (body right edge at x=1848, 72 px off the display's edge, ~31 deg out against the panel's ~33 deg edge):
+  the minimum that stops you having to stretch your eyes sideways to read the charge.
+- The focusing brackets are opaque, one pixel thin, in #808079 - a faint grey box rather than a bright
   one. Translucency is not available on this path: the compositor multiplies the layer's colour by its
   own alpha despite `XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT`, and a grey box meant to be soft
   came out black at 200/255 and still dark at 235/255. The test asserts alpha 255, one-pixel strokes and
-  a grey under 200, so the box can neither go dark nor thicken again by accident.
-- Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout has no
-  edge left and vanishes. The spare count gets a 1 px rim (the same string drawn four times, once per
-  neighbour, then in grey) and the gauge a 2 px rim just outside its grey frame, terminal included. The
-  rim is 25 grey, near black but not black: the first cut used 0 and read as a hole cut in the picture.
-  Four passes, not eight: measured 0.34 ms/frame for the rim with the HUD's naive 96x72 glyph blit (the
-  whole top band is 0.54 ms), and it only runs while the camcorder is up.
+  the exact grey, so the box can neither go dark nor thicken again by accident.
+- Palette: two inks, from the reference artwork. `#A71000` is the recording red - the REC lamp, its
+  caption, the timecode and the spare-battery count - and `#808079` is every other mark that is drawn
+  (brackets, W/T, the lever, the gauge, the HD/AUTO badges, F2.4). There are no dark rims around the
+  count or the gauge any more: on a transparent layer a black outline is a black line drawn on the
+  picture, not a shadow, and the count is red now, so it does not need one to survive the night-vision
+  wash. The HD badge's perforations are real holes (alpha 0), not black squares.
+- The charge gauge is the reference's long cell: a rounded frame with a transparent window, the contact
+  on the LEFT as a bracket that opens into the body, and the charge draining left to right - the bar
+  empties at the contact end, so what is left of it sits against the far (right) end. Continuous, no
+  four-bar quantization; the low-charge warning (a quarter or less) is now in the recording red.
+- Two night-vision tell-tales sit under the gauge's right end - the eye and the speaker from the
+  reference - and are drawn only while night vision is running. They live inside the dynamic band, which
+  is cleared every frame, so switching night vision off takes them away again. The state comes from
+  `OLProxy_NightVisionActive()` (camcorder raised + night vision requested), which `[HANDNV]` keeps in
+  step with the game's own `CamcorderMode`, and it is published inside the same `[CAMHUD]` snapshot as the
+  clock and the charge.
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
-  can never be pinned at one end, and the thumb is drawn as a bright body in a dark outline so movement is
-  visible against the track.
+  can never be pinned at one end, and the thumb is drawn as a grey body in a dark outline on a dark track,
+  so movement is visible against the lever's grey frame.

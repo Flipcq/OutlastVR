@@ -5,14 +5,25 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <vector>
 
 struct OLCamcorderHudState {
     float energy = 0, zoom = 0, recordingSeconds = 0;
     int spares = 0, capacity = 10;
+    bool nightVision = false;       // the camcorder's own night vision is running: the eye and speaker show
     bool visible = false;
 };
 namespace OLCamHud {
+// ---- palette --------------------------------------------------------------------------------------
+// Two inks, straight from the reference artwork. #A71000 is the recording red - the REC lamp and its
+// caption, the timecode and the spare-battery count. #808079 is the neutral grey of everything else
+// that is drawn: the lever, the charge gauge, the badges and the viewfinder marks (and the brackets,
+// which read as one thin light line rather than the bright white box they were). Both are drawn
+// opaque, so the per-eye blend cannot shift them the way a translucent grey once came out black.
+constexpr uint8_t RecRed = 167, RecGreen = 16, RecBlue = 0;        // #A71000
+constexpr uint8_t IconRed = 128, IconGreen = 128, IconBlue = 121;  // #808079
+
 constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // The head-locked quad IS the game's display, not a panel floating in the middle of your view:
 // the reference artwork is the whole screen, so it has to reach the edges of what you can see.
@@ -81,49 +92,127 @@ struct Canvas {
         p[2] = uint8_t((r * a + (p[2] * old + 127) / 255) / alpha);
         p[3] = uint8_t(alpha);
     }
-    void Rect(int x, int y, int w, int h, uint8_t shade = 190) {
+    // Flat RGB fills. The display has two inks (the recording red and the HUD grey), so the greys-only
+    // Rect/Rounded/Outline helpers the artwork used to be built from are gone with them.
+    void Fill(int x, int y, int w, int h, uint8_t r, uint8_t g, uint8_t b) {
         for (int yy = y; yy < y + h; ++yy)
-            for (int xx = x; xx < x + w; ++xx) Pixel(xx, yy, shade, shade, shade);
+            for (int xx = x; xx < x + w; ++xx) Pixel(xx, yy, r, g, b);
     }
-    void Rounded(int x, int y, int w, int h, float radius, int top, int bottom) {
+    // A real hole: alpha 0, not black. The layer is drawn over the scene, so "transparent" and a
+    // black plate look nothing alike in the headset. radius > 0 rounds the corners.
+    void Clear(int x, int y, int w, int h, float radius = 0) {
         for (int yy = 0; yy < h; ++yy) for (int xx = 0; xx < w; ++xx) {
-            const float dx = (std::max)(radius - xx - 0.5f, xx + 0.5f - (w - radius));
-            const float dy = (std::max)(radius - yy - 0.5f, yy + 0.5f - (h - radius));
-            const float edge = radius - std::sqrt((std::max)(0.0f,dx)*(std::max)(0.0f,dx) +
-                                                 (std::max)(0.0f,dy)*(std::max)(0.0f,dy));
-            const auto shade = uint8_t(top + (bottom-top)*yy/(std::max)(1,h-1));
-            Pixel(x+xx,y+yy,shade,shade,shade,radius > 0 ? uint8_t(Unit(edge+0.5f)*255) : 255);
+            if (radius > 0) {
+                const float dx = (std::max)(radius - xx - 0.5f, xx + 0.5f - (w - radius));
+                const float dy = (std::max)(radius - yy - 0.5f, yy + 0.5f - (h - radius));
+                const float edge = radius - std::sqrt((std::max)(0.0f,dx)*(std::max)(0.0f,dx) +
+                                                      (std::max)(0.0f,dy)*(std::max)(0.0f,dy));
+                if (edge < 0.0f) continue;
+            }
+            const int px = x + xx, py = y + yy;
+            if (px < 0 || px >= Width || py < 0 || py >= Height) continue;
+            uint8_t* p = &pixels[(size_t(py) * Width + px) * 4];
+            p[0] = p[1] = p[2] = p[3] = 0;
         }
     }
-    void Outline(int x, int y, int w, int h, int t, uint8_t shade = 190) {
-        Rect(x,y,w,t,shade); Rect(x,y+h-t,w,t,shade);
-        Rect(x,y,t,h,shade); Rect(x+w-t,y,t,h,shade);
+    // Filled rounded rectangle in an RGB colour (radius 0 = square corners).
+    void RoundFill(int x, int y, int w, int h, float radius, uint8_t r, uint8_t g, uint8_t b) {
+        for (int yy = 0; yy < h; ++yy) for (int xx = 0; xx < w; ++xx) {
+            float a = 1.0f;
+            if (radius > 0) {
+                const float dx = (std::max)(radius - xx - 0.5f, xx + 0.5f - (w - radius));
+                const float dy = (std::max)(radius - yy - 0.5f, yy + 0.5f - (h - radius));
+                const float edge = radius - std::sqrt((std::max)(0.0f,dx)*(std::max)(0.0f,dx) +
+                                                      (std::max)(0.0f,dy)*(std::max)(0.0f,dy));
+                a = Unit(edge + 0.5f);
+            }
+            if (a > 0) Pixel(x+xx, y+yy, r, g, b, uint8_t(a*255));
+        }
     }
 };
 // text(canvas, x, y, pixelHeight, bold, string, red, green, blue)
 // Static artwork at the reference screenshot's own 1920x1080 positions: the lens markings sit in
 // the bottom-left corner of the display, the focusing brackets in the middle of it.
 template<class Text> void Static(Canvas& c, Text& text) {
-    // Focusing brackets - the one bright shape in the middle of the view, and the only one with
-    // nothing behind it, so it reads as a square hanging in front of the face. The reference's
-    // 354x298 box was too big for that: 212x178 (60%) on the same centre (960.5, 550.5), arms 56 px.
-    // Drawn opaque, one pixel thin, in a grey that stays grey - a light, faint box, not a bright one.
+    // Focusing brackets - the one shape in the middle of the view with nothing behind it, so it reads
+    // as a square hanging in front of the face. Kept small and made FINER: 167x139 (was 212x178) on
+    // the same centre (960.5, 550.5) with 44 px arms, one pixel thin, drawn in the HUD grey (#808079)
+    // instead of a bright 175. It is the thing you aim the camcorder with, so the arms stay long
+    // enough to read as a box, but nothing about it is allowed to pull the eye off the picture.
     // Translucency is not usable here: the compositor multiplies the layer's colour by its own alpha
     // even though the layer asks for XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, and what should
     // have been a soft grey box came out black at 200/255 and still dark at 235/255. Alpha stays 255.
-    const uint8_t bracket = 175;
-    c.Rect(855,462,56,1,bracket);  c.Rect(1011,462,56,1,bracket);
-    c.Rect(855,463,1,176,bracket); c.Rect(1066,463,1,176,bracket);
-    c.Rect(855,639,56,1,bracket);  c.Rect(1011,639,56,1,bracket);
-    c.Rounded(149,819,108,52,4,215,170);
+    const int bx = 877, by = 481, bw = 167, bh = 139, arm = 44;
+    auto bar = [&](int x, int y, int w, int h) { c.Fill(x, y, w, h, IconRed, IconGreen, IconBlue); };
+    bar(bx, by, arm, 1);            bar(bx+bw-arm, by, arm, 1);
+    bar(bx, by+bh-1, arm, 1);       bar(bx+bw-arm, by+bh-1, arm, 1);
+    bar(bx, by+1, 1, bh-2);         bar(bx+bw-1, by+1, 1, bh-2);
+    // Lens markings, bottom-left corner, in the same grey. The HD badge's perforations are HOLES:
+    // the display is transparent over the scene, so the squares were never meant to be black plates.
+    c.RoundFill(149, 819, 108, 52, 4.0f, IconRed, IconGreen, IconBlue);
     for (int y = 823; y <= 855; y += 16) {
-        c.Rounded(153,y,14,12,3,0,0); c.Rounded(239,y,14,12,3,0,0);
+        c.Clear(153, y, 14, 12, 3.0f); c.Clear(239, y, 14, 12, 3.0f);
     }
     text(c,172,821,44,true,"HD",0,0,0);
-    c.Rounded(149,891,138,54,5,221,170);
+    c.RoundFill(149, 891, 138, 54, 5.0f, IconRed, IconGreen, IconBlue);
     text(c,157,893,44,true,"AUTO",0,0,0);
-    text(c,146,955,48,true,"F2.4",200,200,200);
+    text(c,146,955,48,true,"F2.4",IconRed,IconGreen,IconBlue);
 }
+// The two night-vision tell-tales under the right end of the gauge: the eye and the speaker from the
+// reference artwork. They are drawn only while the camcorder's night vision is running, so the
+// display itself says which mode it is in. Both live inside the dynamic band, which is cleared every
+// frame, so switching night vision off takes them away again.
+inline void NightVisionIcons(Canvas& c) {
+    const int iconY = 112, iconH = 40, iconW = 62;
+    const int speakerX = 1848 - iconW;          // right-aligned with the gauge's right edge
+    const int eyeX = speakerX - 8 - iconW;
+    for (int x : { eyeX, speakerX }) {          // the two frames: a rounded outline, hollow inside
+        c.RoundFill(x, iconY, iconW, iconH, 3.0f, IconRed, IconGreen, IconBlue);
+        c.Clear(x+2, iconY+2, iconW-4, iconH-4, 2.0f);
+    }
+    // Eye: the almond (two circle arcs meeting at the corners), its iris ring and the pupil.
+    const float ex = eyeX + iconW * 0.5f, ey = iconY + iconH * 0.5f;
+    const float a = 19.0f, b = 10.5f;
+    const float lobeR = (a*a + b*b) / (2.0f * b), lobeY = lobeR - b;
+    for (int y = int(ey-b)-1; y <= int(ey+b)+1; ++y) for (int x = int(ex-a)-1; x <= int(ex+a)+1; ++x) {
+        const float dx = x + 0.5f - ex, dy = y + 0.5f - ey;
+        if (std::fabs(dx) > a) continue;
+        // Distance from the eye's centre line to the almond's edge, both lobes alike.
+        const float edge = std::fabs(lobeY - std::sqrt(lobeR*lobeR - dx*dx));
+        if (std::fabs(dy) >= edge && std::fabs(dy) <= edge + 1.8f)   // a ~2 px stroke
+            c.Pixel(x, y, IconRed, IconGreen, IconBlue);
+    }
+    auto disc = [&](float cx, float cy, float r) {
+        for (int y = int(cy-r)-1; y <= int(cy+r)+1; ++y) for (int x = int(cx-r)-1; x <= int(cx+r)+1; ++x) {
+            const float dx = x + 0.5f - cx, dy = y + 0.5f - cy;
+            if (std::sqrt(dx*dx + dy*dy) <= r) c.Pixel(x, y, IconRed, IconGreen, IconBlue);
+        }
+    };
+    auto clearDisc = [&](float cx, float cy, float r) {
+        for (int y = int(cy-r)-1; y <= int(cy+r)+1; ++y) for (int x = int(cx-r)-1; x <= int(cx+r)+1; ++x) {
+            const float dx = x + 0.5f - cx, dy = y + 0.5f - cy;
+            if (std::sqrt(dx*dx + dy*dy) <= r) c.Clear(x, y, 1, 1);
+        }
+    };
+    disc(ex, ey, 7.0f); clearDisc(ex, ey, 4.4f); disc(ex, ey, 2.6f);
+    // Speaker: the cone, then the sound waves.
+    const float sx = speakerX + iconW * 0.5f - 1.0f;
+    c.Fill(int(sx-16), int(ey-7), 9, 15, IconRed, IconGreen, IconBlue);
+    for (int x = int(sx-7); x < int(sx+3); ++x) {
+        const float t = (x - (sx-7)) / 10.0f;
+        const int half = int(7.0f + t * 7.5f + 0.5f);
+        c.Fill(x, int(ey)-half, 1, half*2, IconRed, IconGreen, IconBlue);
+    }
+    for (float r : { 6.0f, 11.0f, 16.0f })                            // three arcs, ~2 px thick
+        for (int y = int(ey-r-2); y <= int(ey+r+2); ++y)
+            for (int x = int(sx); x <= int(sx+r+2); ++x) {
+                const float dx = x + 0.5f - sx, dy = y + 0.5f - ey;
+                if (std::fabs(std::sqrt(dx*dx + dy*dy) - r) > 1.0f) continue;
+                if (std::fabs(std::atan2(dy, dx)) * 57.29578f > 50.0f) continue;
+                c.Pixel(x, y, IconRed, IconGreen, IconBlue);
+            }
+}
+
 template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& text) {
     // Only the top readout band changes; the brackets and the lens markings below it stay put.
     // Exactly the rows the upload refreshes (DynamicTop/DynamicHeight), so the two cannot drift.
@@ -133,48 +222,55 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // 20 px up - because the quad fills less of the view (PanelWidth), so the display's corners land
     // nearer the middle of what you see. The clusters are pushed toward the edges and the top, which
     // keeps them reading as corners and leaves the focusing brackets below them clear.
-    // Record light and REC, top-left corner of the display.
+    // Record light and REC, top-left corner of the display, in the recording red (#A71000).
     for (int y = 60; y < 100; ++y) for (int x = 34; x < 75; ++x) {
         const float d = std::sqrt((x-54.5f)*(x-54.5f) + (y-79.5f)*(y-79.5f));
         const float coverage = Unit(19.5f-d);
-        c.Pixel(x,y,255,0,0,uint8_t(coverage*255));
+        c.Pixel(x,y,RecRed,RecGreen,RecBlue,uint8_t(coverage*255));
     }
-    text(c,79,52,46,true,"REC",255,0,0);
+    text(c,79,52,46,true,"REC",RecRed,RecGreen,RecBlue);
     char time[12]; Timecode(s.recordingSeconds, time);
-    text(c,230,60,34,true,time,255,0,0);
+    text(c,230,60,34,true,time,RecRed,RecGreen,RecBlue);
     // Zoom lever: W (wide) on the left, T (tele) on the right, centred in the display.
-    text(c,747,58,44,false,"W",200,200,200);
-    text(c,1117,58,44,false,"T",200,200,200);
-    c.Rounded(810,70,287,28,1,116,80); c.Outline(810,70,287,28,2,200);
-    // The thumb is the game's own zoom factor: dark outline, bright body, so any move shows.
+    text(c,747,58,44,false,"W",IconRed,IconGreen,IconBlue);
+    text(c,1117,58,44,false,"T",IconRed,IconGreen,IconBlue);
+    c.RoundFill(810,70,287,28,1.0f,IconRed,IconGreen,IconBlue);   // the lever's frame
+    c.RoundFill(812,72,283,24,0.0f,52,52,49);                     // ...and its dark track
+    // The thumb is the game's own zoom factor: dark outline, grey body, so any move shows.
     const int tracker = 813 + int(ZoomUnit(s.zoom)*260);
-    c.Rect(tracker,72,16,23,25); c.Rect(tracker+2,74,12,19,225);
+    c.Fill(tracker,72,16,23,36,36,33); c.Fill(tracker+2,74,12,19,IconRed,IconGreen,IconBlue);
     // Spare batteries, then the charge gauge, top-right corner of the display.
     const int capacity = s.capacity > 0 ? s.capacity : 10;
     const int spares = s.spares < 0 ? 0 : (s.spares > capacity ? capacity : s.spares);
     char count[32]; std::snprintf(count,sizeof(count),"%d / %d",spares,capacity);
-    // Night vision lifts the scene behind the HUD to a bright green wash, where a light grey readout
-    // has no edge left to read against and simply disappears. A one-pixel dark rim under the count and
-    // around the gauge gives both their outline back without making them heavier. Near black but not
-    // black (25), so it reads as a shadow around the readout instead of a hole cut in the picture.
-    // Four neighbours rather than eight: the count is redrawn every frame and each extra pass is a
-    // full glyph blit.
-    const uint8_t rim = 25;
-    const int rimX[4] = { -1, 1, 0, 0 }, rimY[4] = { 0, 0, -1, 1 };
-    for (int i = 0; i < 4; ++i) text(c, 1584 + rimX[i], 61 + rimY[i], 25, true, count, rim, rim, rim);
-    text(c,1584,61,25,true,count,210,210,210);
-    // Terminal faces left, as in the supplied reference. Continuous charge, no 4-bar quantization.
-    c.Outline(1677,64,13,24,2,rim);                     // rim around the terminal tab
-    c.Rect(1679,66,9,20,200);                           // the terminal itself
-    c.Outline(1684,50,178,52,2,rim);                    // rim around the gauge body
-    c.Outline(1686,52,170,48,5,200);                    // the gauge body
-    c.Rect(1684,71,5,10,0);
+    // The count sits immediately left of the contact, in the recording red like the REC and the clock.
+    // No dark rim: the display is a transparent layer over the scene, so a black outline around a
+    // readout is a black line drawn on the picture, not a shadow.
+    text(c,1524,61,25,true,count,RecRed,RecGreen,RecBlue);
+    // The gauge: the reference's long cell, contact on the LEFT, drawn as a rounded frame with a
+    // transparent window - no black body behind it and no rim around it.
+    const int gaugeX = 1636, gaugeY = 44, gaugeW = 212, gaugeH = 64;
+    c.RoundFill(gaugeX, gaugeY, gaugeW, gaugeH, 8.0f, IconRed, IconGreen, IconBlue);
+    c.Clear(gaugeX+5, gaugeY+5, gaugeW-10, gaugeH-10, 4.0f);
+    // Contact: a bracket that opens into the body, exactly as in the reference.
+    c.RoundFill(gaugeX-20, gaugeY+11, 20, 42, 3.0f, IconRed, IconGreen, IconBlue);
+    c.Clear(gaugeX-10, gaugeY+21, 10, 22);
+    const int barX = gaugeX + 11, barY = gaugeY + 11, barW = gaugeW - 22, barH = gaugeH - 22;
     const float charge = Unit(s.energy);
     // Preserve the large gauge's low-charge warning (one bar or less), with a continuous fill.
     const bool low = std::ceil(charge*4.0f-0.05f) <= 1;
-    for (int y = 0; y < 24; ++y) for (int x = 0; x < int(142*charge); ++x) {
-        const uint8_t shade = uint8_t(215-35*y/23);
-        c.Pixel(1703+x,64+y,low ? 255 : shade,low ? 60 : shade,low ? 60 : shade);
+    // Continuous charge, no 4-bar quantization, and it DRAINS LEFT TO RIGHT: the charge leaves at the
+    // contact end, so what is left of the bar sits against the far (right) end of the cell.
+    const int filled = int(barW * charge + 0.5f);
+    for (int y = 0; y < barH; ++y) {
+        const int drop = 12 - 26*y/(barH-1);                        // the reference's soft vertical fall
+        for (int x = 0; x < filled; ++x) {
+            if (low) c.Pixel(barX+barW-filled+x, barY+y, RecRed, RecGreen, RecBlue);
+            else c.Pixel(barX+barW-filled+x, barY+y,
+                         uint8_t(IconRed+drop), uint8_t(IconGreen+drop), uint8_t(IconBlue+drop));
+        }
     }
+    // Night vision is running: the eye and the speaker appear under the gauge's right end.
+    if (s.nightVision) NightVisionIcons(c);
 }
 }

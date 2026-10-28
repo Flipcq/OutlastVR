@@ -63,6 +63,7 @@ bool LS_Call(void*,void* fn,void* params) {
 }
 int OLUE3_InGameMenu(){return menu;} int OLMenu_Visible(){return modMenu;}
 long g_camHud=1;
+bool nvOn=false; extern "C" int OLProxy_NightVisionActive(){return nvOn?1:0;}
 int s_camUp=1, s_numBat=10;
 float s_energy=.5f, s_zoom=.75f;
 void setup() {
@@ -90,6 +91,10 @@ int main() {
 
     CamcorderHudTick(true); assert(OLInteract_CamcorderHud(&s));
     assert(s.recordingSeconds==3661.25f && s.spares==10 && s.capacity==10);
+    assert(!s.nightVision);                                  // night vision off: no tell-tales
+    nvOn=true; CamcorderHudTick(true);
+    assert(OLInteract_CamcorderHud(&s) && s.nightVision);     // ...on, and the snapshot carries it
+    nvOn=false; CamcorderHudTick(true);
     assert(s.energy==.5f && s.zoom==.75f && alpha==85); // retain native display until XR succeeds
     OLInteract_CamcorderHudSubmitted(1); CamcorderHudTick(true); assert(alpha==0);
     now+=100; CamcorderHudTick(true); assert(OLInteract_CamcorderHud(&s) && s.recordingSeconds==3661.25f);
@@ -111,47 +116,75 @@ int main() {
     OLCamHud::Canvas canvas;
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
-    // Focusing brackets: opaque, one pixel thin, and grey rather than white. Translucency is not an
-    // option here - the compositor multiplies the layer by its own alpha despite
-    // XR_COMPOSITION_LAYER_UNPREMULTIPLIED and a 200/255 (and even a 235/255) grey box came out black,
-    // so the artwork stays at alpha 255.
-    assert(canvas.pixels[(462*1920+855)*4+3]==255);  // opaque: the blend is a plain copy
-    assert(canvas.pixels[(462*1920+855)*4+1] > 160 && canvas.pixels[(462*1920+855)*4+1] < 200);
-    assert(canvas.pixels[(463*1920+900)*4+3]==0);    // one pixel thick: the bar is not two rows tall
-    assert(canvas.pixels[(500*1920+856)*4+3]==0);    // ...nor two columns wide
-    assert(canvas.pixels[(500*1920+855)*4+3]==255);  // the vertical arm is still there
-    assert(canvas.pixels[(402*1920+784)*4+3]==0);    // the reference's oversized box is gone
+    // Focusing brackets: opaque, one pixel thin, grey (#808079) and slimmer than they were - a 167x139
+    // box with 44 px arms instead of 212x178 with 56, on the same centre (960.5, 550.5). Translucency
+    // is still not an option: the compositor multiplies the layer by its own alpha despite
+    // XR_COMPOSITION_LAYER_UNPREMULTIPLIED and a 200/255 (and even a 235/255) grey box came out black.
+    assert(canvas.pixels[(481*1920+877)*4+3]==255);  // opaque: the blend is a plain copy
+    assert(canvas.pixels[(481*1920+877)*4+2]==128 && canvas.pixels[(481*1920+877)*4+1]==128
+        && canvas.pixels[(481*1920+877)*4+0]==121);  // #808079, not the old bright 175
+    assert(canvas.pixels[(482*1920+900)*4+3]==0);    // one pixel thick: the bar is not two rows tall
+    assert(canvas.pixels[(500*1920+878)*4+3]==0);    // ...nor two columns wide
+    assert(canvas.pixels[(500*1920+877)*4+3]==255);  // the vertical arm is still there
+    assert(canvas.pixels[(462*1920+855)*4+3]==0);    // the old, larger box is gone
+    assert(canvas.pixels[(481*1920+1043)*4+3]==255 && canvas.pixels[(619*1920+877)*4+3]==255);
     assert(canvas.pixels[(550*1920+960)*4+3]==0);    // brackets stay hollow
-    s.energy=1; s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(75*1920+1843)*4+3]==255); // full charge reaches right edge
+    // HD badge: the perforations are transparent HOLEs, not black squares - the layer sits over the
+    // scene, so a black square would be paint on the picture.
+    assert(canvas.pixels[(825*1920+158)*4+3]==0);    // inside the first perforation
+    assert(canvas.pixels[(836*1920+158)*4+3]==255);  // ...and the plate between them
+    assert(canvas.pixels[(836*1920+158)*4+2]==128);  // #808079, like every other HUD icon
+    assert(canvas.pixels[(825*1920+245)*4+3]==0);    // the right column is a hole too
+    s.energy=1; s.zoom=0; s.nightVision=false; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(75*1920+1836)*4+3]==255);  // full charge reaches the right end
+    assert(canvas.pixels[(75*1920+1650)*4+3]==255);  // ...and the left end, next to the contact
     // The readouts were pushed out toward the corners and up; their old coordinates are empty now.
-    assert(canvas.pixels[(80*1920+55)*4+2]==255 && canvas.pixels[(100*1920+100)*4+3]==0); // REC light
+    assert(canvas.pixels[(80*1920+55)*4+2]==167 && canvas.pixels[(80*1920+55)*4+1]==16
+        && canvas.pixels[(80*1920+55)*4+0]==0);      // REC lamp in #A71000
+    assert(canvas.pixels[(100*1920+100)*4+3]==0);
     assert(canvas.pixels[(100*1920+1599)*4+3]==0);   // the gauge no longer starts at the old x
-    // The gauge and its terminal carry a thin near-black rim (25, not 0): night vision turns the scene
-    // behind the HUD into a bright green wash and a light grey gauge has no edge left to read against,
-    // but a true black rim cuts a hole in the picture.
-    assert(canvas.pixels[(75*1920+1860)*4+1] > 10 && canvas.pixels[(75*1920+1860)*4+1] < 40);
-    assert(canvas.pixels[(75*1920+1860)*4+3]==255);
-    assert(canvas.pixels[(50*1920+1750)*4+1] > 10 && canvas.pixels[(50*1920+1750)*4+1] < 40);
-    assert(canvas.pixels[(50*1920+1750)*4+3]==255);
-    assert(canvas.pixels[(75*1920+1852)*4+1]==200);  // the grey frame sits just inside the rim
-    assert(canvas.pixels[(75*1920+1677)*4+1] > 10 && canvas.pixels[(75*1920+1677)*4+1] < 40); // terminal
-    s.energy=.25f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(75*1920+1703)*4+2]==255 && canvas.pixels[(75*1920+1703)*4]==60);
+    // No dark rim anywhere around the gauge or its terminal: those pixels are transparent now.
+    assert(canvas.pixels[(75*1920+1850)*4+3]==0);    // right of the frame
+    assert(canvas.pixels[(40*1920+1750)*4+3]==0);    // above it
+    assert(canvas.pixels[(75*1920+1677)*4+2]==128);  // the old terminal tab's spot is the bar now
+    assert(canvas.pixels[(75*1920+1845)*4+3]==255);  // the grey frame itself
+    assert(canvas.pixels[(75*1920+1845)*4+2]==128);
+    assert(canvas.pixels[(75*1920+1641)*4+3]==0);    // ...and its window is transparent
+    // Contact on the left, a bracket that opens into the body: bar and arms solid, notch transparent.
+    assert(canvas.pixels[(75*1920+1620)*4+3]==255 && canvas.pixels[(75*1920+1630)*4+3]==0);
+    assert(canvas.pixels[(58*1920+1630)*4+3]==255);
+    // The charge DRAINS LEFT TO RIGHT: at half charge the bar that is left sits against the far end,
+    // and the contact end is already empty.
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(75*1920+1703)*4+2]==canvas.pixels[(75*1920+1703)*4]);
+    assert(canvas.pixels[(75*1920+1700)*4+3]==0);    // empty at the contact end ...
+    assert(canvas.pixels[(75*1920+1800)*4+3]==255);  // ... filled toward the right
+    assert(canvas.pixels[(75*1920+1800)*4+2]==128 && canvas.pixels[(75*1920+1800)*4+0]==121);
+    // Low charge keeps its warning, now in the recording red.
+    s.energy=.25f; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(75*1920+1800)*4+2]==167 && canvas.pixels[(75*1920+1800)*4+1]==16);
+    // Night-vision tell-tales: gone while night vision is off...
+    assert(canvas.pixels[(112*1920+1800)*4+3]==0);
+    s.energy=.5f; s.nightVision=true; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(112*1920+1800)*4+3]==255);  // the speaker's frame
+    assert(canvas.pixels[(112*1920+1730)*4+3]==255);  // the eye's frame
+    assert(canvas.pixels[(120*1920+1720)*4+3]==0);    // hollow inside
+    assert(canvas.pixels[(112*1920+1800)*4+2]==128);  // #808079, right-aligned under the gauge
+    s.nightVision=false; OLCamHud::Top(canvas,s,noText);
+    assert(canvas.pixels[(112*1920+1800)*4+3]==0);    // switched off, and the band clears them
     // The W-T thumb follows the zoom factor instead of sitting at one end of the lever.
     s.zoom=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(80*1920+820)*4+1]>=200);            // thumb at the W end
+    assert(canvas.pixels[(80*1920+820)*4+1]>=120);            // thumb at the W end
     s.zoom=.5f; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(80*1920+820)*4+1]<150);             // ...and gone from it
-    assert(canvas.pixels[(80*1920+950)*4+1]>=200);            // ...sitting in the middle
+    assert(canvas.pixels[(80*1920+820)*4+1]<90);              // ...and gone from it
+    assert(canvas.pixels[(80*1920+950)*4+1]>=120);            // ...sitting in the middle
     s.zoom=1; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(80*1920+950)*4+1]<150);
-    assert(canvas.pixels[(75*1920+1076)*4+3]==255);            // T endpoint
+    assert(canvas.pixels[(80*1920+950)*4+1]<90);
+    assert(canvas.pixels[(75*1920+1076)*4+3]==255);           // T endpoint
     s.energy=0; OLCamHud::Top(canvas,s,noText);
-    assert(canvas.pixels[(75*1920+1703)*4+3]==0); // empty battery actually empty
-    assert(canvas.pixels[(462*1920+855)*4+3]==255); // dynamic updates preserve reticle
+    assert(canvas.pixels[(75*1920+1700)*4+3]==0); // empty battery actually empty
+    assert(canvas.pixels[(75*1920+1836)*4+3]==0);
+    assert(canvas.pixels[(462*1920+855)*4+3]==0); // dynamic updates preserve nothing of the old box
+    assert(canvas.pixels[(481*1920+877)*4+3]==255); // ...and the new brackets are static, so still there
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
     // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
     // The width follows PanelDistance (2 m now), so the same fill is a wider plane than it was at 1 m.

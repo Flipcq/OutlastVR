@@ -340,6 +340,9 @@ static OLCamcorderHudState s_hudState;
 static ULONGLONG s_hudPublished = 0;
 static volatile LONG64 s_hudSubmitted = 0;
 extern "C" int OLUE3_CamcorderHudRead(float* seconds, int* capacity, int hide);
+// (Beta 1.1.3) night vision is the proxy's own camcorder state (raised + night vision requested), which
+// [HANDNV] keeps in step with the game's CamcorderMode. The HUD's eye and speaker tell-tales follow it.
+extern "C" int OLProxy_NightVisionActive();
 extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state) {
     AcquireSRWLockShared(&s_hudLock);
     *state = s_hudState;
@@ -362,6 +365,7 @@ static void CamcorderHudTick(bool active) {
     const bool ready = OLUE3_CamcorderHudRead(&state.recordingSeconds, &state.capacity,
         wanted && submitted && GetTickCount64() - submitted < 500);
     state.energy = s_energy; state.zoom = s_zoom; state.spares = s_numBat;
+    state.nightVision = OLProxy_NightVisionActive() != 0;
     state.visible = wanted && ready;
     const int status = !g_camHud ? 0 : !active ? 1 : s_camUp != 1 ? 2 : !wanted ? 3 : !ready ? 4 : 5;
     static int lastStatus = -1;
