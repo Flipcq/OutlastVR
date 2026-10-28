@@ -335,6 +335,7 @@ static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
 static volatile ULONGLONG s_vfMs = 0;
 static int   s_numBat = 0, s_prevNumBat = -1;
+static ULONGLONG s_camFaceReleaseGrace = 0;  // after unpinning from face, keep cam in hand this long
 // [CAMHUD] XR and gameplay may run on different threads. Publish the whole snapshot together.
 static SRWLOCK s_hudLock = SRWLOCK_INIT;
 static OLCamcorderHudState s_hudState;
@@ -587,11 +588,16 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
             RequestCamToggle(now, 120); s_camByGesture = false;
             ILog("[OLVR][HOLSTER] camcorder lowered - it is back on your hip");
         }
-    } else if (!s_gripDown[1] || !rOk) {
+    // During face-release grace period, keep the camcorder in the hand so the lower animation is
+    // visible instead of snapping back to the hip holster immediately.
+    else if ((!s_gripDown[1] || !rOk) && now >= s_camFaceReleaseGrace) {
         s_hState = H_HOLSTERED; s_blendSpeed = 1.0f / 0.28f; s_returnClick = true;
         if (s_camUp == 1 && s_camByGesture && now > s_camCooldown) { RequestCamToggle(now, 120); s_camByGesture = false; }
         OLXR_HapticPulse(1, 0.25f, 20);
         ILog("[OLVR][HOLSTER] camcorder let go - gliding back to the hip holster");
+    } else if (!s_gripDown[1] || !rOk) {
+        // still in grace period: stay in hand, don't pull back to hip yet
+        s_blendSpeed = 1.0f / 0.28f;
     }
     const float target = s_hState == H_IN_HAND ? 1.0f : 0.0f;
     if (s_camBlend < target) { s_camBlend += dt * s_blendSpeed; if (s_camBlend > target) s_camBlend = target; }
