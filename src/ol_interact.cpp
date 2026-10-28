@@ -488,6 +488,7 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
             s_eyeArmed = false; s_inEyeSince = 0;
             // Put the camera visibly in the hand, not snapped back to the hip.
             s_hState = H_IN_HAND; s_camBlend = 1.0f; s_blendSpeed = 1.0f / 0.18f;
+            s_camFaceReleaseGrace = now + 5000;
             OLXR_HapticPulse(1, 0.55f, 40);
             ILog("[OLVR][FACECAM] camcorder taken off his face into your hand (%.2f m)", s_dEye);
         }
@@ -2153,7 +2154,9 @@ extern "C" void OLInteract_Tick() {
         s_faceLock = false; s_faceLowering = false; s_facePending = false;
         // The camcorder came off Miles's face: put it visibly in the player's hand so the lower
         // animation can be seen, instead of snapping it instantly back to the hip holster.
+        // Keep it in hand for 5 seconds before letting it return to the hip.
         s_hState = H_IN_HAND; s_camBlend = 1.0f; s_blendSpeed = 1.0f / 0.28f;
+        s_camFaceReleaseGrace = now + 5000;
         ILog("[OLVR][FACECAM] the camcorder is down - face pin released, camera now in hand");
     }
     const bool zoomRead = Rd(hero, F.zoom, &z), energyRead = Rd(hero, F.energy, &en);
