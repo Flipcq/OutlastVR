@@ -120,15 +120,15 @@ In **VR SETTINGS > PICTURE**, leave **High-resolution rendering** ON and choose:
 - **Eye resolution mode: MANUAL**: use the **Eye resolution** slider, shown as a line with a
   circular handle and `width x height` beside it. Drag left for fewer pixels or right for more.
   The dimensions update while dragging and are saved on release. Left/right arrows or the D-pad
-  also adjust it. **Click the numbers** beside the slider to type a size instead:
-  `2560x1440`, or `2560` alone for the larger side (the pair keeps its aspect ratio). Digits,
-  `x`, comma, space and `*` separate the two numbers; Enter applies and saves, Esc cancels,
-  Backspace edits, and a half-typed size (like `2560x`) is refused with a note in the tape log.
-  Both dimensions scale together using the aspect ratio of the saved `EyeWidth`/`EyeHeight`
-  pair, with 8-pixel rounding and limits of 480-4096 per axis. Losing mouse capture cancels an
-  unfinished drag. The slider and the typing are enabled when MANUAL and high-resolution
-  rendering are enabled. Render resolution (%) is ignored in this mode. Restart Outlast after
-  changing the mode or manual size.
+  also adjust it. **The width and the height are also two separate fields**: click one, type a
+  single number, Enter applies and saves it; click the other and do the same (clicking the other
+  field saves the one you were typing first, so no Enter is needed between them). Esc cancels the
+  open field, Backspace edits it and Tab jumps to the other number. Each value is held to the
+  slider's own limits - 480-4096 per axis, 8-pixel steps - so 9999 lands on 4096 and 100 on 480,
+  and an empty field is refused with a note in the tape log. Losing mouse capture cancels an
+  unfinished drag. Both are enabled when MANUAL and high-resolution rendering are enabled.
+  Render resolution (%) is ignored in this mode. Restart Outlast after changing the mode or the
+  manual size.
 
 For example, 1440 x 1600 means **each eye** renders at 1440 x 1600; the engine draws both
 in a 2880 x 1600 frame. The OpenXR output size remains the runtime recommendation, and the

@@ -125,45 +125,57 @@ checks = r'''
         ModIni.Data["EyeWidth"] = "2147483647"; ModIni.Data["EyeHeight"] = "-1";
         v.LoadSettings(); Check(v.manualEyeW == 4096 && v.manualEyeH == 480, "invalid bounds");
 
-        // (Beta 1.1.4) typed resolution: the numbers beside the slider take a keyboard size.
+        // (Beta 1.1.4) typed resolution: the width and the height are two separate fields.
         v.Ready();
-        Check(v.BeginResolutionTyping() && v.ResolutionTyping, "clicking the numbers starts typing");
-        foreach (char c in "2560x1440") v.ResolutionTypeChar(c);
-        Check(v.ResolutionTyped == "2560x1440", "digits and the separator are kept");
-        Check(v.ApplyResolutionTyped() && !v.ResolutionTyping, "ENTER applies and closes the field");
-        Check(ModIni.Writes == 2 && ModIni.Data["EyeWidth"] == "2560" && ModIni.Data["EyeHeight"] == "1440", "typed pair saved");
-        Check(v.manualEyeW == 2560 && v.manualEyeH == 1440 && v.setStatusKind == Tone.Ok, "typed pair applied");
-        // one number = the pair's larger side, aspect kept (2496x2688 -> 3000 -> 2784x3000), like the slider
-        v.Ready(); v.BeginResolutionTyping();
-        foreach (char c in "3000") v.ResolutionTypeChar(c);
-        Check(v.ApplyResolutionTyped() && v.manualEyeH == 3000 && v.manualEyeW == 2784, "one number keeps the aspect");
-        // the same Normalize the slider uses: 480 - 4096 per eye, 8-pixel steps
-        v.Ready(); v.BeginResolutionTyping();
-        foreach (char c in "9999x100") v.ResolutionTypeChar(c);
-        Check(v.ApplyResolutionTyped() && v.manualEyeW == 4096 && v.manualEyeH == 480, "typing respects the bounds");
-        v.Ready(); v.BeginResolutionTyping();
-        foreach (char c in "2561x1439") v.ResolutionTypeChar(c);
-        Check(v.ApplyResolutionTyped() && v.manualEyeW == 2560 && v.manualEyeH == 1432, "typing snaps to 8 pixels");
-        // a typo keeps the field open and writes nothing
-        v.Ready(); v.BeginResolutionTyping(); v.ResolutionTypeChar('7'); v.ResolutionTypeChar('x');
-        Check(!v.ApplyResolutionTyped() && v.ResolutionTyping && ModIni.Writes == 0, "half a size is not saved");
+        Check(v.BeginResolutionEdit(0) && v.ResolutionEditing && v.ResolutionEditField == 0, "clicking the width opens the width field");
+        foreach (char c in "2560") v.ResolutionEditChar(c);
+        Check(v.ResolutionEdited == "2560", "digits are kept");
+        Check(v.ApplyResolutionEdit() && !v.ResolutionEditing, "ENTER applies and closes the field");
+        Check(ModIni.Writes == 2 && ModIni.Data["EyeWidth"] == "2560" && ModIni.Data["EyeHeight"] == "2688", "only the width was written");
+        Check(v.manualEyeW == 2560 && v.manualEyeH == 2688 && v.setStatusKind == Tone.Ok, "the width was applied");
+        // ...and then the height is its own field
+        Check(v.BeginResolutionEdit(1) && v.ResolutionEditField == 1, "the height opens on its own");
+        foreach (char c in "1440") v.ResolutionEditChar(c);
+        Check(v.ApplyResolutionEdit() && v.manualEyeW == 2560 && v.manualEyeH == 1440, "then the height");
+        Check(ModIni.Data["EyeWidth"] == "2560" && ModIni.Data["EyeHeight"] == "1440", "both halves saved");
+        // clicking the other number while one is open commits it first, which is the "click, change, click the
+        // other, change" flow: no ENTER needed between the two
+        v.Ready(); v.BeginResolutionEdit(0);
+        foreach (char c in "1536") v.ResolutionEditChar(c);
+        Check(v.BeginResolutionEdit(1) && v.manualEyeW == 1536 && v.ResolutionEditField == 1, "clicking the height commits the width first");
+        Check(v.ResolutionEdited.Length == 0, "the new field starts empty");
+        Check(ModIni.Data["EyeWidth"] == "1536" && ModIni.Data["EyeHeight"] == "2688", "the first field reached the ini");
+        v.CancelResolutionEdit();
+        // a field holds one number, so the bounds are the slider's Normalize: 480 - 4096, 8-pixel steps
+        v.Ready(); v.BeginResolutionEdit(0);
+        foreach (char c in "9999") v.ResolutionEditChar(c);
+        Check(v.ApplyResolutionEdit() && v.manualEyeW == 4096, "a too-large number lands on the ceiling");
+        v.Ready(); v.BeginResolutionEdit(1);
+        foreach (char c in "100") v.ResolutionEditChar(c);
+        Check(v.ApplyResolutionEdit() && v.manualEyeH == 480, "a too-small number lands on the floor");
+        v.Ready(); v.BeginResolutionEdit(0);
+        foreach (char c in "2561") v.ResolutionEditChar(c);
+        Check(v.ApplyResolutionEdit() && v.manualEyeW == 2560, "typing snaps to 8 pixels");
+        // nothing typed is refused, and the field stays open so ENTER again cannot silently change anything
+        v.Ready(); v.BeginResolutionEdit(0);
+        Check(!v.ApplyResolutionEdit() && v.ResolutionEditing && ModIni.Writes == 0, "an empty field is refused");
         Check(v.setStatusKind == Tone.Err, "and the tape log says why");
-        v.ResolutionBackspace();
-        Check(v.ResolutionTyped == "7", "backspace drops a separator whole");
-        v.CancelResolutionTyping();
-        Check(!v.ResolutionTyping && ModIni.Writes == 0, "ESC cancels without writing");
-        // the same size again is not a change
-        v.Ready(); v.BeginResolutionTyping();
-        foreach (char c in "2496x2688") v.ResolutionTypeChar(c);
-        Check(v.ApplyResolutionTyped() && ModIni.Writes == 0, "an unchanged size writes nothing");
-        // separators: space, comma and the letter X all work
-        v.Ready(); v.BeginResolutionTyping();
-        foreach (char c in "1920 1080") v.ResolutionTypeChar(c);
-        Check(v.ResolutionTyped == "1920x1080" && v.ApplyResolutionTyped() && v.manualEyeW == 1920, "spaces become a separator");
+        v.ResolutionEditChar('7'); v.ResolutionEditChar('0'); v.ResolutionBackspace();
+        Check(v.ResolutionEdited == "7", "backspace edits the number");
+        v.CancelResolutionEdit();
+        Check(!v.ResolutionEditing && ModIni.Writes == 0, "ESC cancels without writing");
+        // the same number again is not a change
+        v.Ready(); v.BeginResolutionEdit(0);
+        foreach (char c in "2496") v.ResolutionEditChar(c);
+        Check(v.ApplyResolutionEdit() && ModIni.Writes == 0, "an unchanged width writes nothing");
+        // clicking the same field twice keeps what was typed
+        v.Ready(); v.BeginResolutionEdit(0); v.ResolutionEditChar('1'); v.ResolutionEditChar('2');
+        Check(v.BeginResolutionEdit(0) && v.ResolutionEdited == "12", "re-clicking the open field keeps the draft");
+        v.CancelResolutionEdit();
         // gating: the same two switches the slider itself obeys
         v.Ready(); v.setVals[v.Find("AutoEyeResolution")] = 1;
-        Check(!v.BeginResolutionTyping(), "AUTO disables typing");
-        v.Ready(); v.iniOk = false; Check(!v.BeginResolutionTyping(), "a missing ini disables typing");
+        Check(!v.BeginResolutionEdit(0), "AUTO disables typing");
+        v.Ready(); v.iniOk = false; Check(!v.BeginResolutionEdit(1), "a missing ini disables typing");
 
         // (Beta 1.1.4) the stick dead zone row: 0.30 by default and a hard 0.60 ceiling in the launcher.
         v.Ready(); int dz = v.Find("StickDeadzone");

@@ -439,10 +439,12 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   `ApplyDeadZone` / `TriggerUnit` against synthetic values (the straight-line walk, the diagonal clamp, 0.00 =
   passthrough, the trigger threshold) and checks the shipped default and the launcher's ceiling.
 - **Typed eye resolution.** In VR SETTINGS > PICTURE, the `width x height` numbers beside the manual
-  resolution slider are now a field: clicking them opens it (a boxed edit with a caret), digits plus `x`, `,`,
-  space or `*` build the size, Enter applies and saves through the same `SaveManualResolution` the slider uses,
-  Esc cancels and Backspace edits. `2560x1440` sets the pair; a single number sets the larger side and keeps
-  the saved aspect, exactly like the slider; `EyeResolutionRange.Normalize` still enforces 480-4096 per axis
-  and 8-pixel steps, and a half-typed size (`2560x`) is refused with a note in the tape log instead of being
-  applied. While the field is open the keyboard belongs to it, so W/A/S/D cannot move the list, and dragging
-  the slider, clicking elsewhere or leaving the page closes it.
+  resolution slider are **two separate fields**: clicking one opens just that number (a boxed edit with a
+  caret), digits build it, Enter applies and saves that one dimension through the same
+  `SaveManualResolution` the slider uses, Esc cancels and Backspace edits. Clicking the other field while
+  one is open commits what was typed first, so "click the width, change it, click the height, change it"
+  needs no Enter in between; Tab does the same from the keyboard, and re-clicking the open field keeps the
+  draft. Each value goes through `EyeResolutionRange.Normalize`, so the slider's own bounds hold - 480-4096
+  per axis, 8-pixel steps - and an empty field is refused with a note in the tape log rather than applied.
+  While a field is open the keyboard belongs to it, so W/A/S/D cannot move the list; dragging the slider,
+  clicking elsewhere or leaving the page closes it.
