@@ -31,6 +31,10 @@ extern "C" int OLInteract_RightArmNative();
 // (Beta 1.1.4) [FACECAM] The camcorder is pinned at Miles's face by a held right stick click: let the
 // game's own raise / lower arm animation play (instead of the tucked empty hand used at the eye).
 extern "C" int OLInteract_FaceCamPinned();
+// (V1) [FACECAM] While Miles's own arm plays the camcorder at his face - pinned at the face, or while
+// the game is raising/lowering it - so the controller hand is hidden and Miles's raise / lower
+// animation is visible instead of being overridden by the tracked hand.
+extern "C" int OLInteract_FaceCamBusy();
 
 // [HOLSTER] (Test38) What to do with the game's handycam model this frame. Game thread.
 //   mode 0: leave it to the game (holster off, menus, cutscenes)

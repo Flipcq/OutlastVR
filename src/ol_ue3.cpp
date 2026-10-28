@@ -4285,6 +4285,7 @@ static bool PoseApplyVisible(void* comp) {
         // lower animation plays, exactly as in the game.
         const bool camTuck = OLInteract_RightArmNative() != 0;
         const bool facePin = OLInteract_FaceCamPinned() != 0;
+        const bool faceBusy = OLInteract_FaceCamBusy() != 0;
         // [CLIMB] (Test40) in a climb, a hand that holds on (the edge, a rung) plays the game's own arm
         const int moveClass = ArmMoveClass();
         if (moveClass == 1)
@@ -4304,7 +4305,7 @@ static bool PoseApplyVisible(void* comp) {
             for (int i = 0; i < 3; ++i) headRef[i] -= leanApplied[i];
         }
 
-        if (facePin) {   // [FACECAM] the game's own raise / lower arm animation plays
+        if (facePin || faceBusy) {   // [FACECAM] the game's own raise / lower arm animation plays
             pad.handValid &= ~2u;
         } else if (camTuck) {   // [CAMTUCK] right hand low at the side, pointing down (recenter frame, metres)
             pad.handPose[1] = { -0.7071f, 0.0f, 0.0f, 0.7071f, headRef[0] + 0.20f, headRef[1] - 0.64f, headRef[2] + 0.05f };

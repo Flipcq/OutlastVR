@@ -330,6 +330,7 @@ static bool WrF(void* base, unsigned off, float v) {
 // ---- shared per-frame state ------------------------------------------------------------------------
 static ULONGLONG s_tickMs = 0;              // last tick; the pad merge stops acting when this goes stale
 static int   s_camUp = -1;                  // the game's CamcorderState (1 = raised)
+static bool  s_camStarted = false;          // the first gameplay tick forced the camcorder down
 static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
 static volatile ULONGLONG s_vfMs = 0;
@@ -432,7 +433,7 @@ static float s_dEye = 9.0f;
 // already up only pins it (no animation) and buzzes the right controller.
 static bool s_faceLock = false;              // the game's camcorder is up and pinned at his face
 static bool s_facePending = false;           // a held click asked for the raise; waiting for the game
-static bool s_faceLowering = false;          // a held click / a grab at the face asked for the lower
+static bool s_faceLowering = false;          // a held right stick click asked for the lower
 static ULONGLONG s_facePendingAt = 0, s_faceLowerAt = 0;
 // enter at the reach, lower 14 cm further out, re-arm 7 cm out
 static float EyeEnter() { return g_eyeReach; }
@@ -473,17 +474,11 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
     s_dEye = rOk ? Len(Sub(P3(fh.hand[1]), s_eyeZone)) : 9.0f;
     if (s_dEye > EyeEnter() + 0.07f) s_eyeArmed = true;                       // the hand left the eye
     // (Beta 1.1.4) [FACECAM] Pinned to the face by a held right stick click: the hand can rest, so
-    // the distance to the eye must not lower it. A fresh squeeze with the right hand at the face
-    // takes it off him again (the game's own lower animation).
+    // the distance to the eye must not lower it.
+    // (V1) grabbing the pinned camcorder at the face with the right hand holds it physically - it is
+    // not removed. It only comes off his face with a held right stick click (the game's own lower
+    // animation) or when the game itself lowers it.
     if (s_faceLock) {
-        if (!s_faceLowering && s_gripEdge[1] && s_dEye < EyeLeave() && now > s_camCooldown) {
-            s_faceLowering = true;
-            s_faceLowerAt = now;
-            s_eyeArmed = false; s_inEyeSince = 0;
-            RequestCamToggle(now);
-            OLXR_HapticPulse(1, 0.55f, 40);
-            ILog("[OLVR][FACECAM] camcorder taken off his face with the right hand (%.2f m)", s_dEye);
-        }
         s_inEyeSince = 0;
         return;
     }
@@ -2104,6 +2099,7 @@ extern "C" void OLInteract_Tick() {
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
         if (s_pc) { static ULONGLONG s_offLog = 0; if (now - s_offLog > 2000) { s_offLog = now; ILog("[OLVR][PHYSCLIMB] gameplay check off for a moment while climbing - holding on"); } }
         else s_tickMs = 0;
+        s_camStarted = false;   // re-evaluate the "not at face at start" rule next time gameplay begins
         CamcorderHudTick(false);
         s_rwOk = false; OLXR_RoomWalkAllow(0);
         OLXR_SetMarkers(nullptr, 0); return;
@@ -2112,6 +2108,16 @@ extern "C" void OLInteract_Tick() {
     void* hero = OLUE3_Hero(); void* pc = OLUE3_PlayerController();
     unsigned char cs = 0; float z = 0.0f, en = 1.0f; int nb = 0;
     s_camUp = Rd(hero, F.camState, &cs) ? (cs == 1 ? 1 : 0) : -1;
+    // (V1) the game can begin with the camcorder already at his face (CamcorderState == 1), which
+    // snaps the right hand to a camcorder position on the very first gameplay frame. Never begin
+    // gameplay with it at his face: force it down on the first tick so the hand is free.
+    if (!s_camStarted) {
+        s_camStarted = true;
+        if (s_camUp == 1) {
+            s_camUp = 0;
+            ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - forcing it down");
+        }
+    }
     // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
     // a lower (ours, the game's, a reload, a cutscene) releases it.
     if (s_facePending && s_camUp == 1) {
@@ -2302,14 +2308,22 @@ extern "C" float OLInteract_ViewfinderZoom() {
 }
 // While the camcorder is up and the right hand is at the eye - or it is pinned at his face by a
 // held right stick click - the right arm is the game's.
+// (V1) while Miles's own arm plays the camcorder at his face - pinned, or while the game is
+// raising/lowering it - the controller hand must not override his animation.
 extern "C" int OLInteract_RightArmNative() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
-    if (HolsterOn() && s_hState != H_IN_HAND && !s_faceLock) return 0;
-    return (s_camUp == 1 && (s_faceLock || s_dEye < EyeLeave() + 0.05f)) ? 1 : 0;
+    if (HolsterOn() && s_hState != H_IN_HAND && !s_faceLock && !s_facePending && !s_faceLowering)
+        return 0;
+    if (s_faceLock || s_facePending || s_faceLowering) return 1;
+    return (s_camUp == 1 && s_dEye < EyeLeave() + 0.05f) ? 1 : 0;
 }
 extern "C" int OLInteract_FaceCamPinned() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
     return (s_camUp == 1 && s_faceLock) ? 1 : 0;
+}
+extern "C" int OLInteract_FaceCamBusy() {
+    if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
+    return (s_faceLock || s_facePending || s_faceLowering) ? 1 : 0;
 }
 // [ANCHOR] (Test40) the world point a hand holds (an edge, a handle, the panel it pushes) and how much
 // (eased 0..1); ol_ue3's arm solve reaches there instead of the controller. Game thread.
