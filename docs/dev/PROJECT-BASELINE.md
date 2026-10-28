@@ -414,3 +414,35 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
 - `OLCamHud::ZoomUnit` normalises the zoom factor (0..1, and a 0..100 percentage build) so the W-T thumb
   can never be pinned at one end, and the thumb is drawn as a grey body in a dark outline on a dark track,
   so movement is visible against the lever's grey frame.
+
+## Beta 1.1.4 changes: stick dead zone, typed eye resolution
+
+- **"Miles runs but veers left, even with W on the keyboard."** Three separate ways the mod handed Outlast a
+  sideways push nobody asked for, and all three are fixed in `src/ol_xr.cpp`:
+  1. `[Input] StickDeadzone` defaulted to **0.00** in code, so any install whose ini predates the key (or one
+     an older build regenerated) had no filter at all: a stick resting at 0.15 walked him sideways, and the
+     `[XRINPUT]` stick gate is 0.12.
+  2. The filter was **radial only**. A radial dead zone cannot remove a small sideways value from a stick that
+     is pushed mostly forward - `(0.05, 0.95)` is 0.95 long, past any dead zone - and UE3 adds the pad's axis
+     to the keyboard's own W, so "forward" came out as a diagonal to the left. `ApplyDeadZone` now drops a
+     component under the dead zone **on its own axis** first and then applies the radial curve, clamped to
+     unit length (a diagonal can sit past 1 after the axial cut). Full stick is still full stick.
+  3. The analog **triggers had no dead zone at all**, and Outlast's triggers are `AnalogLeanLeft` /
+     `AnalogLeanRight`: a trigger resting a few counts above zero leans the player left for the whole session,
+     whatever the keyboard or the stick is doing - which is exactly the "even with W" part of the report.
+     `TriggerUnit` ignores anything under 0.12 and rescales what is past it, so a full pull is still a full lean.
+- The default is now **0.30** (ini and code), the file/text limit stays **0.60**, and the log line
+  `[STICKCENTER] ... dead zone N, triggers X Y` prints what was applied so a report can be read.
+- The launcher has the row: **MOVEMENT > Stick dead zone** (0-60% in 5% steps, `GAME'S` = 0). The launcher owns
+  the range: a value loaded outside a row's own bounds (a hand-edited ini) is clamped **and written back**, so
+  the ceiling cannot be exceeded from the launcher either. `tests/xr_deadzone_test.py` runs the real
+  `ApplyDeadZone` / `TriggerUnit` against synthetic values (the straight-line walk, the diagonal clamp, 0.00 =
+  passthrough, the trigger threshold) and checks the shipped default and the launcher's ceiling.
+- **Typed eye resolution.** In VR SETTINGS > PICTURE, the `width x height` numbers beside the manual
+  resolution slider are now a field: clicking them opens it (a boxed edit with a caret), digits plus `x`, `,`,
+  space or `*` build the size, Enter applies and saves through the same `SaveManualResolution` the slider uses,
+  Esc cancels and Backspace edits. `2560x1440` sets the pair; a single number sets the larger side and keeps
+  the saved aspect, exactly like the slider; `EyeResolutionRange.Normalize` still enforces 480-4096 per axis
+  and 8-pixel steps, and a half-typed size (`2560x`) is refused with a note in the tape log instead of being
+  applied. While the field is open the keyboard belongs to it, so W/A/S/D cannot move the list, and dragging
+  the slider, clicking elsewhere or leaving the page closes it.

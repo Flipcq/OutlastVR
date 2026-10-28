@@ -52,6 +52,8 @@ Mouse, keyboard or an XInput controller. A controller is read only while the lau
 - **VR SETTINGS** (tape 02) lists the mod's main settings from `outlastvr.ini` next to the launcher: up/down picks,
   left/right (or Enter / a click) changes, and changes are written with WritePrivateProfileString (the resolution slider saves on release), so
   the comments in the file stay. Its TOOLS rows reset the in-headset how-to labels and open `%LOCALAPPDATA%\OutlastVR`.
+  Rows with a range (`Stick dead zone`, `World size`, `Render resolution`, ...) are held to that range: a value
+  loaded from the file outside it is clamped and written back, so the launcher's ceiling is the real one.
 - **QUEST 3 CONTROLS** (tape 03) draws both Touch Plus controllers (from Meta's product photos: round face, stick,
   face buttons, Menu / Meta, trigger under the face, grip on the inner side), steps through every control with its
   meaning in words, and shows the four hand gestures. Arrow keys step, a click on a label jumps to it.
@@ -118,9 +120,13 @@ In **VR SETTINGS > PICTURE**, leave **High-resolution rendering** ON and choose:
 - **Eye resolution mode: MANUAL**: use the **Eye resolution** slider, shown as a line with a
   circular handle and `width x height` beside it. Drag left for fewer pixels or right for more.
   The dimensions update while dragging and are saved on release. Left/right arrows or the D-pad
-  also adjust it. Both dimensions scale together using the aspect ratio of the saved
-  `EyeWidth`/`EyeHeight` pair, with 8-pixel rounding and limits of 480-4096 per axis. Losing
-  mouse capture cancels an unfinished drag. The slider is enabled when MANUAL and high-resolution
+  also adjust it. **Click the numbers** beside the slider to type a size instead:
+  `2560x1440`, or `2560` alone for the larger side (the pair keeps its aspect ratio). Digits,
+  `x`, comma, space and `*` separate the two numbers; Enter applies and saves, Esc cancels,
+  Backspace edits, and a half-typed size (like `2560x`) is refused with a note in the tape log.
+  Both dimensions scale together using the aspect ratio of the saved `EyeWidth`/`EyeHeight`
+  pair, with 8-pixel rounding and limits of 480-4096 per axis. Losing mouse capture cancels an
+  unfinished drag. The slider and the typing are enabled when MANUAL and high-resolution
   rendering are enabled. Render resolution (%) is ignored in this mode. Restart Outlast after
   changing the mode or manual size.
 

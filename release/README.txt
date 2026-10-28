@@ -172,6 +172,12 @@ SETTINGS
   "World size": 100% = true size, with your own eye spacing read from the
   headset. Things look too big or "zoomed in"? Lower it. Too small? Raise it.
 
+  "Stick dead zone" (30% by default, up to 60%): how far a thumbstick must move
+  before it counts. Raise it if Miles walks, turns, or drifts to one side by
+  himself - or veers left while you walk straight. Anything under it is ignored
+  on each axis, so a stick that reads a little sideways while you push it
+  forward still walks straight. 0% = the game's own dead zone.
+
 --------------------------------------------------------------------------------
 IF SOMETHING LOOKS WRONG
 --------------------------------------------------------------------------------

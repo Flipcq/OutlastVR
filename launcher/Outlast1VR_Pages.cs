@@ -97,13 +97,22 @@ namespace Outlast1VR
             int minor = Normalize((int)Math.Round(major / ratio / 8) * 8);
             width = wide ? major : minor; height = wide ? minor : major;
         }
+
+        // (Beta 1.1.4) A typed size: the number is the pair's larger side and the saved aspect is kept,
+        // which is how the slider itself moves. Bounds and 8-pixel steps come from Normalize.
+        public void PairFromMajor(int major, out int width, out int height)
+        {
+            major = Normalize(major);
+            int minor = Normalize((int)Math.Round(major / ratio / 8) * 8);
+            width = wide ? major : minor; height = wide ? minor : major;
+        }
     }
 
     sealed partial class Viewfinder
     {
         // ---------------- pages ----------------
         public const int PageMain = 0, PageSettings = 1, PageControls = 2;
-        public const int HitBack = 13, HitRow0 = 100, HitCallout0 = 200;
+        public const int HitBack = 13, HitRow0 = 100, HitCallout0 = 200, HitResolutionValue = 300;
         static readonly Rectangle BackR = new Rectangle(1064, 96, 156, 34);
 
         int page;
@@ -114,6 +123,7 @@ namespace Outlast1VR
         {
             if (p == page) return;
             CancelResolutionDrag();
+            CancelResolutionTyping(true);
             page = p; pageAt = T;
             hover = HitNone;
             if (p == PageSettings) LoadSettings();
@@ -125,6 +135,7 @@ namespace Outlast1VR
         {
             if (page == PageMain) return;
             CancelResolutionDrag();
+            CancelResolutionTyping(true);
             page = PageMain; pageAt = T;
             if (sfx != null) sfx.Tick();
         }
@@ -173,6 +184,8 @@ namespace Outlast1VR
                    "Removes the game's own camera tilt during play.\nYour head still tilts freely."),
                 C_("MOVEMENT", "Input", "WalkDirection", "Walk direction", 0, new[] { "BODY", "HEAD", "LEFT HAND" }, new double[] { 0, 1, 2 },
                    "Which way pushing the left stick forward walks:\nwhere Miles faces, where you look, or where your\nleft controller points."),
+                N_("MOVEMENT", "Input", "StickDeadzone", "Stick dead zone", 0.30, 0.00, 0.60, 0.05, "%", "GAME'S",
+                   "How far a stick must move before it counts.\nRaise it if Miles walks, turns or drifts\nsideways by himself, or veers left when you\nwalk straight. 30% suits most controllers;\n60% is the most it can be. GAME'S = off."),
                 T_("MOVEMENT", "Input", "StickPitch", "Right stick tilts the view", 0,
                    "OFF: your head does all the looking up and down,\nlike a native VR game. ON: the old gamepad\nbehaviour."),
                 T_("MOVEMENT", "Motion", "BodyFollowsHead", "Body turns with you", 1,
@@ -220,7 +233,7 @@ namespace Outlast1VR
                    "AUTO: use the OpenXR runtime's recommended size.\nMANUAL: move the resolution slider below.\nRequires high-resolution rendering. Restart game."),
                 new SettingDef { Group = "PICTURE", Section = "Render", Key = "EyeWidth",
                     Label = "Eye resolution", Kind = SetKind.Resolution,
-                    Help = "MANUAL mode: drag the circle left or right.\nBoth dimensions change together, per eye.\nArrow keys / D-pad also adjust. Restart game." },
+                    Help = "MANUAL mode: drag the circle left or right.\nBoth dimensions change together, per eye.\nCLICK THE NUMBERS to type a size, e.g.\n2560x1440 (or 2560 alone: the larger side).\nArrow keys / D-pad also adjust. Restart game." },
                 N_("PICTURE", "Render", "RenderScale", "Render resolution", 1.0, 0.6, 1.0, 0.05, "%", null,
                    "AUTO mode only: 100% uses the OpenXR runtime's\nrecommended size. Lower it if Outlast stutters.\nMANUAL uses the chosen pixel size directly."),
                 N_("PICTURE", "XR", "Sharpness", "Sharpening", 0.5, 0.0, 1.0, 0.1, "%", "OFF",
@@ -263,9 +276,25 @@ namespace Outlast1VR
                     double p;
                     if (s.Length > 0 && double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out p)) v = p;
                 }
+                // The launcher owns the range: a value outside the row's own bounds (a hand-edited ini, an
+                // older build, a runaway FPS tweak) is pulled back into it, so nothing here can be set past
+                // its ceiling - the stick dead zone's 0.60 included - and the file is corrected to match.
+                if (d.Kind == SetKind.Number)
+                {
+                    double c = v;
+                    if (c < d.Min) c = d.Min;
+                    if (c > d.Max) c = d.Max;
+                    if (c != v)
+                    {
+                        if (iniOk && (!preview || settingsWriteTest))
+                            ModIni.Write(iniPath, d.Section, d.Key, c.ToString("0.000", CultureInfo.InvariantCulture));
+                        v = c;
+                    }
+                }
                 setVals[i] = v;
             }
             LoadManualResolution();
+            CancelResolutionTyping(true);
             if (!iniOk) SetStatus("outlastvr.ini NOT FOUND NEXT TO THE LAUNCHER", Tone.Err);
             else if (SysInfo.GameRunning()) SetStatus("OUTLAST IS RUNNING - CHANGES APPLY NEXT START", Tone.Warn);
             else SetStatus("CHANGES ARE SAVED THE MOMENT YOU MAKE THEM", Tone.Info);
@@ -367,6 +396,7 @@ namespace Outlast1VR
             for (int i = 0; i < Defs.Length; i++) if (Defs[i].Kind == SetKind.Resolution) SettingsSelect(i);
             dragStartW = manualEyeW; dragStartH = manualEyeH;
             resolutionDragging = true;
+            CancelResolutionTyping(true);                  // the drag owns the size now
             SetStatus("DRAG TO CHOOSE - RELEASE TO SAVE", Tone.Info);
             DragResolution(p);
             return true;
@@ -396,6 +426,114 @@ namespace Outlast1VR
             resolutionDragging = false;
             manualEyeW = dragStartW; manualEyeH = dragStartH;
             SetStatus("RESOLUTION CHANGE CANCELLED", Tone.Info);
+        }
+
+        // ---------------- typed resolution ----------------
+        // (Beta 1.1.4) The numbers beside the slider are a field: click them and type the size. "2560x1440",
+        // "2560 1440", "2560,1440" all work; a single number sets the larger side and the pair keeps its
+        // aspect, the same way the slider moves. ENTER applies and saves, ESC cancels, BACKSPACE edits. The
+        // typed value goes through the same bounds as the slider (480 - 4096 per eye, 8-pixel steps).
+        bool resolutionTyping;
+        string resolutionTyped = "";
+        double resolutionTypedAt = -10;
+
+        public bool ResolutionTyping { get { return resolutionTyping; } }
+        public string ResolutionTyped { get { return resolutionTyped; } }
+
+        // The numbers' own box, right of the slider: what a click has to land on.
+        public static Rectangle ResolutionValueBox(Rectangle row)
+        {
+            return new Rectangle(row.Right - 158, row.Y, 156, row.Height);
+        }
+
+        public bool BeginResolutionTyping()
+        {
+            if (page != PageSettings || !ManualResolutionEnabled())
+            {
+                SetStatus("SELECT MANUAL MODE AND ENABLE HIGH-RES RENDERING", Tone.Warn);
+                if (sfx != null) sfx.Error();
+                return false;
+            }
+            for (int i = 0; i < Defs.Length; i++) if (Defs[i].Kind == SetKind.Resolution) SettingsSelect(i);
+            resolutionDragging = false;                    // a half-finished drag is not a size to type on
+            resolutionTyping = true; resolutionTyped = ""; resolutionTypedAt = T;
+            SetStatus("TYPE THE EYE RESOLUTION, E.G. 2560x1440 - ENTER APPLIES, ESC CANCELS", Tone.Info);
+            if (sfx != null) sfx.Tick();
+            return true;
+        }
+
+        public void CancelResolutionTyping(bool quiet = false)
+        {
+            if (!resolutionTyping) return;
+            resolutionTyping = false; resolutionTyped = "";
+            if (!quiet) SetStatus("RESOLUTION TYPING CANCELLED", Tone.Info);
+        }
+
+        // One typed character: digits build the size, x / , / * / space separate the two numbers.
+        public void ResolutionTypeChar(char c)
+        {
+            if (!resolutionTyping) return;
+            if (c >= '0' && c <= '9')
+            {
+                if (resolutionTyped.Length < 12) resolutionTyped += c;
+                resolutionTypedAt = T;
+            }
+            else if (c == 'x' || c == 'X' || c == ',' || c == '*' || c == ' ')
+            {
+                if (resolutionTyped.Length > 0 && resolutionTyped[resolutionTyped.Length - 1] != 'x')
+                    resolutionTyped += "x";
+                resolutionTypedAt = T;
+            }
+        }
+
+        public void ResolutionBackspace()
+        {
+            if (!resolutionTyping || resolutionTyped.Length == 0) return;
+            string t = resolutionTyped.Substring(0, resolutionTyped.Length - 1);
+            resolutionTyped = t.EndsWith("x") ? t.Substring(0, t.Length - 1) : t;   // drop a separator whole
+            resolutionTypedAt = T;
+        }
+
+        // "2560x1440", "2560 1440", "2560" (the larger side). False for anything else, and the caller keeps
+        // the field open so a typo can be fixed instead of being thrown away.
+        public static bool ParseResolution(string text, int oldW, int oldH, out int w, out int h)
+        {
+            w = oldW; h = oldH;
+            if (text == null || text.Length == 0) return false;
+            const string seps = "xX,* \t";
+            // A separator on either end means the other number is still being typed: "2560x" is not a size.
+            if (seps.IndexOf(text[0]) >= 0 || seps.IndexOf(text[text.Length - 1]) >= 0) return false;
+            string[] parts = text.Split(new[] { 'x', 'X', ',', '*', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 1 || parts.Length > 2) return false;
+            int a;
+            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out a) || a <= 0) return false;
+            if (parts.Length == 2)
+            {
+                int b;
+                if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out b) || b <= 0) return false;
+                w = EyeResolutionRange.Normalize(a); h = EyeResolutionRange.Normalize(b);
+                return true;
+            }
+            new EyeResolutionRange(oldW, oldH).PairFromMajor(a, out w, out h);
+            return true;
+        }
+
+        public bool ApplyResolutionTyped()
+        {
+            if (!resolutionTyping) return false;
+            int w, h;
+            if (!ParseResolution(resolutionTyped, manualEyeW, manualEyeH, out w, out h))
+            {
+                SetStatus("TYPE A SIZE LIKE 2560x1440", Tone.Err);
+                if (sfx != null) sfx.Error();
+                return false;
+            }
+            resolutionTyping = false; resolutionTyped = "";
+            if (w == manualEyeW && h == manualEyeH) { SetStatus("EYE RESOLUTION UNCHANGED", Tone.Info); return true; }
+            manualEyeW = w; manualEyeH = h;
+            eyeRange = new EyeResolutionRange(w, h);        // the knob follows the typed size
+            SaveManualResolution();
+            return true;
         }
 
         void StepResolution(int dir)
@@ -594,7 +732,13 @@ namespace Outlast1VR
                     SetLine l = lines[setTop + k];
                     if (l.Def < 0) continue;
                     Rectangle r = new Rectangle(SetListX, SetListY + k * SetRowH, SetListW, SetRowH - 3);
-                    if (r.Contains(p)) return HitRow0 + l.Def;
+                    if (r.Contains(p))
+                    {
+                        // (Beta 1.1.4) the numbers beside the eye-resolution slider are their own target:
+                        // clicking them opens the size for typing instead of stepping it
+                        if (Defs[l.Def].Kind == SetKind.Resolution && ResolutionValueBox(r).Contains(p)) return HitResolutionValue;
+                        return HitRow0 + l.Def;
+                    }
                 }
             }
             else if (page == PageControls)
@@ -610,6 +754,8 @@ namespace Outlast1VR
         void PageClick(int hit)
         {
             if (hit == HitBack) { ClosePage(); return; }
+            if (hit == HitResolutionValue) { if (!resolutionTyping) BeginResolutionTyping(); return; }
+            if (resolutionTyping) CancelResolutionTyping(true);   // a click anywhere else ends the typing
             if (hit >= HitRow0 && hit < HitRow0 + Defs.Length)
             {
                 int i = hit - HitRow0;
@@ -626,6 +772,21 @@ namespace Outlast1VR
         bool PageKey(Keys k, bool shift)
         {
             if (resolutionDragging) return true;
+            if (resolutionTyping)
+            {
+                // Typing owns the keyboard: digits and separators build the size, ENTER applies, ESC gives
+                // up, BACKSPACE edits. Everything else is swallowed, so W / A / S / D cannot move the list
+                // while a number is half typed.
+                if (k == Keys.Enter) { ApplyResolutionTyped(); return true; }
+                if (k == Keys.Escape) { CancelResolutionTyping(); return true; }
+                if (k == Keys.Back) { ResolutionBackspace(); return true; }
+                int d = (int)k - (int)Keys.D0;
+                if (d >= 0 && d <= 9) { ResolutionTypeChar((char)('0' + d)); return true; }
+                d = (int)k - (int)Keys.NumPad0;
+                if (d >= 0 && d <= 9) { ResolutionTypeChar((char)('0' + d)); return true; }
+                if (k == Keys.X) { ResolutionTypeChar('x'); return true; }
+                return true;
+            }
             if (k == Keys.Escape || k == Keys.Back) { ClosePage(); return true; }
             if (page == PageSettings)
             {
@@ -775,6 +936,22 @@ namespace Outlast1VR
                 g.DrawLine(pen, track.Left, cy, track.Right, cy);
                 pen.Color = color; g.DrawLine(pen, track.Left, cy, knobX, cy);
                 sb.Color = color; g.FillEllipse(sb, knobX - 6, cy - 6, 12, 12);
+                if (resolutionTyping)
+                {
+                    // The numbers are a field while they are being typed: a box round them and a caret, so it
+                    // is plain that the keyboard is going into this row. A long size is right-aligned so it
+                    // never grows back over the slider.
+                    Rectangle box = ResolutionValueBox(r);
+                    box.Inflate(-2, -3);
+                    Fill(g, U.A(Color.FromArgb(210, 6, 34, 14), a), box);
+                    pen.Width = 1.3f; pen.Color = U.A(Color.FromArgb(240, 175, 255, 185), a);
+                    g.DrawRectangle(pen, box);
+                    string typed = resolutionTyped.Length == 0 ? "____x____" : resolutionTyped;
+                    // solid for half a second after a keystroke, then blinking, like a text field
+                    if (t - resolutionTypedAt < 0.5 || ((int)(t * 3)) % 2 == 0) typed += "█";
+                    TextRight(g, typed, fStatB, U.A(Hi, a), box.Right - 6, r.Y + 6, true);
+                    return;
+                }
                 TextCenter(g, ValueText(i), fStatB, color, r.Right - 78, r.Y + 6, true);
                 return;
             }

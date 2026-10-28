@@ -124,7 +124,62 @@ checks = r'''
         v.LoadSettings(); Check(v.manualEyeW == 1728 && v.manualEyeH == 1824, "missing/invalid defaults");
         ModIni.Data["EyeWidth"] = "2147483647"; ModIni.Data["EyeHeight"] = "-1";
         v.LoadSettings(); Check(v.manualEyeW == 4096 && v.manualEyeH == 480, "invalid bounds");
+
+        // (Beta 1.1.4) typed resolution: the numbers beside the slider take a keyboard size.
+        v.Ready();
+        Check(v.BeginResolutionTyping() && v.ResolutionTyping, "clicking the numbers starts typing");
+        foreach (char c in "2560x1440") v.ResolutionTypeChar(c);
+        Check(v.ResolutionTyped == "2560x1440", "digits and the separator are kept");
+        Check(v.ApplyResolutionTyped() && !v.ResolutionTyping, "ENTER applies and closes the field");
+        Check(ModIni.Writes == 2 && ModIni.Data["EyeWidth"] == "2560" && ModIni.Data["EyeHeight"] == "1440", "typed pair saved");
+        Check(v.manualEyeW == 2560 && v.manualEyeH == 1440 && v.setStatusKind == Tone.Ok, "typed pair applied");
+        // one number = the pair's larger side, aspect kept (2496x2688 -> 3000 -> 2784x3000), like the slider
+        v.Ready(); v.BeginResolutionTyping();
+        foreach (char c in "3000") v.ResolutionTypeChar(c);
+        Check(v.ApplyResolutionTyped() && v.manualEyeH == 3000 && v.manualEyeW == 2784, "one number keeps the aspect");
+        // the same Normalize the slider uses: 480 - 4096 per eye, 8-pixel steps
+        v.Ready(); v.BeginResolutionTyping();
+        foreach (char c in "9999x100") v.ResolutionTypeChar(c);
+        Check(v.ApplyResolutionTyped() && v.manualEyeW == 4096 && v.manualEyeH == 480, "typing respects the bounds");
+        v.Ready(); v.BeginResolutionTyping();
+        foreach (char c in "2561x1439") v.ResolutionTypeChar(c);
+        Check(v.ApplyResolutionTyped() && v.manualEyeW == 2560 && v.manualEyeH == 1432, "typing snaps to 8 pixels");
+        // a typo keeps the field open and writes nothing
+        v.Ready(); v.BeginResolutionTyping(); v.ResolutionTypeChar('7'); v.ResolutionTypeChar('x');
+        Check(!v.ApplyResolutionTyped() && v.ResolutionTyping && ModIni.Writes == 0, "half a size is not saved");
+        Check(v.setStatusKind == Tone.Err, "and the tape log says why");
+        v.ResolutionBackspace();
+        Check(v.ResolutionTyped == "7", "backspace drops a separator whole");
+        v.CancelResolutionTyping();
+        Check(!v.ResolutionTyping && ModIni.Writes == 0, "ESC cancels without writing");
+        // the same size again is not a change
+        v.Ready(); v.BeginResolutionTyping();
+        foreach (char c in "2496x2688") v.ResolutionTypeChar(c);
+        Check(v.ApplyResolutionTyped() && ModIni.Writes == 0, "an unchanged size writes nothing");
+        // separators: space, comma and the letter X all work
+        v.Ready(); v.BeginResolutionTyping();
+        foreach (char c in "1920 1080") v.ResolutionTypeChar(c);
+        Check(v.ResolutionTyped == "1920x1080" && v.ApplyResolutionTyped() && v.manualEyeW == 1920, "spaces become a separator");
+        // gating: the same two switches the slider itself obeys
+        v.Ready(); v.setVals[v.Find("AutoEyeResolution")] = 1;
+        Check(!v.BeginResolutionTyping(), "AUTO disables typing");
+        v.Ready(); v.iniOk = false; Check(!v.BeginResolutionTyping(), "a missing ini disables typing");
+
+        // (Beta 1.1.4) the stick dead zone row: 0.30 by default and a hard 0.60 ceiling in the launcher.
+        v.Ready(); int dz = v.Find("StickDeadzone");
+        Check(dz >= 0, "the launcher has a stick dead zone row");
+        Check(Math.Abs(Defs[dz].Def - 0.30) < 1e-9 && Math.Abs(Defs[dz].Max - 0.60) < 1e-9, "0.30 default, 0.60 maximum");
+        Check(v.ValueText(dz) == "30%", "the row reads 30% out of the box");
+        ModIni.Data["StickDeadzone"] = "0.95"; v.LoadSettings();
+        Check(Math.Abs(v.setVals[dz] - 0.60) < 1e-9, "a dead zone above the ceiling is clamped on load");
+        Check(v.ValueText(dz) == "60%", "and shown at the ceiling");
+        v.ChangeSetting(dz, 1);
+        Check(Math.Abs(v.setVals[dz] - 0.60) < 1e-9 && ModIni.Data["StickDeadzone"] == "0.600", "and cannot be raised past it");
+        ModIni.Data["StickDeadzone"] = "0.00"; v.LoadSettings();
+        Check(v.ValueText(dz) == "GAME'S", "0 is the game's own dead zone");
         Console.WriteLine("Slider checks passed: range/aspect, mouse drag/release/cancel, arrows, gating, persistence and failures.");
+        Console.WriteLine("Typed resolution: click, digits/separators, apply/cancel/backspace, bounds, aspect and writes.");
+        Console.WriteLine("Stick dead zone: 0.30 default, 0.60 ceiling, clamped on load and on change.");
     }
 }
 '''
