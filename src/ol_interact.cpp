@@ -2355,7 +2355,29 @@ extern "C" int OLInteract_CamVisual(OLCamVisual* v) {
     memset(v, 0, sizeof(*v));
     // a hitch (or a snapshot) of up to a second keeps it where it is; menus and cutscenes stop the tick
     if (!HolsterOn() || !s_tickMs || GetTickCount64() - s_tickMs > 1000 || s_camUp < 0) return 0;
-    if (s_camUp == 1) { v->mode = 2; return 1; }     // at your eye: you are looking through it
+    // While the game is raising / lowering the camcorder with its own arm animation, show the model
+    // at the eye zone so Miles's animation is visible WITH the camera in it (not hidden, not stuck
+    // on the chest while the controller hand is hidden).
+    if (s_facePending || s_faceLowering) {
+        v->mode = 1;
+        v->blend = 1.0f;                              // fully at the eye zone
+        const V3 eyeRel = { 0.035f, -0.035f, -0.11f }; // same as CamRaise's eye zone
+        v->holsterRel[0] = eyeRel.x; v->holsterRel[1] = eyeRel.y; v->holsterRel[2] = eyeRel.z;
+        v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
+        ILog("[OLVR][FACECAM] camcorder shown at the eye during %s animation",
+             s_facePending ? "raise" : "lower");
+        return 1;
+    }
+    if (s_camUp == 1 && s_faceLock) {
+        // Pinned at the face: model stays HIDDEN at the eye zone. Grab zone moves to the face so
+        // the player can grab it physically exactly as from the hip.
+        v->mode = 2;                              // model INVISIBLE at the eye
+        const V3 eyeRel = { 0.035f, -0.035f, -0.11f }; // same as CamRaise's eye zone
+        v->holsterRel[0] = eyeRel.x; v->holsterRel[1] = eyeRel.y; v->holsterRel[2] = eyeRel.z;
+        v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
+        return 1;
+    }
+    if (s_camUp == 1) { v->mode = 2; return 1; }     // at your eye: you are looking through it, model hidden
     v->mode = 1;
     const float b = s_camBlend;
     v->blend = b * b * (3.0f - 2.0f * b);            // eased glide between chest and hand
