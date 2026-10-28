@@ -2152,12 +2152,9 @@ extern "C" void OLInteract_Tick() {
     }
     if (s_camUp == 0 && s_faceLock) {
         s_faceLock = false; s_faceLowering = false; s_facePending = false;
-        // The camcorder came off Miles's face: put it visibly in the player's hand so the lower
-        // animation can be seen, instead of snapping it instantly back to the hip holster.
-        // Keep it in hand for 5 seconds before letting it return to the hip.
-        s_hState = H_IN_HAND; s_camBlend = 1.0f; s_blendSpeed = 1.0f / 0.28f;
-        s_camFaceReleaseGrace = now + 5000;
-        ILog("[OLVR][FACECAM] the camcorder is down - face pin released, camera now in hand");
+        // The camcorder came off Miles's face via the game's lower animation. Leave it in the
+        // normal holster path (hip) unless the player physically grabs it with the right grip.
+        ILog("[OLVR][FACECAM] the camcorder is down - face pin released");
     }
     const bool zoomRead = Rd(hero, F.zoom, &z), energyRead = Rd(hero, F.energy, &en);
     const bool sparesRead = Rd(pc, F.numBat, &nb);
