@@ -26,7 +26,7 @@ static ULONGLONG s_facePendingAt = 0, s_faceLowerAt = 0;
 static bool s_camByGesture = false, s_eyeArmed = true;
 static ULONGLONG s_inEyeSince = 0, s_camPulseUntil = 0, s_camCooldown = 0;
 static int toggles = 0, haptics = 0;
-static void RequestCamToggle(ULONGLONG t) { s_camPulseUntil = t + 120; s_camCooldown = t + 650; ++toggles; }
+static void RequestCamToggle(ULONGLONG t, ULONGLONG pulseMs = 120) { s_camPulseUntil = t + pulseMs; s_camCooldown = t + pulseMs + 500; ++toggles; }
 static void OLXR_HapticPulse(int, float, int) { ++haptics; }
 static void ILog(const char*, ...) {}
 '''

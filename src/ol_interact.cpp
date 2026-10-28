@@ -438,7 +438,7 @@ static ULONGLONG s_facePendingAt = 0, s_faceLowerAt = 0;
 // enter at the reach, lower 14 cm further out, re-arm 7 cm out
 static float EyeEnter() { return g_eyeReach; }
 static float EyeLeave() { return g_eyeReach + 0.14f; }
-static void RequestCamToggle(ULONGLONG now) { s_camPulseUntil = now + 120; s_camCooldown = now + 650; }
+static void RequestCamToggle(ULONGLONG now, ULONGLONG pulseMs) { s_camPulseUntil = now + pulseMs; s_camCooldown = now + pulseMs + 500; }
 
 // [HOLSTER] (Test39) Right hip: 20 cm right of the head's centre line, 60 cm below the eyes.
 static const V3 kHolsterOff = { 0.20f, -0.60f, 0.0f };    // right, up, forward (torso frame)
@@ -493,14 +493,14 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
         if (s_dEye < EyeEnter() && s_eyeArmed) {
             if (!s_inEyeSince) s_inEyeSince = now;
             else if (now - s_inEyeSince > 140 && now > s_camCooldown) {
-                RequestCamToggle(now); s_camByGesture = true; s_inEyeSince = 0; s_eyeArmed = false;
+                RequestCamToggle(now, 120); s_camByGesture = true; s_inEyeSince = 0; s_eyeArmed = false;
                 OLXR_HapticPulse(1, 0.55f, 40);
                 Learn(LN_RAISE);
                 ILog("[OLVR][INTERACT] camcorder RAISED by lifting the right hand to the eye (%.2f m)", s_dEye);
             }
         } else s_inEyeSince = 0;
     } else if ((holster || s_camByGesture) && s_dEye > EyeLeave() && now > s_camCooldown) {
-        RequestCamToggle(now); s_camByGesture = false;
+        RequestCamToggle(now, 120); s_camByGesture = false;
         OLXR_HapticPulse(1, 0.35f, 30);
         ILog("[OLVR][INTERACT] camcorder LOWERED (right hand left the eye, %.2f m)", s_dEye);
     }
@@ -524,7 +524,7 @@ static void CamHoldGesture(ULONGLONG now, const OLXrPad& p) {
                     s_faceLowering = true;
                     s_faceLowerAt = now;
                     s_eyeArmed = false; s_inEyeSince = 0;
-                    RequestCamToggle(now);
+                    RequestCamToggle(now, 300);   // longer pulse so the game's lower animation has time to play
                     OLXR_HapticPulse(1, 0.65f, 45);
                     ILog("[OLVR][FACECAM] right stick held: the camcorder comes off his face (the game's lower animation)");
                 }
@@ -538,7 +538,7 @@ static void CamHoldGesture(ULONGLONG now, const OLXrPad& p) {
             s_facePending = true; s_facePendingAt = now; s_faceLowering = false;
             s_camByGesture = false;
             s_eyeArmed = false; s_inEyeSince = 0;
-            RequestCamToggle(now);
+            RequestCamToggle(now, 300);   // longer pulse so the game's raise animation has time to play
             ILog("[OLVR][FACECAM] right stick held: Miles raises the camcorder - it will stay at his face");
         }
         return;
@@ -573,12 +573,12 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
         }
         // It went back to the holster while up at your eye: lower it once the last toggle settled.
         if (s_camUp == 1 && s_camByGesture && now > s_camCooldown) {
-            RequestCamToggle(now); s_camByGesture = false;
+            RequestCamToggle(now, 120); s_camByGesture = false;
             ILog("[OLVR][HOLSTER] camcorder lowered - it is back on your hip");
         }
     } else if (!s_gripDown[1] || !rOk) {
         s_hState = H_HOLSTERED; s_blendSpeed = 1.0f / 0.28f; s_returnClick = true;
-        if (s_camUp == 1 && s_camByGesture && now > s_camCooldown) { RequestCamToggle(now); s_camByGesture = false; }
+        if (s_camUp == 1 && s_camByGesture && now > s_camCooldown) { RequestCamToggle(now, 120); s_camByGesture = false; }
         OLXR_HapticPulse(1, 0.25f, 20);
         ILog("[OLVR][HOLSTER] camcorder let go - gliding back to the hip holster");
     }
@@ -2128,7 +2128,7 @@ extern "C" void OLInteract_Tick() {
         s_facePending = false;
         ILog("[OLVR][FACECAM] the game did not raise the camcorder - the face pin was dropped");
     }
-    if (s_faceLowering && s_camUp == 1 && now - s_faceLowerAt > 2500) {
+    if (s_faceLowering && s_camUp == 1 && now - s_faceLowerAt > 5000) {
         s_faceLowering = false;
         ILog("[OLVR][FACECAM] the game did not lower the camcorder - the face pin stays; try again");
     }
