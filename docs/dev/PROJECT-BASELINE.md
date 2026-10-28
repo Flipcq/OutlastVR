@@ -446,5 +446,5 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   needs no Enter in between; Tab does the same from the keyboard, and re-clicking the open field keeps the
   draft. Each value goes through `EyeResolutionRange.Normalize`, so the slider's own bounds hold - 480-4096
   per axis, 8-pixel steps - and an empty field is refused with a note in the tape log rather than applied.
-  While a field is open the keyboard belongs to it, so W/A/S/D cannot move the list; dragging the slider,
-  clicking elsewhere or leaving the page closes it.
+  While a field is open the keyboard belongs to it, so W/A/S/D cannot move the list; clicking anywhere
+  else (the slider, another row, BACK) saves what was typed, and Esc cancels it.

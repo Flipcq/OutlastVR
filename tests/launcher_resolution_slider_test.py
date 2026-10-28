@@ -168,10 +168,18 @@ checks = r'''
         v.Ready(); v.BeginResolutionEdit(0);
         foreach (char c in "2496") v.ResolutionEditChar(c);
         Check(v.ApplyResolutionEdit() && ModIni.Writes == 0, "an unchanged width writes nothing");
-        // clicking the same field twice keeps what was typed
+        // clicking the same field twice keeps what was typed, and switching with nothing typed is free
         v.Ready(); v.BeginResolutionEdit(0); v.ResolutionEditChar('1'); v.ResolutionEditChar('2');
         Check(v.BeginResolutionEdit(0) && v.ResolutionEdited == "12", "re-clicking the open field keeps the draft");
         v.CancelResolutionEdit();
+        v.Ready(); Check(v.BeginResolutionEdit(0) && v.BeginResolutionEdit(1) && v.ResolutionEditField == 1, "an empty field does not block the other one");
+        // leaving the field saves it; an empty one just closes
+        v.Ready(); v.BeginResolutionEdit(0);
+        foreach (char c in "1600") v.ResolutionEditChar(c);
+        v.LeaveResolutionEdit();
+        Check(!v.ResolutionEditing && v.manualEyeW == 1600 && ModIni.Data["EyeWidth"] == "1600", "leaving the field saves it");
+        v.Ready(); v.BeginResolutionEdit(1); v.LeaveResolutionEdit();
+        Check(!v.ResolutionEditing && ModIni.Writes == 0, "an empty field closes without writing");
         // gating: the same two switches the slider itself obeys
         v.Ready(); v.setVals[v.Find("AutoEyeResolution")] = 1;
         Check(!v.BeginResolutionEdit(0), "AUTO disables typing");

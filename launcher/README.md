@@ -123,12 +123,12 @@ In **VR SETTINGS > PICTURE**, leave **High-resolution rendering** ON and choose:
   also adjust it. **The width and the height are also two separate fields**: click one, type a
   single number, Enter applies and saves it; click the other and do the same (clicking the other
   field saves the one you were typing first, so no Enter is needed between them). Esc cancels the
-  open field, Backspace edits it and Tab jumps to the other number. Each value is held to the
-  slider's own limits - 480-4096 per axis, 8-pixel steps - so 9999 lands on 4096 and 100 on 480,
-  and an empty field is refused with a note in the tape log. Losing mouse capture cancels an
-  unfinished drag. Both are enabled when MANUAL and high-resolution rendering are enabled.
-  Render resolution (%) is ignored in this mode. Restart Outlast after changing the mode or the
-  manual size.
+  open field, Backspace edits it and Tab jumps to the other number; clicking anywhere else - the
+  slider, another row, BACK - saves what was typed. Each value is held to the slider's own limits -
+  480-4096 per axis, 8-pixel steps - so 9999 lands on 4096 and 100 on 480, and an empty field is
+  refused with a note in the tape log. Losing mouse capture cancels an unfinished drag. Both are
+  enabled when MANUAL and high-resolution rendering are enabled. Render resolution (%) is ignored in
+  this mode. Restart Outlast after changing the mode or the manual size.
 
 For example, 1440 x 1600 means **each eye** renders at 1440 x 1600; the engine draws both
 in a 2880 x 1600 frame. The OpenXR output size remains the runtime recommendation, and the

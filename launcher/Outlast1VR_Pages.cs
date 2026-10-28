@@ -387,7 +387,7 @@ namespace Outlast1VR
             for (int i = 0; i < Defs.Length; i++) if (Defs[i].Kind == SetKind.Resolution) SettingsSelect(i);
             dragStartW = manualEyeW; dragStartH = manualEyeH;
             resolutionDragging = true;
-            CancelResolutionEdit(true);                  // the drag owns the size now
+            LeaveResolutionEdit();                       // a typed number is saved before the drag starts
             SetStatus("DRAG TO CHOOSE - RELEASE TO SAVE", Tone.Info);
             DragResolution(p);
             return true;
@@ -455,7 +455,12 @@ namespace Outlast1VR
             }
             if (resolutionEditField == field) return true;                  // already open: keep the draft
             // Moving to the other number saves the one that was open first, the way leaving a field does.
-            if (resolutionEditField >= 0 && !ApplyResolutionEdit()) return false;
+            // An empty one is simply dropped, so clicking a number twice in a row never traps you.
+            if (resolutionEditField >= 0)
+            {
+                if (resolutionEdit.Length == 0) CancelResolutionEdit(true);
+                else if (!ApplyResolutionEdit()) return false;
+            }
             for (int i = 0; i < Defs.Length; i++) if (Defs[i].Kind == SetKind.Resolution) SettingsSelect(i);
             resolutionDragging = false;                                    // a half-finished drag is not a value
             resolutionEditField = field; resolutionEdit = ""; resolutionEditAt = T;
@@ -488,6 +493,14 @@ namespace Outlast1VR
             if (resolutionEditField < 0 || resolutionEdit.Length == 0) return;
             resolutionEdit = resolutionEdit.Substring(0, resolutionEdit.Length - 1);
             resolutionEditAt = T;
+        }
+
+        // Leaving the field - a click elsewhere, the slider, another row - saves what was typed, the way
+        // leaving a text box does. Nothing typed, or something that is not a number, just closes it.
+        void LeaveResolutionEdit()
+        {
+            if (resolutionEditField < 0) return;
+            if (!ApplyResolutionEdit()) CancelResolutionEdit(true);
         }
 
         // The open field's number, through the same Normalize the slider uses. False (and the field stays
@@ -734,10 +747,10 @@ namespace Outlast1VR
         Point lastMouse;
         void PageClick(int hit)
         {
-            if (hit == HitBack) { ClosePage(); return; }
             if (hit == HitResolutionWidth) { BeginResolutionEdit(0); return; }
             if (hit == HitResolutionHeight) { BeginResolutionEdit(1); return; }
-            if (resolutionEditField >= 0) CancelResolutionEdit(true);   // a click anywhere else ends the typing
+            LeaveResolutionEdit();          // a click anywhere else saves the field that was open
+            if (hit == HitBack) { ClosePage(); return; }
             if (hit >= HitRow0 && hit < HitRow0 + Defs.Length)
             {
                 int i = hit - HitRow0;
