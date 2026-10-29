@@ -1251,6 +1251,28 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             s_doorAnchorOn[h] = true;
             s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
         }
+        // [DOOR] open-hand collision volume: keep the fingertips off the door panel when pushing
+        // with an open hand. The hand still passes through the door when holding the knob (ng > 0),
+        // but an open hand pushing the panel is stopped at the surface so the fingers never sink in.
+        for (int h = 0; h < 2; ++h) {
+            if (!contact[h] || s_grab[h].d) continue;   // only open hands pushing, not knob-holding
+            const float aPanel = (phi0 + sign * (An - A)) * 0.0174532925f;
+            const float c = cosf(aPanel), sn = sinf(aPanel);
+            const float nx = -sn, ny = c;               // panel normal
+            const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
+            const float perpPalm = hx * nx + hy * ny;   // wrist signed distance from the panel plane
+            // only act when the hand is actually pushing into the panel (not just passing through)
+            if (fabsf(perpPalm) < kContactUU + 2.0f) continue;
+            float t = hx * c + hy * sn;                 // along the panel from the hinge
+            if (t < 0.0f) t = 0.0f; if (t > width) t = width;
+            const int sd = perpPalm < 0.0f ? -1 : 1;    // side the hand is on
+            // anchor the wrist one hand-length in front of the panel so the fingers rest on
+            // the surface instead of crossing it
+            s_doorAnchor[h] = { nd.hinge.x + c * t - sn * sd * kHandDepthUU,
+                                nd.hinge.y + sn * t + c * sd * kHandDepthUU,
+                                handW[h].z };
+            s_doorAnchorOn[h] = true;
+        }
         if (!ng && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
     }
 }
