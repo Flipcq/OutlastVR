@@ -770,6 +770,11 @@ static const float kMaxArmReachUU = 95.0f;   // cm beyond which the door stops f
 // [DOOR] how far in front of the panel the open hand's anchor sits, so the fingers (which extend past
 // the wrist) stop on the door surface instead of sinking through it.
 static const float kHandDepthUU = 11.0f;
+// [DOOR] length of the fingers past the wrist, used to keep the fingertips off the panel when the
+// hand is straight (palm down) and the fingers lead the wrist.
+static const float kFingerLenUU = 12.0f;
+// [DOOR] how far up/down the knob a grab may keep its height (so the hand stays where it took hold)
+static const float kGrabOffZUU = 3.0f;
 // [DOOR] after letting go of a held door, keep that hand out of the push loop for a moment so the
 // door can swing through it (it was just keeping the door from finishing its travel).
 static const ULONGLONG kPushSuppressMs = 2500;
@@ -805,6 +810,7 @@ static float s_grabA0[2] = {0.0f,0.0f};           // door angle at the grab (deg
 static float s_grabS[2] = {0.0f,0.0f};            // hand travel along that tangent since the grab (uu, + opens)
 static float s_grabSPrev[2] = {0.0f,0.0f};
 static int   s_grabSide[2] = {1,1};               // which face of the door the palm is on
+static float s_grabOffZ[2] = {0.0f,0.0f};         // height offset on the knob kept from the grab (uu)
 static float s_anchorYaw[2] = {0.0f,0.0f};        // door swing since the grab, for the locked wrist
 static bool  s_anchorLock[2] = {false,false};     // true while the wrist is pinned to the door, not the controller
 static ULONGLONG s_grabHapUntil[2] = {0,0};       // light buzz while a hand is holding a knob
@@ -846,7 +852,7 @@ static DoorSim* SimFor(void* d, bool create) {
 static bool ClimbHolding(int h);   // [CLIMB] below: a hand that holds an edge is not a door hand
 static float BodyYaw();             // (Beta 1.1) [DOORLETGO] below
 static bool CamInRightHand();
-static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
+static void Doors(ULONGLONG now, float dt, V3 handW[2], V3 handTip[2], bool handOk[2]) {
     s_doorAnchorOn[0] = s_doorAnchorOn[1] = false;
     if (!g_on[ON_DOORS]) {
         s_grab[0].d = s_grab[1].d = nullptr; s_nearN = 0; s_nearKnob[0] = s_nearKnob[1] = false;
@@ -996,6 +1002,11 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         const float nx = -sinf(phi0), ny = cosf(phi0);
         const float side = (handW[h].x - nd.hinge.x) * nx + (handW[h].y - nd.hinge.y) * ny;
         s_grabSide[h] = side < 0.0f ? -1 : 1;
+        // [DOOR] magnet polish: keep the height at which the hand actually took hold of the knob
+        // (clamped near the knob's centre) so the palm lands on the same point of the handle.
+        float dz = handW[h].z - nd.knob.z;
+        if (dz > kGrabOffZUU) dz = kGrabOffZUU; if (dz < -kGrabOffZUU) dz = -kGrabOffZUU;
+        s_grabOffZ[h] = dz;
         s_anchorYaw[h] = 0.0f; s_anchorLock[h] = true; s_grabFixed[h] = true;
         s_grabHapUntil[h] = now + 250;   // buzz while holding the knob
         DoorSim* ds = SimFor(nd.d, false);
@@ -1157,13 +1168,14 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         }
         // [DOOR] movement sound: a material-aware event (EV_Opening_Wood/Metal/Security_Door) plays
         // when the door starts a new swing and has moved far enough to be a real open/close - not for
-        // a nudge or a held door. It plays once per swing in each direction.
-        if (fabsf(Om) <= kSndSpeed) s->sndDir = 0;   // at rest: the next movement is a new swing
+        // a nudge or a held door. sndOpened / sndClosed remember that this direction already sounded,
+        // so a small bounce of the panel cannot retrigger the same sound.
         if ((ng || anyPush || s->autoRun) && fabsf(Om) > kSndSpeed) {
             const float sndRatio = An / maxA;
             const int dir = Om > 0.0f ? 1 : -1;
             if (dir != s->sndDir) { s->sndDir = dir; s->sndFrom = sndRatio; }
-            if (now >= s->sndBlockUntil && fabsf(sndRatio - s->sndFrom) > kSndMove) {
+            const bool already = (dir > 0) ? s->sndOpened : s->sndClosed;
+            if (!already && now >= s->sndBlockUntil && fabsf(sndRatio - s->sndFrom) > kSndMove) {
                 static const char* const kMatSnd[3] = {
                     "EV_Opening_Wood_Door", "EV_Opening_Metal_Door", "EV_Opening_Security_Door" };
                 const int mi = (nd.mat <= 2) ? nd.mat : 0;
@@ -1177,21 +1189,31 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
 
         // open hands stay in front of the panel: the anchor sits kHandDepthUU in front of the
         // surface so the fingers (which extend past the wrist) stop on the door, not inside it.
-        // Applied as soon as the hand is near the panel (not only on contact), so the fingers
-        // never sink through while the hand approaches.
+        // Both the wrist AND the fingertip are measured, so a straight hand (palm down, fingers
+        // leading) is pushed back until the fingertips rest on the surface too.
         for (int h = 0; h < 2; ++h) {
             if (!handOk[h] || s_gripDown[h] || s_grab[h].d || ClimbHolding(h) ||
                 (h == 1 && (CamInRightHand() || g_camButton)) || (h == 0 && s_bat)) continue;
             const float aPanel = (phi0 + sign * (An - A)) * 0.0174532925f;
             const float c = cosf(aPanel), sn = sinf(aPanel);
+            const float nx = -sn, ny = c;                         // panel normal
             const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
-            const float perp = hx * (-sn) + hy * c;            // signed distance from the panel plane
-            if (fabsf(perp) > kHandDepthUU + 10.0f) continue;  // not near this panel
+            const float perpPalm = hx * nx + hy * ny;            // wrist distance from the panel plane
+            const float tx = handTip[h].x - nd.hinge.x, ty = handTip[h].y - nd.hinge.y;
+            const float perpTip = tx * nx + ty * ny;             // fingertip distance from the plane
+            const float dPalm = fabsf(perpPalm), dTip = fabsf(perpTip);
+            const float near = dPalm < dTip ? dPalm : dTip;
+            if (near > kHandDepthUU + 10.0f) continue;            // neither wrist nor fingers near this panel
             const float t = hx * c + hy * sn;
-            if (t < 0.0f || t > width) continue;               // beyond the panel's edge
-            const int sd = perp < 0.0f ? -1 : 1;               // the side the hand is on
-            s_doorAnchor[h] = { nd.hinge.x + c * t - sn * sd * kHandDepthUU,
-                                nd.hinge.y + sn * t + c * sd * kHandDepthUU,
+            if (t < 0.0f || t > width) continue;                  // beyond the panel's edge
+            const int sd = perpPalm < 0.0f ? -1 : 1;              // the side the hand is on
+            // how much closer the fingertips are to the panel than the wrist (0 when the wrist is closest)
+            float tipBehind = 0.0f;
+            if (perpPalm * perpTip >= 0.0f) { if (dPalm > dTip) tipBehind = dPalm - dTip; }
+            else tipBehind = dPalm + dTip;                        // the hand crosses the plane
+            const float anchorDepth = kHandDepthUU + tipBehind;
+            s_doorAnchor[h] = { nd.hinge.x + c * t - sn * sd * anchorDepth,
+                                nd.hinge.y + sn * t + c * sd * anchorDepth,
                                 handW[h].z };
             s_doorAnchorOn[h] = true;
         }
@@ -1252,7 +1274,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float ipy = nd.hinge.y + nky - py * dNative;
             s_doorAnchor[h] = { ipx + px * s_grabSide[h] * off,
                                 ipy + py * s_grabSide[h] * off,
-                                nd.knob.z };
+                                nd.knob.z + s_grabOffZ[h] };
             s_doorAnchorOn[h] = true;
             s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
         }
@@ -2329,10 +2351,19 @@ extern "C" void OLInteract_Tick() {
         s_gripEdge[h] = down && !s_gripDown[h];
         s_gripDown[h] = down;
     }
-    V3 handW[2]; bool handOk[2];
+    V3 handW[2]; V3 handTip[2]; bool handOk[2];
     for (int h = 0; h < 2; ++h) {
         handOk[h] = (fh.valid & (1u << h)) != 0;
         handW[h] = handOk[h] ? TrackToWorld(P3(fh.hand[h])) : V3{ 0, 0, 0 };
+        if (handOk[h]) {
+            // the fingertip: wrist plus the hand's forward direction (track -> world via two points)
+            const V3 f = QRot(fh.hand[h], V3{ 0.0f, 0.0f, -1.0f });
+            const V3 p1 = TrackToWorld(Add(P3(fh.hand[h]), f));
+            V3 d = Sub(p1, handW[h]);
+            const float dl = Len(d);
+            if (dl > 1e-3f) d = Mul(d, 1.0f / dl);
+            handTip[h] = Add(handW[h], Mul(d, kFingerLenUU));
+        } else handTip[h] = V3{ 0, 0, 0 };
     }
     s_handW[0] = handW[0]; s_handW[1] = handW[1]; s_handOk[0] = handOk[0]; s_handOk[1] = handOk[1];
     static ULONGLONG s_lastTick = 0;
@@ -2344,7 +2375,7 @@ extern "C" void OLInteract_Tick() {
     Battery(now, fh, p);
     Climb(now, dt, fh, handW, handOk);   // (Test40) a squeeze on a climbable edge holds the edge
     RoomWalkTick(now);                    // (Test44) after Climb: it knows whether the hands are climbing
-    Doors(now, dt, handW, handOk);
+    Doors(now, dt, handW, handTip, handOk);
     Breath(now, head, fh, s_lm);          // (Test43) a hand over the mouth while he breathes hard
     HandNV(now, p, hero);                 // (Test43) night vision on the camcorder in your hand
     if (OLSound_Ready()) OLSound_Report(); // (Test43) [AUDIODIAG] every 10 s - (Test46) only with the sound hooks in
