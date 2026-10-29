@@ -4416,6 +4416,27 @@ static bool PoseApplyVisible(void* comp) {
                 }
                 s_doorLockPrev[hand] = doorLock;
             }
+            {   // [DOORPALM] an open hand pushing a door turns its palm toward the panel, smoothly
+                float pp[3], pn[3];
+                const float pw = OLInteract_HandPushNormal(hand, pp, pn);
+                if (pw > 0.0f) {
+                    VIk3 c0, c1;
+                    const float p1[3] = { pp[0] + pn[0], pp[1] + pn[1], pp[2] + pn[2] };
+                    if (WorldToComp(comp, pp, &c0) && WorldToComp(comp, p1, &c1)) {
+                        VIk3 dir = IVSub(c1, c0);
+                        const float dl = IVLen(dir);
+                        if (dl > 0.5f) {
+                            dir = IVScale(dir, 1.0f / dl);
+                            const VIk3 palmNow = IQRotate(wristTarget, { 0.0f, -1.0f, 0.0f });   // -Y = palm in the grip frame
+                            if (IVLen(palmNow) > 0.1f) {
+                                const QIk4 align = IQFromTo(palmNow, dir);
+                                const QIk4 want = IQMul(align, wristTarget);
+                                wristTarget = IQBlend(wristTarget, want, pw * 0.85f);
+                            }
+                        }
+                    }
+                }
+            }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
         }
@@ -5563,6 +5584,7 @@ static void LensFlareTick() {
 // a hand holds a door, an edge or a rung. [Motion] BodyFollowsHead=0 turns it off.
 extern "C" void OLXR_TurnBaseline(float rightDeg);
 extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);
+extern "C" float OLInteract_HandPushNormal(int h, float outPoint[3], float outNormal[3]);
 static volatile long g_bodyTurn = 1;
 extern "C" int  OLUE3_GetBodyTurn() { return g_bodyTurn ? 1 : 0; }
 extern "C" void OLUE3_SetBodyTurn(int on) { g_bodyTurn = on ? 1 : 0; }

@@ -210,7 +210,7 @@ extern "C" void OLSound_StopByName(const char* name, AkGameObjectID obj) {
     if (!id) return;
     const AkGameObjectID o = SoundPortalObj(obj);
     if (!o) return;
-    g_exec(id, AK_Stop, o, 120, kCurveLinear, 0);
+    g_exec(id, AK_Stop, o, 400, kCurveLinear, 0);   // fade out over 400 ms (the tail is cut early by the caller)
     SLog("[OLVR][DOOR] stopped door sound %s early on obj %u", name, (unsigned)o);
 }
 // [DOOR] set a Wwise RTPC (e.g. OpeningDoorIntensity) globally, so the next door event plays its
