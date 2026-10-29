@@ -1041,6 +1041,22 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float r = sqrtf(hx * hx + hy * hy);
             const bool inBand = r >= 10.0f && r <= width && handW[h].z > nd.knob.z - 95.0f && handW[h].z < nd.knob.z + 120.0f;
             const float aHand = atan2f(hy, hx) * 57.2957795f, d = Wrap180(aHand - phi0);
+            // [DOORDEBUG] detailed hand-vs-panel info when hand is near a door panel
+            static ULONGLONG s_doorLogMs[2] = { 0, 0 };
+            if (now - s_doorLogMs[h] > 500) {
+                s_doorLogMs[h] = now;
+                const bool isGrabbing = s_grab[h].d != nullptr;
+                const float perp = r * sinf(d * 0.0174532925f);
+                ILog("[OLVR][DOORDEBUG] hand %d: inBand=%d grabbing=%d contact=%d "
+                     "handW=(%.0f %.0f %.0f) knobW=(%.0f %.0f %.0f) hingeW=(%.0f %.0f %.0f) "
+                     "r=%.0f phi0=%.0f aHand=%.0f d=%.0f perp=%.0f ratio=%.2f maxA=%.0f",
+                     h, inBand ? 1 : 0, isGrabbing ? 1 : 0, contact[h] ? 1 : 0,
+                     handW[h].x, handW[h].y, handW[h].z,
+                     nd.knob.x, nd.knob.y, nd.knob.z,
+                     nd.hinge.x, nd.hinge.y, nd.hinge.z,
+                     r, phi0, aHand, d, perp,
+                     nd.ratio, nd.maxAng);
+            }
             if (!inBand || fabsf(d) > 60.0f) {                         // not at this panel
                 if (s_pushDoor[h] == nd.d) { s_pushDoor[h] = nullptr; s_pushSide[h] = 0; }
                 continue;
