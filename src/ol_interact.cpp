@@ -1202,8 +1202,8 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], V3 handTip[2], bool hand
             const float tx = handTip[h].x - nd.hinge.x, ty = handTip[h].y - nd.hinge.y;
             const float perpTip = tx * nx + ty * ny;             // fingertip distance from the plane
             const float dPalm = fabsf(perpPalm), dTip = fabsf(perpTip);
-            const float near = dPalm < dTip ? dPalm : dTip;
-            if (near > kHandDepthUU + 10.0f) continue;            // neither wrist nor fingers near this panel
+            const float nearest = dPalm < dTip ? dPalm : dTip;
+            if (nearest > kHandDepthUU + 10.0f) continue;        // neither wrist nor fingers near this panel
             const float t = hx * c + hy * sn;
             if (t < 0.0f || t > width) continue;                  // beyond the panel's edge
             const int sd = perpPalm < 0.0f ? -1 : 1;              // the side the hand is on
