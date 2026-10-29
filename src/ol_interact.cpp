@@ -1140,10 +1140,12 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         float An = A + Om * dt;
         // pushing hands: an open hand pushes the panel, but a hand that just let go of a held door is
         // suppressed for a moment (kPushSuppressMs) so the door can swing through it and finish its
-        // travel instead of being stopped right after release.
+        // travel instead of being stopped right after release. While one hand is swinging the door on
+        // the handle, the other (open) hand does not block it either: the door passes through it too.
         bool anyPush = false;
         for (int h = 0; h < 2; ++h) {
             if (!contact[h] || now < s_pushSuppressUntil[h]) continue;
+            if (ng > 0) continue;                                      // a hand on the handle is driving it
             anyPush = true;
             const float need = (aC[h] - A) / dt, maxDv = kPushAccel * dt;
             float dv = need - Om; if (dv > maxDv) dv = maxDv; if (dv < -maxDv) dv = -maxDv;
