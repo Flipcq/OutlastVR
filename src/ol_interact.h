@@ -54,8 +54,6 @@ extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);
 // instead of following the controller. 1 while the wrist is locked.
 extern "C" int   OLInteract_HandAnchorLock(int h);
 extern "C" float OLInteract_HandAnchorYaw(int h);
-// [DOORGRIP] 1 = the held door has a round knob (use the fixed palm-down grip pose).
-extern "C" int   OLInteract_HandGripRound(int h);
 // [DOORPALM] while an open hand pushes a door: the world point on the panel, the direction into the
 // door and a 0..1 weight (0 = not pushing). ol_ue3 turns the palm toward the door with it.
 extern "C" float OLInteract_HandPushNormal(int h, float outPoint[3], float outNormal[3]);
