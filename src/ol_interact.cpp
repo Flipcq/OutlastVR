@@ -759,10 +759,10 @@ static const float kAutoOpenRatio = 0.70f;   // let go past this (still opening)
 static const float kAutoCloseMove = 24.0f;   // pulled/pushed this far toward closing at let-go -> it closes by itself
 static const float kOpenSwing = 60.0f;       // deg/s used to finish an auto-open / auto-close
 static const float kHandleFaceUU = 6.0f;     // handle-to-handle depth of a door (the second knob is on the other face)
-static const float kSndMove = 0.10f;         // door travel (ratio) before a movement sound starts
+static const float kSndMove = 0.25f;         // door travel (ratio) before a movement sound starts - only once it has been moved enough to open/close on its own (not a nudge or a held door)
 static const float kSndSpeed = 25.0f;        // deg/s; slower than this and it is only a nudge / a held door
 static const ULONGLONG kSndBlockMs = 700;    // no new movement sound for this long after one
-static const ULONGLONG kSndCloseCutMs = 350; // keep only the start of the closing sound (its latch end is harsh)
+static const ULONGLONG kSndCloseCutMs = 350; // keep only the start of the closing sound (its harsh latch tail is cut)
 // [DOORPUSH] which side of which door each open hand is on (0 = not on any panel)
 static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
@@ -972,7 +972,11 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         s_grabTan[h] = { sign * -sinf(phi0), sign * cosf(phi0), 0.0f };
         s_grabA0[h] = nd.ratio * nd.maxAng;
         s_grabS[h] = s_grabSPrev[h] = 0.0f;
-        // which face of the door the palm is on: keep the hand on that face's handle as the door swings
+        // which face of the door the palm is on: keep Miles's hand on that face's handle for the whole
+        // grab, so the hand always ends up at the same correct spot on the knob - never inside the door
+        // or between the two knobs (a door has one handle on each face). The side is fixed at grab time
+        // and never revisited while the door swings, so a small hand wiggle cannot flip the hand to the
+        // other face. The game's knob sits on one face; the other face's handle is its mirror (kHandleFaceUU).
         const float nx = -sinf(phi0), ny = cosf(phi0);
         const float side = (handW[h].x - nd.hinge.x) * nx + (handW[h].y - nd.hinge.y) * ny;
         s_grabSide[h] = side < 0.0f ? -1 : 1;
@@ -1133,22 +1137,32 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             }
         }
         // [DOOR] movement sound: only once the door has really moved in one direction (a nudge or a
-        // held door stays silent) and never twice for the same swing. The closing event's latch at the
-        // end is cut after a moment, so only the sound of it moving is kept.
+        // held door stays silent) and never twice for the same swing. The sound starts only after the
+        // door has been moved enough to open/close on its own, and the closing event's harsh latch is
+        // cut after a moment, so only the movement itself is heard - never the strident tail, and never
+        // twice for the same swing.
         if (ng || anyPush || s->autoRun) {
             const float sndRatio = An / maxA;
             const int dir = fabsf(Om) > kSndSpeed ? (Om > 0.0f ? 1 : -1) : 0;
             if (dir && dir != s->sndDir) { s->sndDir = dir; s->sndFrom = sndRatio; }   // a new swing
             if (dir && now >= s->sndBlockUntil && fabsf(sndRatio - s->sndFrom) > kSndMove) {
                 if (dir > 0 && !s->sndOpened && An < hi - 0.05f * maxA) {
-                    OLSound_PostByName(anyPush ? "EV_Push_Wood_Door" : "EV_Opening_Wood_Door", 0);
-                    s->sndOpened = true; s->sndClosed = false;
-                    s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
+                    // only sound the opening once the door has been pulled far enough to
+                    // finish opening by itself (auto-open threshold)
+                    if (sndRatio >= kAutoOpenRatio * 0.75f) {
+                        OLSound_PostByName(anyPush ? "EV_Push_Wood_Door" : "EV_Opening_Wood_Door", 0);
+                        s->sndOpened = true; s->sndClosed = false;
+                        s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
+                    }
                 } else if (dir < 0 && !s->sndClosed && An > lo + 0.08f * maxA) {
-                    OLSound_PostByName("EV_Closing_Wood_Door", 0);
-                    s->sndClosed = true; s->sndOpened = false;
-                    s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
-                    s->sndCloseCut = now + kSndCloseCutMs;
+                    // only sound the closing once pushed far enough to close by itself;
+                    // keep only the start of the sound (its latch end is harsh).
+                    if (s->sndFrom - sndRatio >= kSndMove) {
+                        OLSound_PostByName("EV_Closing_Wood_Door", 0);
+                        s->sndClosed = true; s->sndOpened = false;
+                        s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
+                        s->sndCloseCut = now + kSndCloseCutMs;
+                    }
                 }
             }
         }
@@ -1231,6 +1245,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float dNative = nkx * px + nky * py;                       // how far the game's knob sits off the panel
             const int nativeSide = dNative > 1.0f ? 1 : (dNative < -1.0f ? -1 : 0);
             float off = fabsf(dNative);
+            // anchor Miles's palm on the face he grabbed: if the game's knob is on the panel plane use the
+            // door's depth; if the palm is on the opposite face from the knob, add the door depth so the
+            // hand lands on the other face's handle. Either way the hand is always at the same correct spot
+            // on the knob of the face it took hold of - never inside the door, never between two knobs.
             if (nativeSide == 0) off = kHandleFaceUU;                        // knob on the panel plane: use the door depth
             else if (s_grabSide[h] != nativeSide) off += kHandleFaceUU;      // the handle on the other face
             const float ipx = nd.hinge.x + nkx - px * dNative;               // the knob projected onto the panel
