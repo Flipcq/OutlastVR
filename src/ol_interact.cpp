@@ -70,6 +70,7 @@ extern "C" int   OLSound_BreathHeavy();
 extern "C" void  OLSound_Hush(int on);
 extern "C" void  OLSound_Gasp();
 extern "C" void  OLSound_Report();
+extern "C" void  OLSound_PostByName(const char* name, uint64_t obj);  // [DOOR] post a Wwise door sound by name
 extern "C" void  OLProxy_SetNvRequested(int on);                        // (Test43) [HANDNV] d3d9_proxy's night-vision state
 extern "C" int   OLUE3_SceneScripted();                                  // (Test44) [ROOMWALK]
 extern "C" void  OLUE3_ObjScanStep();                                    // (Test45) [OBJSCAN]
@@ -734,23 +735,25 @@ static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
-static const float kGrabUU = 26.0f, kSlipUU = 32.0f, kContactUU = 7.0f;   // (Beta 1.1) slip 45 -> 32
-// (Beta 1.1) [DOORLETGO] A tester: "holding the grip to open a door, moving around or rotating the camera
-// can cause Miles' arm to bend in an unnatural way". The hand stayed on the knob in the world while the
-// body turned away or walked off, and only a 45 uu slip let go - a 30 deg snap turn moves a hand at
-// arm's length by less than that. Now the handle is also let go once the body has turned away from
-// it, the knob is out of reach of the shoulder, or it ends up behind Miles.
+static const float kGrabUU = 45.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // larger grab area, harder to slip off
+// (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
 static const float kLetGoTurnDeg = 25.0f, kLetGoReachUU = 72.0f;
 static const float kPushAccel = 1600.0f;                 // deg/s^2 a hand can give a heavy door
-static const float kFricVisc = 3.2f, kFricCoul = 70.0f;  // hinge friction: 1/s and deg/s^2
-static const float kSpringK = 160.0f, kSpringC = 24.0f;  // the handle: 1/s^2 and 1/s (about critical)
+static const float kFricVisc = 1.6f, kFricCoul = 40.0f;  // hinge friction: lighter door, easier to move
+static const float kSpringK = 300.0f, kSpringC = 24.0f;  // the handle: stronger spring -> more arm travel = more door swing
 static const float kHeroRadius = 26.0f;                  // Miles, for the panel to stop against
+// [DOOR] hold-and-pull tuning
+static const float kGrabDeadzone = 10.0f;    // small hand wiggles do not move the door (mask bad placements)
+static const float kAutoOpenRatio = 0.55f;   // let go past this -> the door finishes opening on its own
+static const float kAutoCloseMove = 14.0f;   // hand must push forward at least this far to auto-close
+static const float kDoorVelScale = 250.0f;   // deg/s^2 per (uu/s) of hand speed while pulling the handle
+static const float kOpenSwing = 90.0f;       // deg/s swing speed used to finish an auto-open / auto-close
 // [DOORPUSH] which side of which door each open hand is on (0 = not on any panel)
 static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
 static ULONGLONG s_pushLockedMs = 0;
 static float s_gripW[2] = { 0.0f, 0.0f };     // [DOORGRIP] eased
-struct DoorSim { void* d; float om, lastCmd, lastHapR; bool live; bool pushed; ULONGLONG ms; float startR; bool evOpen; ULONGLONG gameUntil; };
+struct DoorSim { void* d; float om, lastCmd, lastHapR; bool live; bool pushed; ULONGLONG ms; float startR; bool evOpen, sndOpened, sndClosed; ULONGLONG gameUntil; };
 // [DOOREVENT] (Test43) What the game's own door code does as a door opens and closes (OLGame.exe):
 //  open  (AOLDoor 0xD4A770, the door's "open" for X, AI and scripts): if DoorState is 0 (shut) it fires
 //        TriggerEvent(0), sets DoorState 1, and fires TriggerEvent(1).
@@ -767,6 +770,15 @@ static bool WrB(void* base, unsigned off, unsigned char v) {
 static DoorSim s_sim[6] = {};
 static V3 s_doorAnchor[2]; static bool s_doorAnchorOn[2] = { false, false };
 static volatile long s_devDoorEv = -1;
+// [DOOR] a hand that grabs the handle is anchored at a fixed world point so Miles's hand never wanders into
+// the door or between two knobs; small wiggles inside the deadzone are masked.
+static V3   s_grabFixPt[2] = {{0,0,0},{0,0,0}};   // world point the hand is pinned to while holding the knob
+static float s_grabFixR[2] = {0.0f,0.0f};         // door ratio at the moment the grab was fixed
+static bool  s_grabFixed[2] = {false,false};      // true while the current grab uses a fixed anchor
+static V3    s_handPrev[2] = {{0,0,0},{0,0,0}};   // previous hand world position (for hand speed)
+static ULONGLONG s_handPrevMs[2] = {0,0};
+static float s_handSpd[2] = {0.0f,0.0f};          // current hand speed (uu/s) per hand
+static ULONGLONG s_grabHapUntil[2] = {0,0};       // light buzz while a hand is holding a knob
 extern "C" void OLInteract_DevDoorEvent(int type) { InterlockedExchange(&s_devDoorEv, type); }   // [DEVBRIDGE] "doorev"
 
 static bool ReadDoor(void* d, NearDoor* o) {
@@ -850,7 +862,21 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
     for (int h = 0; h < 2; ++h) {
         s_nearKnob[h] = false;
         Grab& g = s_grab[h];
-        if (!handOk[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton))) { g.d = nullptr; continue; }   // (Test49) the grip is the camcorder button
+        // track hand speed (uu/s) for door pull acceleration and auto-close detection
+        if (handOk[h] && s_handPrevMs[h]) {
+            const float dtSec = (now - s_handPrevMs[h]) / 1000.0f;
+            if (dtSec > 0.001f) {
+                const float vx = (handW[h].x - s_handPrev[h].x) / dtSec;
+                const float vy = (handW[h].y - s_handPrev[h].y) / dtSec;
+                s_handSpd[h] = sqrtf(vx * vx + vy * vy);
+            }
+        }
+        s_handPrev[h] = handW[h]; s_handPrevMs[h] = now;
+        // [DOOR] light buzz while a hand holds a knob
+        if (s_grabFixed[h] && now > s_grabHapUntil[h]) { s_grabHapUntil[h] = now + 350; OLXR_HapticPulse(h, 0.25f, 15); }
+        if (!handOk[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton))) {
+            s_grabFixed[h] = false; g.d = nullptr; continue;   // (Test49) the grip is the camcorder button
+        }
         for (int i = 0; i < s_nearN; ++i) {
             const float d = Len(Sub(handW[h], s_near[i].knob));
             if (d < bestD[h]) { bestD[h] = d; best[h] = i; }
@@ -878,7 +904,24 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                      !s_gripDown[h] ? "grip open" : (!nd ? "door gone" : (nd->busy ? "the game took the door" :
                      (turnedAway ? "the body turned away" : (outOfReach ? "out of reach" : (behind ? "knob behind him" : "hand slipped off"))))),
                      nd ? nd->ratio : -1.0f);
+                // [DOOR] auto-finish on let-go: an open door released past the threshold finishes opening;
+                // an open door the hand just pushed forward (toward closing) is closed on its own.
+                if (nd && nd->ratio > kAutoOpenRatio) {
+                    const float phi0 = atan2f(nd->knob.y - nd->hinge.y, nd->knob.x - nd->hinge.x) * 57.2957795f;
+                    const float tx = -sinf(phi0 * 0.0174532925f), ty = cosf(phi0 * 0.0174532925f);
+                    const float openingDir = (nd->rev ? 1.0f : -1.0f);   // knob moves this way as the door opens
+                    const float pushTowardClose = s_handSpd[h] > 2.0f &&
+                        (s_handPrev[h].x - handW[h].x) * tx * openingDir + (s_handPrev[h].y - handW[h].y) * ty * openingDir > 0.0f;
+                    DoorSim* ds = SimFor(nd->d, false);
+                    if (ds) {
+                        ds->om = pushTowardClose ? -kOpenSwing : kOpenSwing;
+                        ds->lastCmd = nd->ratio;
+                        ds->sndOpened = ds->sndClosed = false;   // let the finish play its sound
+                        ILog("[OLVR][DOORPHYS] auto-finish door at ratio %.2f %s", nd->ratio, pushTowardClose ? "-> closing" : "-> opening");
+                    }
+                }
                 OLXR_HapticPulse(h, 0.3f, 25);
+                s_grabFixed[h] = false;
                 g.d = nullptr;
             }
             continue;
@@ -894,6 +937,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         }
         if (nd.busy) continue;
         g.d = nd.d; g.lastR = nd.ratio; g.yaw = BodyYaw();
+        // [DOOR] pin Miles's hand at a fixed world point on the knob so it never wanders into the door
+        // or between two knobs; small wiggles are masked by the deadzone in the handle spring below.
+        s_grabFixPt[h] = handW[h]; s_grabFixR[h] = nd.ratio; s_grabFixed[h] = true;
+        s_grabHapUntil[h] = now + 250;   // buzz while holding the knob
         OLXR_HapticPulse(h, 0.5f, 40);
         Learn(LN_DOOR);
         ILog("[OLVR][DOORPHYS] handle grabbed by the %s hand (%.0f uu off) - ratio %.2f, max %.0f deg%s%s",
@@ -980,11 +1027,32 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         // the handle spring(s)
         if (ng) {
             float alpha = 0.0f;
+            // opening tangent direction of the knob (unit) - used for hand-speed angular acceleration
+            const float phir = phi0 * 0.0174532925f;
+            const float tx = -sinf(phir), ty = cosf(phir);
+            const float openingDir = (nd->rev ? 1.0f : -1.0f);
             for (int k = 0; k < ng; ++k) {
                 const int h = gh[k];
-                const float aHand = atan2f(handW[h].y - nd.hinge.y, handW[h].x - nd.hinge.x) * 57.2957795f;
+                // [DOOR] pin: effective hand = fixed grab point plus only the excess past the deadzone,
+                // so small wiggles / bad placements do not move the door.
+                V3 eff = handW[h];
+                if (s_grabFixed[h]) {
+                    const float dx = handW[h].x - s_grabFixPt[h].x, dy = handW[h].y - s_grabFixPt[h].y;
+                    const float dd = sqrtf(dx * dx + dy * dy);
+                    if (dd > kGrabDeadzone) {
+                        const float t = (dd - kGrabDeadzone) / dd;
+                        eff = { s_grabFixPt[h].x + dx * t, s_grabFixPt[h].y + dy * t, handW[h].z };
+                    } else {
+                        eff = s_grabFixPt[h];
+                    }
+                }
+                const float aHand = atan2f(eff.y - nd.hinge.y, eff.x - nd.hinge.x) * 57.2957795f;
                 const float Aw = A + sign * Wrap180(aHand - phi0);
                 alpha += kSpringK * (Aw - A) - kSpringC * Om;
+                // [DOOR] angular acceleration proportional to hand speed in the opening direction
+                const float hDir = s_handSpd[h] > 0.0f ? ((handW[h].x - s_handPrev[h].x) * tx +
+                                                          (handW[h].y - s_handPrev[h].y) * ty) : 0.0f;
+                alpha += kDoorVelScale * s_handSpd[h] * (hDir * openingDir > 0.0f ? 1.0f : -1.0f);
             }
             alpha /= (float)ng;
             if (alpha > 1500.0f) alpha = 1500.0f; if (alpha < -1500.0f) alpha = -1500.0f;
@@ -1017,7 +1085,8 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                 const float sd = dirA[h] * sign;
                 const float rr = rH[h] > 11.0f ? rH[h] : 11.0f;
                 const float aS = (phiN + sd * asinf(kContactUU / rr) * 57.2957795f) * 0.0174532925f;
-                s_doorAnchor[h] = { nd.hinge.x + rr * cosf(aS), nd.hinge.y + rr * sinf(aS), handW[h].z };
+                // [DOOR] anchor Miles's hand on the panel surface (knob depth) so his fingers never sink into the door
+                s_doorAnchor[h] = { nd.hinge.x + rr * cosf(aS), nd.hinge.y + rr * sinf(aS), nd.knob.z };
                 s_doorAnchorOn[h] = true;
                 OLXR_HapticPulse(h, 0.22f, 16);
             }
@@ -1031,7 +1100,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         const float lo = nd.cant ? A : 0.0f, hi = (nd.ratio > 1.0f ? nd.ratio : 1.0f) * maxA;
         if (An > hi) {
             An = hi;
-            if (Om > 0.0f) { if (Om > 60.0f) for (int h = 0; h < 2; ++h) if (contact[h] || s_grab[h].d == nd.d) OLXR_HapticPulse(h, 0.35f, 30); Om = -0.25f * Om; }
+            const bool justOpened = Om > 0.0f;
+            if (justOpened) { if (Om > 60.0f) for (int h = 0; h < 2; ++h) if (contact[h] || s_grab[h].d == nd.d) OLXR_HapticPulse(h, 0.35f, 30); Om = -0.25f * Om; }
+            // [DOOR] a door sound when the door finishes opening
+            if (justOpened && !s->sndOpened && OLSound_Ready()) { OLSound_PostByName("DOOR_OPEN", 0); s->sndOpened = true; s->sndClosed = false; }
         }
         if (An < lo) {
             An = lo;
@@ -1042,6 +1114,8 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                 }
                 Om = 0.0f;
             }
+            // [DOOR] a door sound when the door finishes closing
+            if (!s->sndClosed && OLSound_Ready()) { OLSound_PostByName("DOOR_CLOSE", 0); s->sndClosed = true; s->sndOpened = false; }
         }
         // Miles: the panel stops against him. (Beta 1.1) [DOORSTOP] "doors push Miles when closing": the stop used
         // a fixed 26 uu and a panel with no thickness that ended at the knob, so a closing panel could still
@@ -1057,7 +1131,9 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float stopR = (s_heroR > kHeroRadius ? s_heroR : kHeroRadius) + 6.0f;
             const float edge = width + 10.0f;
             const float dNow = PanelDist(nd.hinge, phi0, edge, hero), dNew = PanelDist(nd.hinge, phi0 + sign * (An - A), edge, hero);
-            if (dNew < stopR && dNew < dNow) { An = A; Om = 0.0f; }
+            // [DOORSTOP] the door may pass through Miles while opening, but a closing panel still stops against him.
+            const bool closing = (Om < 0.0f) || (An < A);
+            if (closing && dNew < stopR && dNew < dNow) { An = A; Om = 0.0f; }
         }
         const float tn = An / maxA;
         // [DOOREVENT] (Test43) a door the hands open from shut tells the game, as its own opening does
@@ -1943,7 +2019,7 @@ static void Markers(ULONGLONG now, const OLXrFrameHands& fh) {
             bool handClose = false;
             for (int h = 0; h < 2; ++h) if (s_handOk[h] && Len(Sub(s_handW[h], nd.knob)) < 45.0f) handClose = true;
             if (!handClose) continue;
-            add(WorldToTrack(nd.knob), 0.05f, OLMK_GLOW, 0.0f);
+            // [DOOR] no green guide ring on the knob - just the teach label while the hand is in reach
             if (Teach(LN_DOOR)) teachLabel(WorldToTrack(nd.knob), OLMK_L_GRAB_HANDLE);
             break;
         }

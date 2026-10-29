@@ -176,6 +176,15 @@ extern "C" void OLSound_Gasp() {
     SLog("[OLVR][BREATH] the held breath let out (VO_BRE_HGH_Short on his voice)");
 }
 
+// [DOOR] post a door sound (by Wwise name) on Miles's object, so it is heard at the door he is opening.
+extern "C" void OLSound_PostByName(const char* name, AkGameObjectID obj) {
+    if (!s_idsOk || !g_post || !g_getIdA || !name) return;
+    AkUniqueID id = g_getIdA(name);
+    if (!id) return;
+    g_post(id, obj, 0, nullptr, nullptr, 0, nullptr, 0);
+    SLog("[OLVR][DOOR] posted door sound %s on obj %u", name, (unsigned)obj);
+}
+
 // ---- [AUDIODIAG] -----------------------------------------------------------------------------------
 static volatile long s_lisCalls[4] = {}, s_activeCalls = 0, s_obsCalls = 0, s_stateCalls = 0, s_rtpcCalls = 0;
 static AkListenerPos s_lisLast[4] = {};
