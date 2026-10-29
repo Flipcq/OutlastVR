@@ -4399,6 +4399,23 @@ static bool PoseApplyVisible(void* comp) {
                 }
                 wristTarget = IQBlend(wristTarget, IQMul(camQ, IQConj(g_gripAux.q)), camHold);
             }
+            {   // [DOOR] a hand holding a knob has its wrist pinned to the door: the pose it had at the grab,
+                // turned by the door's swing, instead of the controller's - the hand never twists off the handle.
+                static QIk4 s_doorWrist[2] = { {0,0,0,1}, {0,0,0,1} };
+                static bool s_doorWristValid[2] = { false, false };
+                static bool s_doorLockPrev[2] = { false, false };
+                const bool doorLock = OLInteract_HandAnchorLock(hand) != 0;
+                if (doorLock) {
+                    if (!s_doorLockPrev[hand] || !s_doorWristValid[hand]) {
+                        s_doorWrist[hand] = wristTarget; s_doorWristValid[hand] = true;
+                    }
+                    const float yawDeg = OLInteract_HandAnchorYaw(hand);
+                    wristTarget = IQMul(IQAxis({ 0.0f, 0.0f, 1.0f }, yawDeg * 0.0174532925f), s_doorWrist[hand]);
+                } else {
+                    s_doorWristValid[hand] = false;
+                }
+                s_doorLockPrev[hand] = doorLock;
+            }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
         }

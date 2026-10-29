@@ -63,12 +63,13 @@ static const ActionWord kActions[] = {
 enum Gate { G_ALWAYS, G_DOORS, G_RAISE, G_BATTERY, G_DUCK, G_HOLSTER, G_HOLSTER_BATTERY, G_CLIMB };
 struct Sentence { Gate gate; const wchar_t* game; const wchar_t* quest; const wchar_t* mouseQuest = nullptr; };
 static const Sentence kSentences[] = {
-    { G_DOORS, L"Press or hold {OLA_Use} to open", L"Grab the handle to open, or press X", L"Grab the handle to open, or press B" },
-    { G_DOORS, L"Press {OLA_Use} to open",         L"Grab the handle to open, or press X", L"Grab the handle to open, or press B" },
-    { G_DOORS, L"Press {OLA_Use} to close",        L"Grab the handle to close, or press X", L"Grab the handle to close, or press B" },
+    // [DOOR] the game's door hints are removed (the game text is matched, the hint shown is empty):
+    // doors are opened by hand, with no prompt and no guide label.
+    { G_DOORS, L"Press or hold {OLA_Use} to open", L"", L"" },
+    { G_DOORS, L"Press {OLA_Use} to open",         L"", L"" },
+    { G_DOORS, L"Press {OLA_Use} to close",        L"", L"" },
     { G_DOORS, L"To open a door quickly, press {OLA_Use}. To open a door slowly, hold down {OLA_Use} and move forward or backward.",
-               L"To open a door, grab its handle and push or pull it. X still opens it in one go.",
-               L"To open a door, grab its handle and push or pull it. B still opens it in one go." },
+               L"", L"" },
     // (Test38) the chest holster and the hands-on reload come first; without them, Test37's wording
     { G_HOLSTER, L"To raise your camcorder, press {OLA_ToggleCamcorder}",
                  L"Your camcorder is on your right hip: take it with your right hand and bring it to your eye, or hold the right stick click" },
