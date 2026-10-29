@@ -180,12 +180,9 @@ extern "C" void OLSound_Gasp() {
     SLog("[OLVR][BREATH] the held breath let out (VO_BRE_HGH_Short on his voice)");
 }
 
-// [DOOR] post a door sound (by Wwise name) on Miles's object (or the last object a sound played on), so
-// it is heard where he is even when the caller has no object of its own.
-extern "C" void OLSound_PostByName(const char* name, AkGameObjectID obj) {
-    if (!s_idsOk || !g_post || !g_getIdA || !name) return;
-    AkUniqueID id = g_getIdA(name);
-    if (!id) return;
+// [DOOR] the object a door sound should play on: the caller's, Miles's, or the last object the game
+// posted any event on - so it is heard where he is even when the caller has no object of its own.
+static AkGameObjectID SoundPortalObj(AkGameObjectID obj) {
     AkGameObjectID o = obj;
     if (!o) o = s_milesObj;
     if (!o) o = s_lastObj;
@@ -194,9 +191,27 @@ extern "C" void OLSound_PostByName(const char* name, AkGameObjectID obj) {
         for (int k = s_playN - 1; k >= 0; --k) if (s_play[k].obj) { o = s_play[k].obj; break; }
         ReleaseSRWLockShared(&s_lock);
     }
+    return o;
+}
+extern "C" void OLSound_PostByName(const char* name, AkGameObjectID obj) {
+    if (!s_idsOk || !g_post || !g_getIdA || !name) return;
+    AkUniqueID id = g_getIdA(name);
+    if (!id) return;
+    const AkGameObjectID o = SoundPortalObj(obj);
     if (!o) { SLog("[OLVR][DOOR] no Wwise game object yet for door sound %s", name); return; }
     g_post(id, o, 0, nullptr, nullptr, 0, nullptr, 0);
     SLog("[OLVR][DOOR] posted door sound %s on obj %u", name, (unsigned)o);
+}
+// [DOOR] stop that event on the same object, with a short fade: the closing event ends with a harsh
+// latch, so only its movement start is kept.
+extern "C" void OLSound_StopByName(const char* name, AkGameObjectID obj) {
+    if (!s_idsOk || !g_exec || !g_getIdA || !name) return;
+    AkUniqueID id = g_getIdA(name);
+    if (!id) return;
+    const AkGameObjectID o = SoundPortalObj(obj);
+    if (!o) return;
+    g_exec(id, AK_Stop, o, 120, kCurveLinear, 0);
+    SLog("[OLVR][DOOR] stopped door sound %s early on obj %u", name, (unsigned)o);
 }
 
 // ---- [AUDIODIAG] -----------------------------------------------------------------------------------
