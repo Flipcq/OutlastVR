@@ -1030,7 +1030,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             // opening tangent direction of the knob (unit) - used for hand-speed angular acceleration
             const float phir = phi0 * 0.0174532925f;
             const float tx = -sinf(phir), ty = cosf(phir);
-            const float openingDir = (nd->rev ? 1.0f : -1.0f);
+            const float openingDir = (nd.rev ? 1.0f : -1.0f);
             for (int k = 0; k < ng; ++k) {
                 const int h = gh[k];
                 // [DOOR] pin: effective hand = fixed grab point plus only the excess past the deadzone,
