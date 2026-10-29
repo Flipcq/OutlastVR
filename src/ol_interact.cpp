@@ -1080,37 +1080,37 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OL
             contact[h] = true;
             aC[h] = nd.ratio * nd.maxAng + sign * Wrap180(aTouch - phi0);
             dirA[h] = sign * (float)sd;
-        }
-        // [DOOR] open-hand collision box: check if the whole hand (wrist + fingertips) is crossing
-        // the door panel. If so, mark contact so the hand is pushed back out.
-        if (handOk[h] && !s_gripDown[h] && !s_grab[h].d) {
-            // hand direction: grip pose has fingers pointing along -Z; rotate by controller quaternion
-            const OLXrPose& hp = fh.hand[h];
-            const float qx = hp.qx, qy = hp.qy, qz = hp.qz, qw = hp.qw;
-            // rotate (0,0,-1) by quaternion -> finger direction in tracking space
-            const float fx = 2.0f * (qx*qz - qw*qy);
-            const float fy = 2.0f * (qy*qz + qw*qx);
-            const float fz = 1.0f - 2.0f * (qx*qx + qy*qy);
-            // apply yaw rotation (same as TrackToWorld) to get world direction
-            const float dirX =  s_cy * fx - s_sy * fz;
-            const float dirZ =  s_sy * fx + s_cy * fz;
-            const float fingerTipX = handW[h].x + dirX * kFingerLenUU;
-            const float fingerTipY = handW[h].y + dirZ * kFingerLenUU;
-            const float fingerTipZ = handW[h].z;
-            // box center: midpoint between wrist and fingertips
-            const float boxCX = (handW[h].x + fingerTipX) * 0.5f;
-            const float boxCY = (handW[h].y + fingerTipY) * 0.5f;
-            const float boxCZ = (handW[h].z + fingerTipZ) * 0.5f;
-            // panel normal (points toward the player's side)
-            const float nx = -sinf(phi0 * 0.0174532925f);
-            const float ny =  cosf(phi0 * 0.0174532925f);
-            // signed distance of box center to panel plane
-            const float dCenter = nx * (boxCX - nd.hinge.x) + ny * (boxCY - nd.hinge.y);
-            // box radius along normal: half-width + half-length * |cos(angle between hand dir and normal)|
-            const float dirDotNormal = nx * dirX + ny * dirZ;
-            const float boxRadius = kHandWidthUU + (kFingerLenUU * 0.5f) * fabsf(dirDotNormal);
-            if (fabsf(dCenter) < boxRadius) {
-                contact[h] = true;
+            // [DOOR] open-hand collision box: check if the whole hand (wrist + fingertips) is crossing
+            // the door panel. If so, keep contact active so the hand is pushed back out.
+            if (handOk[h] && !s_gripDown[h] && !s_grab[h].d) {
+                // hand direction: grip pose has fingers pointing along -Z; rotate by controller quaternion
+                const OLXrPose& hp = fh.hand[h];
+                const float qx = hp.qx, qy = hp.qy, qz = hp.qz, qw = hp.qw;
+                // rotate (0,0,-1) by quaternion -> finger direction in tracking space
+                const float fx = 2.0f * (qx*qz - qw*qy);
+                const float fy = 2.0f * (qy*qz + qw*qx);
+                const float fz = 1.0f - 2.0f * (qx*qx + qy*qy);
+                // apply yaw rotation (same as TrackToWorld) to get world direction
+                const float dirX =  s_cy * fx - s_sy * fz;
+                const float dirZ =  s_sy * fx + s_cy * fz;
+                const float fingerTipX = handW[h].x + dirX * kFingerLenUU;
+                const float fingerTipY = handW[h].y + dirZ * kFingerLenUU;
+                const float fingerTipZ = handW[h].z;
+                // box center: midpoint between wrist and fingertips
+                const float boxCX = (handW[h].x + fingerTipX) * 0.5f;
+                const float boxCY = (handW[h].y + fingerTipY) * 0.5f;
+                const float boxCZ = (handW[h].z + fingerTipZ) * 0.5f;
+                // panel normal (points toward the player's side)
+                const float nx = -sinf(phi0 * 0.0174532925f);
+                const float ny =  cosf(phi0 * 0.0174532925f);
+                // signed distance of box center to panel plane
+                const float dCenter = nx * (boxCX - nd.hinge.x) + ny * (boxCY - nd.hinge.y);
+                // box radius along normal: half-width + half-length * |cos(angle between hand dir and normal)|
+                const float dirDotNormal = nx * dirX + ny * dirZ;
+                const float boxRadius = kHandWidthUU + (kFingerLenUU * 0.5f) * fabsf(dirDotNormal);
+                if (fabsf(dCenter) < boxRadius) {
+                    contact[h] = true;
+                }
             }
         }
         int ng = 0; int gh[2];
