@@ -738,7 +738,7 @@ static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
-static const float kGrabUU = 32.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
+static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
 static const float kDoorWideUU = 80.0f;   // near enough that the right grip belongs to the door, not the camcorder
 // (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
 static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
@@ -806,6 +806,7 @@ static float s_grabA0[2] = {0.0f,0.0f};           // door angle at the grab (deg
 static float s_grabS[2] = {0.0f,0.0f};            // hand travel along that tangent since the grab (uu, + opens)
 static float s_grabSPrev[2] = {0.0f,0.0f};
 static int   s_grabSide[2] = {1,1};               // which face of the door the palm is on
+static V3    s_grabKnobCenter[2] = {{0,0,0},{0,0,0}}; // [DOOR] center point of the knob at grab time (hand guide)
 static float s_anchorYaw[2] = {0.0f,0.0f};        // door swing since the grab, for the locked wrist
 static bool  s_anchorLock[2] = {false,false};     // true while the wrist is pinned to the door, not the controller
 static ULONGLONG s_grabHapUntil[2] = {0,0};       // light buzz while a hand is holding a knob
@@ -988,6 +989,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         s_grabTan[h] = { sign * -sinf(phi0), sign * cosf(phi0), 0.0f };
         s_grabA0[h] = nd.ratio * nd.maxAng;
         s_grabS[h] = s_grabSPrev[h] = 0.0f;
+        // [DOOR] center point of the knob at grab time: the hand is guided to this fixed spot on the
+        // handle so it always ends up at the same correct position, whatever angle the controller was
+        // held at when the grab happened.
+        s_grabKnobCenter[h] = nd.knob;
         // which face of the door the palm is on: keep Miles's hand on that face's handle for the whole
         // grab, so the hand always ends up at the same correct spot on the knob - never inside the door
         // or between the two knobs (a door has one handle on each face). The side is fixed at grab time
@@ -1242,7 +1247,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float ipy = nd.hinge.y + nky - py * dNative;
             s_doorAnchor[h] = { ipx + px * s_grabSide[h] * off,
                                 ipy + py * s_grabSide[h] * off,
-                                nd.knob.z };
+                                s_grabKnobCenter[h].z };
             s_doorAnchorOn[h] = true;
             s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
         }
@@ -2343,7 +2348,7 @@ extern "C" void OLInteract_Tick() {
             bool on = false;
             if (s_hold[h] && (s_cl == CL_IDLE || s_cl == CL_PULLING)) { s_anchorW[h] = s_holdW[h]; on = true; }
             else if (s_doorAnchorOn[h]) { s_anchorW[h] = s_doorAnchor[h]; on = true; }
-            const float rate = on ? 60.0f : 9.0f;   // strong magnet: hand snaps to the knob faster
+            const float rate = on ? 18.0f : 9.0f;    // gentle magnet: hand settles to the knob without snapping
             s_anchorWt[h] += ((on ? 1.0f : 0.0f) - s_anchorWt[h]) * (1.0f - expf(-rate * dt));
             if (!on && s_anchorWt[h] < 0.01f) s_anchorWt[h] = 0.0f;
         }
