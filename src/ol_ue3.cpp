@@ -6822,10 +6822,9 @@ void OLUE3_Init() {
     // [PROMPTS] (Test37) the game's button hints name the Quest 3 controls (ol_prompts.cpp).
     OLPrompts_Install(g_base);
 
-    // [SOUND] (Test43) Wwise, through the exports OLGame.exe carries by name (ol_sound.cpp) - (Test45) only
-    // for cover-your-mouth.
-    if (g_soundWanted) OLSound_Install();
-    else OLProxyLog("[OLVR][SOUND] cover-your-mouth is off - the Wwise hooks are not installed");
+    // [SOUND] (Test43) Wwise, through the exports OLGame.exe carries by name (ol_sound.cpp). The door
+    // sounds the hands make need these hooks even when cover-your-mouth ([Motion] CoverMouth) is off.
+    OLSound_Install();
 
     // GetPlayerViewPoint = the parallax injection point. Without it the split still works, it
     // just has no depth, so a failure here degrades to flat rather than breaking the split.

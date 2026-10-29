@@ -736,26 +736,28 @@ static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
-static const float kGrabUU = 55.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // generous handle area
-static const float kDoorWideUU = 95.0f;   // near enough that the right grip belongs to the door, not the camcorder
+static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
+static const float kDoorWideUU = 80.0f;   // near enough that the right grip belongs to the door, not the camcorder
 // (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
-static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 110.0f;
+static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
 static const float kPushAccel = 1600.0f;                 // deg/s^2 a hand can give a heavy door
 static const float kFricVisc = 1.1f, kFricCoul = 22.0f;  // hinge friction: lighter door, easier to move
 static const float kHeroRadius = 26.0f;                  // Miles, for the panel to stop against
 // [DOOR] hold-and-pull tuning. The handle no longer copies the hand's ANGLE around the hinge: the hand's
 // own travel along the knob's opening tangent is scaled into door degrees. That gives the arm its
-// amplitude (a 40 cm pull can swing a 95 deg door all the way) and the same pull always gives the same
-// rotation, wherever the hand is around the hinge.
+// amplitude (a 50 cm pull can swing a 95 deg door all the way) and the same pull always gives the same
+// rotation, wherever the hand is around the hinge. The spring is deliberately soft: the door follows the
+// hand's acceleration and speed instead of snapping to the target, so a tiny pull no longer flings it.
 static const float kGrabDeadzone = 6.0f;     // small hand wiggles do not move the door (mask bad placements)
-static const float kHandleGain = 2.6f;       // door degrees per uu of hand travel along the opening tangent
-static const float kHandleK = 260.0f, kHandleC = 26.0f;  // how stiffly the door follows that target
-static const float kHandleVelGain = 10.0f;   // deg/s^2 per (uu/s) of hand speed (angular acceleration with hand speed)
+static const float kHandleGain = 1.7f;       // door degrees per uu of hand travel along the opening tangent
+static const float kHandleK = 110.0f, kHandleC = 18.0f;  // how softly the door follows that target
+static const float kHandleVelGain = 0.8f;    // deg/s^2 per (uu/s) of hand speed (angular acceleration with hand speed)
+static const float kHandleMaxOm = 150.0f;    // deg/s the hand can swing it at most (no zip)
 static const float kReleaseTravel = 85.0f;   // hand travel from the grab point before it lets go (cm)
-static const float kAutoOpenRatio = 0.55f;   // let go past this (still opening) -> the door finishes opening
-static const float kAutoCloseMove = 18.0f;   // pulled/pushed this far toward closing at let-go -> it closes by itself
-static const float kOpenSwing = 110.0f;      // deg/s used to finish an auto-open / auto-close
-static const float kHandleSide = 6.0f;       // keep Miles's palm this far off the handle's face, not inside the door
+static const float kAutoOpenRatio = 0.70f;   // let go past this (still opening) -> the door finishes opening
+static const float kAutoCloseMove = 24.0f;   // pulled/pushed this far toward closing at let-go -> it closes by itself
+static const float kOpenSwing = 60.0f;       // deg/s used to finish an auto-open / auto-close
+static const float kHandleSide = 0.0f;       // put Miles's palm exactly on the knob (the knob already sits off the door face)
 // [DOORPUSH] which side of which door each open hand is on (0 = not on any panel)
 static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
@@ -877,7 +879,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         Grab& g = s_grab[h];
         // [DOOR] light buzz while a hand holds a knob
         if (s_grabFixed[h] && now > s_grabHapUntil[h]) { s_grabHapUntil[h] = now + 350; OLXR_HapticPulse(h, 0.25f, 15); }
-        if (!handOk[h] || ClimbHolding(h) || (h == 1 && g_camButton)) {
+        if (!handOk[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton))) {
             s_grabFixed[h] = false; s_anchorLock[h] = false; g.d = nullptr;
             s_nearDoorWide[h] = false;
             continue;
@@ -964,11 +966,6 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         s_grabHapUntil[h] = now + 250;   // buzz while holding the knob
         DoorSim* ds = SimFor(nd.d, false);
         if (ds) { ds->autoRun = false; ds->sndOpened = ds->sndClosed = false; }
-        // the right hand was holding the camcorder: put it away so it is not in the hand that grabs the door
-        if (h == 1 && CamInRightHand()) {
-            s_hState = H_HOLSTERED; s_blendSpeed = 1.0f / 0.28f; s_returnClick = true;
-            ILog("[OLVR][HOLSTER] camcorder stowed: the right hand takes the door");
-        }
         OLXR_HapticPulse(h, 0.5f, 40);
         Learn(LN_DOOR);
         ILog("[OLVR][DOORPHYS] handle grabbed by the %s hand (%.0f uu off) - ratio %.2f, max %.0f deg%s%s",
@@ -996,7 +993,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         // open hands against this panel: which side, how far in
         bool contact[2] = { false, false }; float aC[2] = { 0, 0 }, dirA[2] = { 0, 0 };
         for (int h = 0; h < 2; ++h) {
-            if (!handOk[h] || s_gripDown[h] || ClimbHolding(h) || (h == 1 && g_camButton) || (h == 0 && s_bat)) {
+            if (!handOk[h] || s_gripDown[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton)) || (h == 0 && s_bat)) {
                 if (s_pushDoor[h] == nd.d) { s_pushDoor[h] = nullptr; s_pushSide[h] = 0; }
                 continue;
             }
@@ -1075,6 +1072,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             alpha /= (float)ng;
             if (alpha > 2500.0f) alpha = 2500.0f; if (alpha < -2500.0f) alpha = -2500.0f;
             Om += alpha * dt;
+            if (Om > kHandleMaxOm) Om = kHandleMaxOm; if (Om < -kHandleMaxOm) Om = -kHandleMaxOm;
         } else if (s->autoRun) {
             // a door released past the opening threshold finishes on its own; one pushed toward closing
             // while open closes on its own. It drives all the way instead of coasting to a stop.

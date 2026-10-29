@@ -82,6 +82,7 @@ static SRWLOCK s_lock = SRWLOCK_INIT;
 static volatile ULONGLONG s_lastHeavyMs = 0;
 static volatile long s_loopOn = 0;            // a stress / danger / pain breath loop is running (no stop yet)
 static AkGameObjectID s_milesObj = 0;          // the object his breath plays on
+static AkGameObjectID s_lastObj = 0;           // the last object any game event played on (door sounds fall back to it)
 static volatile long s_hush = 0;
 static volatile long s_breathPosts = 0, s_hushPaused = 0;
 static int EvIndex(AkUniqueID id) { for (int i = 0; i < kEvN; ++i) if (s_ev[i].id == id) return i; return -1; }
@@ -127,18 +128,21 @@ static void Track(AkUniqueID id, AkPlayingID pid, AkGameObjectID obj) {
 }
 static AkPlayingID HookPostId(AkUniqueID id, AkGameObjectID obj, uint32_t fl, AkCallbackFunc cb, void* ck, uint32_t ne, void* ex, AkPlayingID pl) {
     const AkPlayingID r = o_PostId(id, obj, fl, cb, ck, ne, ex, pl);
+    if (obj) s_lastObj = obj;
     Seen(id, nullptr, nullptr, obj);
     if (s_idsOk) Track(id, r, obj);
     return r;
 }
 static AkPlayingID HookPostA(const char* nm, AkGameObjectID obj, uint32_t fl, AkCallbackFunc cb, void* ck, uint32_t ne, void* ex, AkPlayingID pl) {
     const AkPlayingID r = o_PostA(nm, obj, fl, cb, ck, ne, ex, pl);
+    if (obj) s_lastObj = obj;
     if (nm && g_getIdA) Seen(g_getIdA(nm), nm, nullptr, obj);
     if (s_idsOk && nm && g_getIdA) Track(g_getIdA(nm), r, obj);
     return r;
 }
 static AkPlayingID HookPostW(const wchar_t* nm, AkGameObjectID obj, uint32_t fl, AkCallbackFunc cb, void* ck, uint32_t ne, void* ex, AkPlayingID pl) {
     const AkPlayingID r = o_PostW(nm, obj, fl, cb, ck, ne, ex, pl);
+    if (obj) s_lastObj = obj;
     if (nm && g_getIdW) Seen(g_getIdW(nm), nullptr, nm, obj);
     if (s_idsOk && nm && g_getIdW) Track(g_getIdW(nm), r, obj);
     return r;
@@ -184,12 +188,13 @@ extern "C" void OLSound_PostByName(const char* name, AkGameObjectID obj) {
     if (!id) return;
     AkGameObjectID o = obj;
     if (!o) o = s_milesObj;
+    if (!o) o = s_lastObj;
     if (!o) {
         AcquireSRWLockShared(&s_lock);
         for (int k = s_playN - 1; k >= 0; --k) if (s_play[k].obj) { o = s_play[k].obj; break; }
         ReleaseSRWLockShared(&s_lock);
     }
-    if (!o) return;
+    if (!o) { SLog("[OLVR][DOOR] no Wwise game object yet for door sound %s", name); return; }
     g_post(id, o, 0, nullptr, nullptr, 0, nullptr, 0);
     SLog("[OLVR][DOOR] posted door sound %s on obj %u", name, (unsigned)o);
 }
