@@ -1165,7 +1165,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         const float tn = An / maxA;
         // [DOOREVENT] (Test43) a door the hands open from shut tells the game, as its own opening does
         unsigned char dst = 0xFF;
-        if (!s->evOpen && (ng || anyPush) && s->startR < 0.05f && tn > s->startR + 0.03f) {
+        if (!s->evOpen && (ng) && s->startR < 0.05f && tn > s->startR + 0.03f) {
             s->evOpen = true;
             if (F.dstate && Rd(nd.d, F.dstate, &dst) && dst != 3 && dst != 4) {
                 int fired = 0;
@@ -1176,7 +1176,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             }
         }
         // ... and one they swing shut, as its own closing does
-        if (tn <= 0.0005f && nd.ratio > 0.01f && (ng || anyPush || fabsf(Om) > 1.0f || s->om != 0.0f) &&
+        if (tn <= 0.0005f && nd.ratio > 0.01f && (ng || fabsf(Om) > 1.0f || s->om != 0.0f) &&
             F.dstate && Rd(nd.d, F.dstate, &dst) && (dst == 1 || dst == 2)) {
             OLUE3_DoorTriggerEvent(nd.d, 2);
             WrB(nd.d, F.dstate, 0);
@@ -1188,10 +1188,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             if (fabsf(tn - s->lastHapR) > 0.025f) {                     // the hinge "creak"
                 for (int k = 0; k < ng; ++k) OLXR_HapticPulse(gh[k], 0.12f, 18);
                 s->lastHapR = tn;
-                if (ng || anyPush) Learn(LN_DOOR);
+                if (ng) Learn(LN_DOOR);
             }
             static ULONGLONG s_logMs = 0;
-            if ((ng || anyPush) && now - s_logMs > 1500) {
+            if ((ng) && now - s_logMs > 1500) {
                 s_logMs = now;
                 ILog("[OLVR][DOORPHYS] %s: ratio %.2f -> %.2f at %.0f deg/s", ng ? "handle" : "push", nd.ratio, tn, Om);
             }
@@ -1220,7 +1220,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             s_doorAnchorOn[h] = true;
             s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
         }
-        if (!ng && !anyPush && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
+        if (!ng && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
     }
 }
 
