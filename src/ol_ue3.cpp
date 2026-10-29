@@ -4399,15 +4399,13 @@ static bool PoseApplyVisible(void* comp) {
                 }
                 wristTarget = IQBlend(wristTarget, IQMul(camQ, IQConj(g_gripAux.q)), camHold);
             }
-            {   // [DOOR] a hand holding a knob is pinned to a fixed grip pose: palm down (dorsum up) and
-                // fingers along the body's facing. The UE component frame is +X forward, +Y right, +Z up,
-                // so the fingers are +X and the dorsum is +Z. Any controller angle is hidden.
-                const bool doorLock = OLInteract_HandAnchorLock(hand) != 0;
-                if (doorLock) {
-                    wristTarget = IQFromFrames({ 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, cameraForward, worldUp);
-                }
+            const bool doorLock = OLInteract_HandAnchorLock(hand) != 0;
+            if (doorLock) {   // [DOOR] fixed grip pose: palm down, fingers along the body's facing.
+                // UE hand frame: +X forward (fingers), +Y right, +Z up (dorsum). Palm is -Y.
+                wristTarget = IQFromFrames({ 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, cameraForward, worldUp);
             }
-            {   // [DOORPALM] an open hand pushing a door turns its palm toward the panel, smoothly
+            if (!doorLock) {   // [DOORPALM] an open hand near/pushing a door turns its palm toward it.
+                // Skipped while the hand holds the knob (that pose is fixed above) so the two never fight.
                 float pp[3], pn[3];
                 const float pw = OLInteract_HandPushNormal(hand, pp, pn);
                 if (pw > 0.0f) {
@@ -4418,7 +4416,7 @@ static bool PoseApplyVisible(void* comp) {
                         const float dl = IVLen(dir);
                         if (dl > 0.5f) {
                             dir = IVScale(dir, 1.0f / dl);
-                            const VIk3 palmNow = IQRotate(wristTarget, { 0.0f, 0.0f, -1.0f });   // -Z = palm in the UE hand frame
+                            const VIk3 palmNow = IQRotate(wristTarget, { 0.0f, -1.0f, 0.0f });   // -Y = palm in the UE hand frame
                             if (IVLen(palmNow) > 0.1f) {
                                 const QIk4 align = IQFromTo(palmNow, dir);
                                 const QIk4 want = IQMul(align, wristTarget);

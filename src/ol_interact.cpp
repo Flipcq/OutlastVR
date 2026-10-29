@@ -1054,8 +1054,9 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             if (sd == 0 && fabsf(perp) > kContactUU + 2.0f) sd = perp > 0 ? 1 : -1;
             s_pushDoor[h] = nd.d; s_pushSide[h] = sd;
             // [DOORPALM] turn the palm toward the panel as soon as the hand is near it (even when the
-            // door is still and the hand is not touching yet), so the approach reads correctly.
-            if (fabsf(perp) < 30.0f) {
+            // door is still and the hand is not touching yet). No turn in a small area around the knob:
+            // there the fixed grip pose handles the hand, so the two never fight.
+            if (fabsf(perp) < 18.0f && Len(Sub(handW[h], nd.knob)) > 25.0f) {
                 const float pn = phi0 * 0.0174532925f;
                 const float nx = -sinf(pn), ny = cosf(pn);
                 int psd = sd;
@@ -1269,10 +1270,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         }
         if (!ng && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
     }
-    // [DOORPALM] ease the palm-turn weight: snaps on quickly while pushing, fades out a bit slower
+    // [DOORPALM] ease the palm-turn weight: smooth turn while pushing, gentle release
     for (int h = 0; h < 2; ++h) {
         const float target = s_pushActive[h] ? 1.0f : 0.0f;
-        const float rate = target > s_pushW[h] ? 40.0f : 8.0f;
+        const float rate = target > s_pushW[h] ? 18.0f : 6.0f;
         s_pushW[h] += (target - s_pushW[h]) * (1.0f - expf(-rate * dt));
         if (!s_pushActive[h] && s_pushW[h] < 0.01f) s_pushW[h] = 0.0f;
     }
