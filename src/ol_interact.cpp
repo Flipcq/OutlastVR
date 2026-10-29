@@ -774,12 +774,6 @@ static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
 static ULONGLONG s_pushLockedMs = 0;
 static ULONGLONG s_pushSuppressUntil[2] = { 0, 0 };   // [DOOR] no push from a hand that just let go of a door
-// [DOORPALM] while an open hand pushes a door: the world point on the panel and the direction into
-// the door (player -> panel), and an eased weight, so ol_ue3 can turn the palm toward the door.
-static V3    s_pushPoint[2] = {};
-static V3    s_pushNormal[2] = {};
-static float s_pushW[2] = { 0.0f, 0.0f };
-static bool  s_pushActive[2] = { false, false };
 static float s_gripW[2] = { 0.0f, 0.0f };     // [DOORGRIP] eased
 struct DoorSim { void* d; float om, lastCmd, lastHapR; bool live; bool pushed; ULONGLONG ms; float startR; bool evOpen, sndOpened, sndClosed; bool autoRun; float autoTo; ULONGLONG gameUntil; int sndDir; float sndFrom; ULONGLONG sndBlockUntil, sndCloseCut; unsigned char sndMat; };
 // [DOOR] the material event name for a door, so the fade-out can stop the event that is playing.
@@ -855,7 +849,6 @@ static float BodyYaw();             // (Beta 1.1) [DOORLETGO] below
 static bool CamInRightHand();
 static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
     s_doorAnchorOn[0] = s_doorAnchorOn[1] = false;
-    s_pushActive[0] = s_pushActive[1] = false;
     if (!g_on[ON_DOORS]) {
         s_grab[0].d = s_grab[1].d = nullptr; s_nearN = 0; s_nearKnob[0] = s_nearKnob[1] = false;
         s_nearDoorWide[0] = s_nearDoorWide[1] = false;
@@ -1041,23 +1034,6 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             }
             const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
             const float r = sqrtf(hx * hx + hy * hy);
-            // [DOORPALM] turn the palm toward the panel as soon as the hand is near it - for BOTH hands
-            // and independent of the hand's angle around the hinge (the old inBand check skipped one).
-            // No turn within 35 uu of the knob (the grip pose owns that area).
-            {
-                const float pn = phi0 * 0.0174532925f;
-                const float pnx = -sinf(pn), pny = cosf(pn);
-                const float perp0 = hx * pnx + hy * pny;
-                const float t0 = hx * cosf(pn) + hy * sinf(pn);
-                if (fabsf(perp0) < 18.0f && t0 > -25.0f && t0 < width + 25.0f &&
-                    handW[h].z > nd.knob.z - 95.0f && handW[h].z < nd.knob.z + 120.0f &&
-                    Len(Sub(handW[h], nd.knob)) > 35.0f) {
-                    const int psd = perp0 < 0.0f ? -1 : 1;
-                    s_pushPoint[h] = handW[h];
-                    s_pushNormal[h] = { -(float)psd * pnx, -(float)psd * pny, 0.0f };
-                    s_pushActive[h] = true;
-                }
-            }
             const bool inBand = r >= 10.0f && r <= width && handW[h].z > nd.knob.z - 95.0f && handW[h].z < nd.knob.z + 120.0f;
             const float aHand = atan2f(hy, hx) * 57.2957795f, d = Wrap180(aHand - phi0);
             if (!inBand || fabsf(d) > 60.0f) {                         // not at this panel
@@ -1271,13 +1247,6 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
         }
         if (!ng && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
-    }
-    // [DOORPALM] ease the palm-turn weight: smooth turn while pushing, gentle release
-    for (int h = 0; h < 2; ++h) {
-        const float target = s_pushActive[h] ? 1.0f : 0.0f;
-        const float rate = target > s_pushW[h] ? 18.0f : 6.0f;
-        s_pushW[h] += (target - s_pushW[h]) * (1.0f - expf(-rate * dt));
-        if (!s_pushActive[h] && s_pushW[h] < 0.01f) s_pushW[h] = 0.0f;
     }
 }
 
@@ -2521,13 +2490,6 @@ extern "C" float OLInteract_HandAnchorYaw(int h) {
     return s_anchorYaw[h];
 }
 // [DOORPALM] while an open hand pushes a door: the world point on the panel, the direction into the
-// door and a 0..1 weight. ol_ue3 turns the palm toward the door with it, smoothly.
-extern "C" float OLInteract_HandPushNormal(int h, float outPoint[3], float outNormal[3]) {
-    if (h < 0 || h > 1) return 0.0f;
-    if (outPoint) { outPoint[0] = s_pushPoint[h].x; outPoint[1] = s_pushPoint[h].y; outPoint[2] = s_pushPoint[h].z; }
-    if (outNormal) { outNormal[0] = s_pushNormal[h].x; outNormal[1] = s_pushNormal[h].y; outNormal[2] = s_pushNormal[h].z; }
-    return s_pushW[h];
-}
 // [CLIMB] (Test40) In a climb, ledge hang or on a ladder: this hand holds on (it plays the game's arm).
 extern "C" int OLInteract_ClimbHold(int h) {
     if (h < 0 || h > 1 || !s_tickMs || GetTickCount64() - s_tickMs > 250 || !g_on[ON_CLIMB]) return 0;

@@ -4415,28 +4415,6 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
-            if (!doorLock) {   // [DOORPALM] an open hand near/pushing a door turns its palm toward it.
-                // Skipped while the hand holds the knob (that pose is handled above) so the two never fight.
-                float pp[3], pn[3];
-                const float pw = OLInteract_HandPushNormal(hand, pp, pn);
-                if (pw > 0.0f) {
-                    VIk3 c0, c1;
-                    const float p1[3] = { pp[0] + pn[0], pp[1] + pn[1], pp[2] + pn[2] };
-                    if (WorldToComp(comp, pp, &c0) && WorldToComp(comp, p1, &c1)) {
-                        VIk3 dir = IVSub(c1, c0);
-                        const float dl = IVLen(dir);
-                        if (dl > 0.5f) {
-                            dir = IVScale(dir, 1.0f / dl);
-                            const VIk3 palmNow = IQRotate(wristTarget, { 0.0f, -1.0f, 0.0f });   // -Y = palm in the UE hand frame
-                            if (IVLen(palmNow) > 0.1f) {
-                                const QIk4 align = IQFromTo(palmNow, dir);
-                                const QIk4 want = IQMul(align, wristTarget);
-                                wristTarget = IQBlend(wristTarget, want, pw);
-                            }
-                        }
-                    }
-                }
-            }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
         }
