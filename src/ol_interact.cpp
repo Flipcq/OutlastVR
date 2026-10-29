@@ -763,6 +763,9 @@ static const float kSndMove = 0.15f;         // door travel (ratio) before a mov
 static const float kSndSpeed = 25.0f;        // deg/s; slower than this and it is only a nudge / a held door
 static const ULONGLONG kSndBlockMs = 400;    // no new movement sound for this long after one (faster repeat)
 static const ULONGLONG kSndCloseCutMs = 900; // keep only the start of the closing sound (harsh latch tail cut more)
+// [DOOR] max arm reach: once the hand is this far from the grab point the door no longer follows it
+// (the arm is fully extended, so the door stops moving instead of the hand staying behind).
+static const float kMaxArmReachUU = 95.0f;   // cm beyond which the door stops following the hand
 // [DOORPUSH] which side of which door each open hand is on (0 = not on any panel)
 static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
@@ -942,6 +945,12 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                             ds->sndDir = 0; ds->sndFrom = nd->ratio; ds->sndBlockUntil = 0; ds->sndCloseCut = 0;
                             ds->lastCmd = nd->ratio; ds->startR = nd->ratio;
                             ds->sndOpened = ds->sndClosed = false;   // let the finish play its sound
+                            // [DOOR] play the door movement sound only when the door is released and
+                            // finishes opening/closing on its own - not while holding or nudging it.
+                            if (OLSound_Ready()) {
+                                const char* sndName = (ds->autoTo > 0.5f) ? "EV_Opening_Metal_Door" : "EV_Opening_Metal_Door";
+                                OLSound_PostByName(sndName, 0);
+                            }
                             ILog("[OLVR][DOORPHYS] auto-finish door at ratio %.2f (hand travel %+.0f uu) -> %s",
                                  nd->ratio, sNow, ds->autoTo > 0.5f ? "opening" : "closing");
                         }
@@ -1081,11 +1090,16 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                 float sTravel = dx * s_grabTan[h].x + dy * s_grabTan[h].y;
                 if (fabsf(sTravel) <= kGrabDeadzone) sTravel = 0.0f;
                 else sTravel -= (sTravel > 0.0f ? kGrabDeadzone : -kGrabDeadzone);
+                // [DOOR] arm fully extended: once the hand is beyond kMaxArmReachUU from the grab
+                // point the door stops following it (the arm can't reach further).
+                const bool armExtended = fabsf(sTravel) > kMaxArmReachUU;
                 const float vTravel = (sTravel - s_grabSPrev[h]) / dt;
                 s_grabS[h] = sTravel; s_grabSPrev[h] = sTravel;
                 float target = s_grabA0[h] + kHandleGain * sTravel;
                 if (target < lo) target = lo; if (target > hi) target = hi;
-                alpha += kHandleK * (target - A) - kHandleC * Om + kHandleVelGain * vTravel;
+                if (!armExtended) {
+                    alpha += kHandleK * (target - A) - kHandleC * Om + kHandleVelGain * vTravel;
+                }
             }
             alpha /= (float)ng;
             if (alpha > 2500.0f) alpha = 2500.0f; if (alpha < -2500.0f) alpha = -2500.0f;
@@ -1106,20 +1120,8 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         float An = A + Om * dt;
         // pushing hands: the panel passes through the hand (like it passes through Miles)
         // so the door never bounces back on the hand when you try to open or close it.
-        bool anyPush = false;
-        for (int h = 0; h < 2; ++h) {
-            if (!contact[h]) continue;
-            anyPush = true;
-            const float need = (aC[h] - A) / dt, maxDv = kPushAccel * dt;
-            float dv = need - Om; if (dv > maxDv) dv = maxDv; if (dv < -maxDv) dv = -maxDv;
-            if (dirA[h] * dv < 0.0f) Om += dv;                         // push the door away from the hand
-            An = A + Om * dt;
-        }
-        if (anyPush) { s->pushed = true; s->autoRun = false; }
-        else if (s->pushed) {
-            s->pushed = false;
-            if (fabsf(Om) > 50.0f) ILog("[OLVR][DOORPHYS] shoved: the door swings on at %.0f deg/s", fabsf(Om));
-        }
+        // Contact is still detected below so open hands stay on the panel surface,
+        // but no physical force is applied - the door swings freely through the hand.
         // stops: open (a soft bounce), closed (it latches), can't-close doors stay where they are
         if (An > hi) {
             An = hi;
@@ -1138,32 +1140,13 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         }
         // [DOOR] movement sound: only once the door has really moved in one direction (a nudge or a
         // held door stays silent) and never twice for the same swing. The sound starts only after the
-        // door has been moved enough to open/close on its own, and the closing event's harsh latch is
-        // cut after a moment, so only the movement itself is heard - never the strident tail, and never
-        // twice for the same swing.
-        if (ng || anyPush || s->autoRun) {
-            const float sndRatio = An / maxA;
-            const int dir = fabsf(Om) > kSndSpeed ? (Om > 0.0f ? 1 : -1) : 0;
-            if (dir && dir != s->sndDir) { s->sndDir = dir; s->sndFrom = sndRatio; }   // a new swing
-            if (dir && now >= s->sndBlockUntil && fabsf(sndRatio - s->sndFrom) > kSndMove) {
-                if (dir > 0 && !s->sndOpened && An < hi - 0.05f * maxA) {
-                    // sound the opening as soon as the door moves in a new swing
-                    OLSound_PostByName(anyPush ? "EV_Push_Wood_Door" : "EV_Opening_Wood_Door", 0);
-                    s->sndOpened = true; s->sndClosed = false;
-                    s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
-                } else if (dir < 0 && !s->sndClosed && An > lo + 0.08f * maxA) {
-                    // use the same opening sound for closing too - consistent door movement sound
-                    if (s->sndFrom - sndRatio >= kSndMove) {
-                        OLSound_PostByName(anyPush ? "EV_Push_Wood_Door" : "EV_Opening_Wood_Door", 0);
-                        s->sndClosed = true; s->sndOpened = false;
-                        s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
-                        s->sndCloseCut = now + kSndCloseCutMs;
-                    }
-                }
-            }
-        }
-        // pushing hands always stay on the panel surface: without this the hand went on to where the
-        // controller was and the fingers sank through the door whenever it moved away fast enough.
+        // [DOOR] movement sound now only plays on release (auto-finish) above,
+        // not while holding or nudging the door - so the sound is not repeated
+        // for every small movement and only fires once when the door lets go.
+        (void)kSndSpeed; (void)kSndMove; (void)kSndBlockMs; (void)kSndCloseCutMs;
+
+        // pushing hands: the panel passes through the hand (like it passes through Miles)
+        // so the door never bounces back on the hand when you try to open or close it.
         for (int h = 0; h < 2; ++h) {
             if (!contact[h]) continue;
             const float aPanel = (phi0 + sign * (An - A)) * 0.0174532925f;
