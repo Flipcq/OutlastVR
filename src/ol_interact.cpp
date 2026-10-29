@@ -737,7 +737,7 @@ static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
-static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
+static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 3.5f;  // the hand must be at the handle
 static const float kDoorWideUU = 80.0f;   // near enough that the right grip belongs to the door, not the camcorder
 // (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
 static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
@@ -759,10 +759,10 @@ static const float kAutoOpenRatio = 0.70f;   // let go past this (still opening)
 static const float kAutoCloseMove = 24.0f;   // pulled/pushed this far toward closing at let-go -> it closes by itself
 static const float kOpenSwing = 60.0f;       // deg/s used to finish an auto-open / auto-close
 static const float kHandleFaceUU = 6.0f;     // handle-to-handle depth of a door (the second knob is on the other face)
-static const float kSndMove = 0.25f;         // door travel (ratio) before a movement sound starts - only once it has been moved enough to open/close on its own (not a nudge or a held door)
+static const float kSndMove = 0.15f;         // door travel (ratio) before a movement sound starts (sooner = faster feedback)
 static const float kSndSpeed = 25.0f;        // deg/s; slower than this and it is only a nudge / a held door
-static const ULONGLONG kSndBlockMs = 700;    // no new movement sound for this long after one
-static const ULONGLONG kSndCloseCutMs = 600; // keep only the start of the closing sound (harsh latch tail cut earlier and longer)
+static const ULONGLONG kSndBlockMs = 400;    // no new movement sound for this long after one (faster repeat)
+static const ULONGLONG kSndCloseCutMs = 900; // keep only the start of the closing sound (harsh latch tail cut more)
 // [DOORPUSH] which side of which door each open hand is on (0 = not on any panel)
 static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
@@ -1104,16 +1104,16 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             Om *= expf(-kFricVisc * dt);
         }
         float An = A + Om * dt;
-        // pushing hands: the panel may not end up inside a hand
+        // pushing hands: the panel passes through the hand (like it passes through Miles)
+        // so the door never bounces back on the hand when you try to open or close it.
         bool anyPush = false;
         for (int h = 0; h < 2; ++h) {
-            if (!contact[h] || dirA[h] * (An - aC[h]) <= 0.0f) continue;
+            if (!contact[h]) continue;
             anyPush = true;
             const float need = (aC[h] - A) / dt, maxDv = kPushAccel * dt;
             float dv = need - Om; if (dv > maxDv) dv = maxDv; if (dv < -maxDv) dv = -maxDv;
-            if (dirA[h] * dv < 0.0f) Om += dv;                         // only ever pushed away from the hand
+            if (dirA[h] * dv < 0.0f) Om += dv;                         // push the door away from the hand
             An = A + Om * dt;
-            if (dirA[h] * (An - aC[h]) > 0.05f) OLXR_HapticPulse(h, 0.22f, 16);   // too heavy to keep up this frame
         }
         if (anyPush) { s->pushed = true; s->autoRun = false; }
         else if (s->pushed) {
@@ -2334,7 +2334,7 @@ extern "C" void OLInteract_Tick() {
             bool on = false;
             if (s_hold[h] && (s_cl == CL_IDLE || s_cl == CL_PULLING)) { s_anchorW[h] = s_holdW[h]; on = true; }
             else if (s_doorAnchorOn[h]) { s_anchorW[h] = s_doorAnchor[h]; on = true; }
-            const float rate = on ? 14.0f : 9.0f;
+            const float rate = on ? 40.0f : 9.0f;   // stronger magnet: hand snaps to the knob faster
             s_anchorWt[h] += ((on ? 1.0f : 0.0f) - s_anchorWt[h]) * (1.0f - expf(-rate * dt));
             if (!on && s_anchorWt[h] < 0.01f) s_anchorWt[h] = 0.0f;
         }
