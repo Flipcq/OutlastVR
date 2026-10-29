@@ -213,6 +213,15 @@ extern "C" void OLSound_StopByName(const char* name, AkGameObjectID obj) {
     g_exec(id, AK_Stop, o, 120, kCurveLinear, 0);
     SLog("[OLVR][DOOR] stopped door sound %s early on obj %u", name, (unsigned)o);
 }
+// [DOOR] set a Wwise RTPC (e.g. OpeningDoorIntensity) globally, so the next door event plays its
+// slow / calm variant. Missing RTPC, export or object is a silent no-op.
+extern "C" void OLSound_SetRTPCByName(const char* name, float v) {
+    if (!s_idsOk || !o_SetRtpc || !g_getIdA || !name) return;
+    const AkUniqueID id = g_getIdA(name);
+    if (!id) return;
+    o_SetRtpc(id, v, 0, 0, 0);   // 0 = global (AK_INVALID_GAME_OBJECT)
+    SLog("[OLVR][DOOR] RTPC %s = %.2f (global)", name, v);
+}
 
 // ---- [AUDIODIAG] -----------------------------------------------------------------------------------
 static volatile long s_lisCalls[4] = {}, s_activeCalls = 0, s_obsCalls = 0, s_stateCalls = 0, s_rtpcCalls = 0;
@@ -260,6 +269,31 @@ extern "C" void OLSound_Report() {
 }
 
 static void* Exp(const char* n) { return (void*)GetProcAddress(GetModuleHandleW(nullptr), n); }
+// Find an export whose name contains `sub` (used for Wwise setters whose mangled name varies between
+// SDK versions). For SetRTPCValue we must pick the ID overload, not the name overload: a wrong
+// signature would crash, so names taking a string (PEBD / PEB_W) are skipped.
+static void* ExpContains(const char* sub, bool skipStringArgs) {
+    HMODULE m = GetModuleHandleW(nullptr);
+    if (!m) return nullptr;
+    const unsigned char* base = (const unsigned char*)m;
+    const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+    const IMAGE_NT_HEADERS* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+    const IMAGE_DATA_DIRECTORY& ex = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!ex.Size) return nullptr;
+    const IMAGE_EXPORT_DIRECTORY* dir = (const IMAGE_EXPORT_DIRECTORY*)(base + ex.VirtualAddress);
+    const DWORD* names = (const DWORD*)(base + dir->AddressOfNames);
+    const WORD* ords = (const WORD*)(base + dir->AddressOfNameOrdinals);
+    const DWORD* funcs = (const DWORD*)(base + dir->AddressOfFunctions);
+    for (DWORD i = 0; i < dir->NumberOfNames; ++i) {
+        const char* nm = (const char*)(base + names[i]);
+        if (!strstr(nm, sub)) continue;
+        if (skipStringArgs && (strstr(nm, "PEBD") || strstr(nm, "PEB_W"))) continue;
+        return (void*)(base + funcs[ords[i]]);
+    }
+    return nullptr;
+}
 template <class T> static bool Hook(const char* name, void* fn, T* orig) {
     void* p = Exp(name);
     if (!p) return false;
@@ -271,6 +305,8 @@ extern "C" void OLSound_Install() {
     g_getIdA = (GetIdA_t)Exp("?GetIDFromString@SoundEngine@AK@@YAKPEBD@Z");
     g_getIdW = (GetIdW_t)Exp("?GetIDFromString@SoundEngine@AK@@YAKPEB_W@Z");
     g_post = (PostEventId_t)Exp("?PostEvent@SoundEngine@AK@@YAKK_KKP6AXW4AkCallbackType@@PEAUAkCallbackInfo@@@ZPEAXKPEAUAkExternalSourceInfo@@K@Z");
+    // SetRTPCValue by ID: only the numeric overload (string overloads are skipped by ExpContains).
+    o_SetRtpc = (SetRtpcId_t)ExpContains("SetRTPCValue", true);
     if (!g_exec || !g_getIdA || !g_post) {
         SLog("[OLVR][SOUND] Wwise exports not found in this OLGame.exe (exec %p, id %p, post %p) - breath gesture off", g_exec, g_getIdA, g_post);
         return;

@@ -72,6 +72,7 @@ extern "C" void  OLSound_Gasp();
 extern "C" void  OLSound_Report();
 extern "C" void  OLSound_PostByName(const char* name, uint64_t obj);  // [DOOR] post a Wwise door sound by name
 extern "C" void  OLSound_StopByName(const char* name, uint64_t obj);  // [DOOR] stop it early (the closing latch)
+extern "C" void  OLSound_SetRTPCByName(const char* name, float v);     // [DOOR] choose the slow/calm door sound
 extern "C" void  OLProxy_SetNvRequested(int on);                        // (Test43) [HANDNV] d3d9_proxy's night-vision state
 extern "C" int   OLUE3_SceneScripted();                                  // (Test44) [ROOMWALK]
 extern "C" void  OLUE3_ObjScanStep();                                    // (Test45) [OBJSCAN]
@@ -730,14 +731,14 @@ static void Battery(ULONGLONG now, const OLXrFrameHands& fh, const OLXrPad& p) {
 // obstacle together - OLDoor's procedural swings call it every tick), so its tick has nothing left to
 // chase. Whatever the game does with a door itself - X, an AI going through, a script, a locked
 // rattle - takes it straight back.
-struct NearDoor { void* d; V3 knob, hinge; float ratio, maxAng; bool locked, rev, cant, busy; float dist; };
+struct NearDoor { void* d; V3 knob, hinge; float ratio, maxAng; bool locked, rev, cant, busy; float dist; unsigned char mat; };
 static void* s_all[512]; static int s_allN = 0; static ULONGLONG s_allMs = 0;
 static NearDoor s_near[12]; static int s_nearN = 0;
 static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick's hands in the world
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
-static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 3.5f;  // the hand must be at the handle
+static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
 static const float kDoorWideUU = 80.0f;   // near enough that the right grip belongs to the door, not the camcorder
 // (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
 static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
@@ -766,10 +767,17 @@ static const ULONGLONG kSndCloseCutMs = 900; // keep only the start of the closi
 // [DOOR] max arm reach: once the hand is this far from the grab point the door no longer follows it
 // (the arm is fully extended, so the door stops moving instead of the hand staying behind).
 static const float kMaxArmReachUU = 95.0f;   // cm beyond which the door stops following the hand
+// [DOOR] how far in front of the panel the open hand's anchor sits, so the fingers (which extend past
+// the wrist) stop on the door surface instead of sinking through it.
+static const float kHandDepthUU = 11.0f;
+// [DOOR] after letting go of a held door, keep that hand out of the push loop for a moment so the
+// door can swing through it (it was just keeping the door from finishing its travel).
+static const ULONGLONG kPushSuppressMs = 2500;
 // [DOORPUSH] which side of which door each open hand is on (0 = not on any panel)
 static void* s_pushDoor[2] = { nullptr, nullptr };
 static int   s_pushSide[2] = { 0, 0 };
 static ULONGLONG s_pushLockedMs = 0;
+static ULONGLONG s_pushSuppressUntil[2] = { 0, 0 };   // [DOOR] no push from a hand that just let go of a door
 static float s_gripW[2] = { 0.0f, 0.0f };     // [DOORGRIP] eased
 struct DoorSim { void* d; float om, lastCmd, lastHapR; bool live; bool pushed; ULONGLONG ms; float startR; bool evOpen, sndOpened, sndClosed; bool autoRun; float autoTo; ULONGLONG gameUntil; int sndDir; float sndFrom; ULONGLONG sndBlockUntil, sndCloseCut; };
 // [DOOREVENT] (Test43) What the game's own door code does as a door opens and closes (OLGame.exe):
@@ -804,8 +812,9 @@ extern "C" void OLInteract_DevDoorEvent(int type) { InterlockedExchange(&s_devDo
 
 static bool ReadDoor(void* d, NearDoor* o) {
     unsigned char type = 0; uint32_t bits = 0;
-    if (!Rd(d, F.dtype, &type) || type != 0) return false;            // 0 = door; lockers etc. stay native
+    if (!Rd(d, F.dtype, &type) || type > 2) return false;             // 0 wood / 1 metal / 2 security; lockers etc. stay native
     if (!Rd(d, F.bits, &bits) || !Rd(d, F.openR, &o->ratio) || !Rd(d, F.maxAng, &o->maxAng)) return false;
+    o->mat = type;
     float k[3], h[3];
     if (!OLUE3_DoorKnobWorld(d, k) || !OLUE3_DoorHinge(d, h)) return false;
     o->d = d; o->knob = { k[0], k[1], k[2] }; o->hinge = { h[0], h[1], h[2] };
@@ -947,9 +956,14 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                             ds->sndOpened = ds->sndClosed = false;   // let the finish play its sound
                             // [DOOR] play the door movement sound only when the door is released and
                             // finishes opening/closing on its own - not while holding or nudging it.
+                            // The event matches the door material (wood / metal / security) and the
+                            // OpeningDoorIntensity RTPC is set low first so it plays the slow variant.
                             if (OLSound_Ready()) {
-                                const char* sndName = (ds->autoTo > 0.5f) ? "EV_Opening_Metal_Door" : "EV_Opening_Metal_Door";
-                                OLSound_PostByName(sndName, 0);
+                                static const char* const kMatSnd[3] = {
+                                    "EV_Opening_Wood_Door", "EV_Opening_Metal_Door", "EV_Opening_Security_Door" };
+                                const int mi = (nd->mat <= 2) ? nd->mat : 0;
+                                OLSound_SetRTPCByName("OpeningDoorIntensity", 0.0f);   // 0 = slow / calm opening
+                                OLSound_PostByName(kMatSnd[mi], 0);
                             }
                             ILog("[OLVR][DOORPHYS] auto-finish door at ratio %.2f (hand travel %+.0f uu) -> %s",
                                  nd->ratio, sNow, ds->autoTo > 0.5f ? "opening" : "closing");
@@ -958,6 +972,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                 }
                 OLXR_HapticPulse(h, 0.3f, 25);
                 s_grabFixed[h] = false; s_anchorLock[h] = false; s_grabS[h] = s_grabSPrev[h] = 0.0f;
+                s_pushSuppressUntil[h] = now + kPushSuppressMs;   // let the door swing through this hand for a moment
                 g.d = nullptr;
             }
             continue;
@@ -986,8 +1001,15 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         // or between the two knobs (a door has one handle on each face). The side is fixed at grab time
         // and never revisited while the door swings, so a small hand wiggle cannot flip the hand to the
         // other face. The game's knob sits on one face; the other face's handle is its mirror (kHandleFaceUU).
+        // Determine the face from the BODY (Miles) before the grab, not from the hand's angle: a hand
+        // reaching obliquely (from above, below or across) gives a tiny/ambiguous projection, which made
+        // the hand land on the wrong face. The body is always clearly on one side of the panel.
         const float nx = -sinf(phi0), ny = cosf(phi0);
-        const float side = (handW[h].x - nd.hinge.x) * nx + (handW[h].y - nd.hinge.y) * ny;
+        const float bodySide = (hero.x - nd.knob.x) * nx + (hero.y - nd.knob.y) * ny;
+        const float handSide = (handW[h].x - nd.knob.x) * nx + (handW[h].y - nd.knob.y) * ny;
+        float side = bodySide;
+        if (fabsf(bodySide) < 2.0f) side = handSide;              // body almost in the plane: fall back to the hand
+        if (fabsf(side) < 1.0f) side = 1.0f;                      // still ambiguous: default face
         s_grabSide[h] = side < 0.0f ? -1 : 1;
         s_anchorYaw[h] = 0.0f; s_anchorLock[h] = true; s_grabFixed[h] = true;
         s_grabHapUntil[h] = now + 250;   // buzz while holding the knob
@@ -1118,10 +1140,20 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             Om *= expf(-kFricVisc * dt);
         }
         float An = A + Om * dt;
-        // pushing hands: the panel passes through the hand (like it passes through Miles)
-        // so the door never bounces back on the hand when you try to open or close it.
-        // Contact is still detected below so open hands stay on the panel surface,
-        // but no physical force is applied - the door swings freely through the hand.
+        // pushing hands: an open hand pushes the panel, but a hand that just let go of a held door is
+        // suppressed for a moment (kPushSuppressMs) so the door can swing through it and finish its
+        // travel instead of being stopped right after release.
+        bool anyPush = false;
+        for (int h = 0; h < 2; ++h) {
+            if (!contact[h] || now < s_pushSuppressUntil[h]) continue;
+            anyPush = true;
+            const float need = (aC[h] - A) / dt, maxDv = kPushAccel * dt;
+            float dv = need - Om; if (dv > maxDv) dv = maxDv; if (dv < -maxDv) dv = -maxDv;
+            if (dirA[h] * dv < 0.0f) Om += dv;                         // push the door away from the hand
+            An = A + Om * dt;
+        }
+        if (anyPush) { s->pushed = true; s->autoRun = false; }
+        else if (s->pushed) s->pushed = false;
         // stops: open (a soft bounce), closed (it latches), can't-close doors stay where they are
         if (An > hi) {
             An = hi;
@@ -1138,15 +1170,13 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                 Om = 0.0f;
             }
         }
-        // [DOOR] movement sound: only once the door has really moved in one direction (a nudge or a
-        // held door stays silent) and never twice for the same swing. The sound starts only after the
         // [DOOR] movement sound now only plays on release (auto-finish) above,
         // not while holding or nudging the door - so the sound is not repeated
         // for every small movement and only fires once when the door lets go.
         (void)kSndSpeed; (void)kSndMove; (void)kSndBlockMs; (void)kSndCloseCutMs;
 
-        // pushing hands: the panel passes through the hand (like it passes through Miles)
-        // so the door never bounces back on the hand when you try to open or close it.
+        // open hands stay in front of the panel: the anchor sits kHandDepthUU in front of the
+        // surface so the fingers (which extend past the wrist) stop on the door, not inside it.
         for (int h = 0; h < 2; ++h) {
             if (!contact[h]) continue;
             const float aPanel = (phi0 + sign * (An - A)) * 0.0174532925f;
@@ -1154,8 +1184,8 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
             float t = hx * c + hy * sn; if (t < 0.0f) t = 0.0f; if (t > width) t = width;
             const float sd = dirA[h] * sign;   // +1 / -1: which side of the panel the hand is on
-            s_doorAnchor[h] = { nd.hinge.x + c * t - sn * sd * (kContactUU + 2.0f),
-                                nd.hinge.y + sn * t + c * sd * (kContactUU + 2.0f),
+            s_doorAnchor[h] = { nd.hinge.x + c * t - sn * sd * kHandDepthUU,
+                                nd.hinge.y + sn * t + c * sd * kHandDepthUU,
                                 handW[h].z };
             s_doorAnchorOn[h] = true;
         }
