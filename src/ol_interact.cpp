@@ -954,17 +954,8 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                             ds->sndDir = 0; ds->sndFrom = nd->ratio; ds->sndBlockUntil = 0; ds->sndCloseCut = 0;
                             ds->lastCmd = nd->ratio; ds->startR = nd->ratio;
                             ds->sndOpened = ds->sndClosed = false;   // let the finish play its sound
-                            // [DOOR] play the door movement sound only when the door is released and
-                            // finishes opening/closing on its own - not while holding or nudging it.
-                            // The event matches the door material (wood / metal / security) and the
-                            // OpeningDoorIntensity RTPC is set low first so it plays the slow variant.
-                            if (OLSound_Ready()) {
-                                static const char* const kMatSnd[3] = {
-                                    "EV_Opening_Wood_Door", "EV_Opening_Metal_Door", "EV_Opening_Security_Door" };
-                                const int mi = (nd->mat <= 2) ? nd->mat : 0;
-                                OLSound_SetRTPCByName("OpeningDoorIntensity", 0.0f);   // 0 = slow / calm opening
-                                OLSound_PostByName(kMatSnd[mi], 0);
-                            }
+                            // [DOOR] sound is posted from the movement branch below (material-aware),
+                            // so it is not repeated here.
                             ILog("[OLVR][DOORPHYS] auto-finish door at ratio %.2f (hand travel %+.0f uu) -> %s",
                                  nd->ratio, sNow, ds->autoTo > 0.5f ? "opening" : "closing");
                         }
@@ -1001,15 +992,9 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         // or between the two knobs (a door has one handle on each face). The side is fixed at grab time
         // and never revisited while the door swings, so a small hand wiggle cannot flip the hand to the
         // other face. The game's knob sits on one face; the other face's handle is its mirror (kHandleFaceUU).
-        // Determine the face from the BODY (Miles) before the grab, not from the hand's angle: a hand
-        // reaching obliquely (from above, below or across) gives a tiny/ambiguous projection, which made
-        // the hand land on the wrong face. The body is always clearly on one side of the panel.
+        // Decided from the HAND's position at grab time, relative to the panel normal.
         const float nx = -sinf(phi0), ny = cosf(phi0);
-        const float bodySide = (hero.x - nd.knob.x) * nx + (hero.y - nd.knob.y) * ny;
-        const float handSide = (handW[h].x - nd.knob.x) * nx + (handW[h].y - nd.knob.y) * ny;
-        float side = bodySide;
-        if (fabsf(bodySide) < 2.0f) side = handSide;              // body almost in the plane: fall back to the hand
-        if (fabsf(side) < 1.0f) side = 1.0f;                      // still ambiguous: default face
+        const float side = (handW[h].x - nd.hinge.x) * nx + (handW[h].y - nd.hinge.y) * ny;
         s_grabSide[h] = side < 0.0f ? -1 : 1;
         s_anchorYaw[h] = 0.0f; s_anchorLock[h] = true; s_grabFixed[h] = true;
         s_grabHapUntil[h] = now + 250;   // buzz while holding the knob
@@ -1170,20 +1155,41 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                 Om = 0.0f;
             }
         }
-        // [DOOR] movement sound now only plays on release (auto-finish) above,
-        // not while holding or nudging the door - so the sound is not repeated
-        // for every small movement and only fires once when the door lets go.
-        (void)kSndSpeed; (void)kSndMove; (void)kSndBlockMs; (void)kSndCloseCutMs;
+        // [DOOR] movement sound: a material-aware event (EV_Opening_Wood/Metal/Security_Door) plays
+        // when the door starts a new swing and has moved far enough to be a real open/close - not for
+        // a nudge or a held door. It plays once per swing in each direction.
+        if (fabsf(Om) <= kSndSpeed) s->sndDir = 0;   // at rest: the next movement is a new swing
+        if ((ng || anyPush || s->autoRun) && fabsf(Om) > kSndSpeed) {
+            const float sndRatio = An / maxA;
+            const int dir = Om > 0.0f ? 1 : -1;
+            if (dir != s->sndDir) { s->sndDir = dir; s->sndFrom = sndRatio; }
+            if (now >= s->sndBlockUntil && fabsf(sndRatio - s->sndFrom) > kSndMove) {
+                static const char* const kMatSnd[3] = {
+                    "EV_Opening_Wood_Door", "EV_Opening_Metal_Door", "EV_Opening_Security_Door" };
+                const int mi = (nd.mat <= 2) ? nd.mat : 0;
+                OLSound_PostByName(kMatSnd[mi], 0);
+                s->sndBlockUntil = now + kSndBlockMs;
+                s->sndFrom = sndRatio;
+                if (dir > 0) { s->sndOpened = true; s->sndClosed = false; }
+                else { s->sndClosed = true; s->sndOpened = false; s->sndCloseCut = now + kSndCloseCutMs; }
+            }
+        }
 
         // open hands stay in front of the panel: the anchor sits kHandDepthUU in front of the
         // surface so the fingers (which extend past the wrist) stop on the door, not inside it.
+        // Applied as soon as the hand is near the panel (not only on contact), so the fingers
+        // never sink through while the hand approaches.
         for (int h = 0; h < 2; ++h) {
-            if (!contact[h]) continue;
+            if (!handOk[h] || s_gripDown[h] || s_grab[h].d || ClimbHolding(h) ||
+                (h == 1 && (CamInRightHand() || g_camButton)) || (h == 0 && s_bat)) continue;
             const float aPanel = (phi0 + sign * (An - A)) * 0.0174532925f;
             const float c = cosf(aPanel), sn = sinf(aPanel);
             const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
-            float t = hx * c + hy * sn; if (t < 0.0f) t = 0.0f; if (t > width) t = width;
-            const float sd = dirA[h] * sign;   // +1 / -1: which side of the panel the hand is on
+            const float perp = hx * (-sn) + hy * c;            // signed distance from the panel plane
+            if (fabsf(perp) > kHandDepthUU + 10.0f) continue;  // not near this panel
+            const float t = hx * c + hy * sn;
+            if (t < 0.0f || t > width) continue;               // beyond the panel's edge
+            const int sd = perp < 0.0f ? -1 : 1;               // the side the hand is on
             s_doorAnchor[h] = { nd.hinge.x + c * t - sn * sd * kHandDepthUU,
                                 nd.hinge.y + sn * t + c * sd * kHandDepthUU,
                                 handW[h].z };
