@@ -745,6 +745,11 @@ static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
 static const float kPushAccel = 1600.0f;                 // deg/s^2 a hand can give a heavy door
 static const float kFricVisc = 1.1f, kFricCoul = 22.0f;  // hinge friction: lighter door, easier to move
 static const float kHeroRadius = 26.0f;                  // Miles, for the panel to stop against
+// [DOOR] open-hand collision box: keeps the whole hand (wrist + fingers) off the door panel when
+// pushing with an open hand.
+static const float kFingerLenUU = 14.0f;   // wrist to fingertips (uu)
+static const float kHandWidthUU = 10.0f;   // hand half-width (uu)
+static const float kHandDepthUU = 11.0f;   // wrist kept this far in front of the panel (uu)
 // [DOOR] hold-and-pull tuning. The handle no longer copies the hand's ANGLE around the hinge: the hand's
 // own travel along the knob's opening tangent is scaled into door degrees. That gives the arm its
 // amplitude (a 50 cm pull can swing a 95 deg door all the way) and the same pull always gives the same
@@ -848,7 +853,7 @@ static DoorSim* SimFor(void* d, bool create) {
 static bool ClimbHolding(int h);   // [CLIMB] below: a hand that holds an edge is not a door hand
 static float BodyYaw();             // (Beta 1.1) [DOORLETGO] below
 static bool CamInRightHand();
-static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
+static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OLXrFrameHands& fh) {
     s_doorAnchorOn[0] = s_doorAnchorOn[1] = false;
     if (!g_on[ON_DOORS]) {
         s_grab[0].d = s_grab[1].d = nullptr; s_nearN = 0; s_nearKnob[0] = s_nearKnob[1] = false;
@@ -1076,6 +1081,38 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             aC[h] = nd.ratio * nd.maxAng + sign * Wrap180(aTouch - phi0);
             dirA[h] = sign * (float)sd;
         }
+        // [DOOR] open-hand collision box: check if the whole hand (wrist + fingertips) is crossing
+        // the door panel. If so, mark contact so the hand is pushed back out.
+        if (handOk[h] && !s_gripDown[h] && !s_grab[h].d) {
+            // hand direction: grip pose has fingers pointing along -Z; rotate by controller quaternion
+            const OLXrPose& hp = fh.hand[h];
+            const float qx = hp.qx, qy = hp.qy, qz = hp.qz, qw = hp.qw;
+            // rotate (0,0,-1) by quaternion -> finger direction in tracking space
+            const float fx = 2.0f * (qx*qz - qw*qy);
+            const float fy = 2.0f * (qy*qz + qw*qx);
+            const float fz = 1.0f - 2.0f * (qx*qx + qy*qy);
+            // apply yaw rotation (same as TrackToWorld) to get world direction
+            const float dirX =  s_cy * fx - s_sy * fz;
+            const float dirZ =  s_sy * fx + s_cy * fz;
+            const float fingerTipX = handW[h].x + dirX * kFingerLenUU;
+            const float fingerTipY = handW[h].y + dirZ * kFingerLenUU;
+            const float fingerTipZ = handW[h].z;
+            // box center: midpoint between wrist and fingertips
+            const float boxCX = (handW[h].x + fingerTipX) * 0.5f;
+            const float boxCY = (handW[h].y + fingerTipY) * 0.5f;
+            const float boxCZ = (handW[h].z + fingerTipZ) * 0.5f;
+            // panel normal (points toward the player's side)
+            const float nx = -sinf(phi0 * 0.0174532925f);
+            const float ny =  cosf(phi0 * 0.0174532925f);
+            // signed distance of box center to panel plane
+            const float dCenter = nx * (boxCX - nd.hinge.x) + ny * (boxCY - nd.hinge.y);
+            // box radius along normal: half-width + half-length * |cos(angle between hand dir and normal)|
+            const float dirDotNormal = nx * dirX + ny * dirZ;
+            const float boxRadius = kHandWidthUU + (kFingerLenUU * 0.5f) * fabsf(dirDotNormal);
+            if (fabsf(dCenter) < boxRadius) {
+                contact[h] = true;
+            }
+        }
         int ng = 0; int gh[2];
         for (int h = 0; h < 2; ++h) if (s_grab[h].d == nd.d) gh[ng++] = h;
         DoorSim* s = SimFor(nd.d, false);
@@ -1266,6 +1303,20 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                                 s_grabKnobCenter[h].z };
             s_doorAnchorOn[h] = true;
             s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
+        }
+        // [DOOR] open-hand collision: keep an open hand pushing the panel from sinking through it.
+        // Anchor the wrist kHandDepthUU in front of the panel on the player's side.
+        for (int h = 0; h < 2; ++h) {
+            if (!contact[h] || s_grab[h].d) continue;   // only open hands pushing, not knob-holding
+            const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
+            const float perp = hx * (-sinf(phi0 * 0.0174532925f)) + hy * cosf(phi0 * 0.0174532925f);
+            const float t = hx * cosf(phi0 * 0.0174532925f) + hy * sinf(phi0 * 0.0174532925f);
+            if (t < 0.0f || t > width) continue;        // beyond panel edge
+            const int sd = perp < 0.0f ? -1 : 1;        // side the hand is on
+            s_doorAnchor[h] = { nd.hinge.x + cosf(phi0 * 0.0174532925f) * t - (-sinf(phi0 * 0.0174532925f)) * sd * kHandDepthUU,
+                                nd.hinge.y + sinf(phi0 * 0.0174532925f) * t + cosf(phi0 * 0.0174532925f) * sd * kHandDepthUU,
+                                handW[h].z };
+            s_doorAnchorOn[h] = true;
         }
         if (!ng && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
     }
@@ -2355,7 +2406,7 @@ extern "C" void OLInteract_Tick() {
     Battery(now, fh, p);
     Climb(now, dt, fh, handW, handOk);   // (Test40) a squeeze on a climbable edge holds the edge
     RoomWalkTick(now);                    // (Test44) after Climb: it knows whether the hands are climbing
-    Doors(now, dt, handW, handOk);
+    Doors(now, dt, handW, handOk, fh);
     Breath(now, head, fh, s_lm);          // (Test43) a hand over the mouth while he breathes hard
     HandNV(now, p, hero);                 // (Test43) night vision on the camcorder in your hand
     if (OLSound_Ready()) OLSound_Report(); // (Test43) [AUDIODIAG] every 10 s - (Test46) only with the sound hooks in
