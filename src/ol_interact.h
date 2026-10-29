@@ -54,6 +54,9 @@ extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);
 // instead of following the controller. 1 while the wrist is locked.
 extern "C" int   OLInteract_HandAnchorLock(int h);
 extern "C" float OLInteract_HandAnchorYaw(int h);
+// [DOORPALM] while an open hand pushes a door: the world point on the panel, the direction into the
+// door and a 0..1 weight (0 = not pushing). ol_ue3 turns the palm toward the door with it.
+extern "C" float OLInteract_HandPushNormal(int h, float outPoint[3], float outNormal[3]);
 // [CLIMB] (Test40) In a climb / ledge hang / on a ladder this hand holds on: it plays the game's own arm.
 extern "C" int OLInteract_ClimbHold(int h);
 // [LADDERGRAB] (Test41) Remove the part of a walk stick (pawn frame: x right, y forward) that would push

@@ -5584,7 +5584,6 @@ static void LensFlareTick() {
 // a hand holds a door, an edge or a rung. [Motion] BodyFollowsHead=0 turns it off.
 extern "C" void OLXR_TurnBaseline(float rightDeg);
 extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);
-extern "C" float OLInteract_HandPushNormal(int h, float outPoint[3], float outNormal[3]);
 static volatile long g_bodyTurn = 1;
 extern "C" int  OLUE3_GetBodyTurn() { return g_bodyTurn ? 1 : 0; }
 extern "C" void OLUE3_SetBodyTurn(int on) { g_bodyTurn = on ? 1 : 0; }
