@@ -4401,12 +4401,11 @@ static bool PoseApplyVisible(void* comp) {
             }
             {   // [DOOR] a hand holding a knob is pinned to a fixed grip pose: palm down (dorsum up) and
                 // fingers along the body's facing, so the hand always looks like it takes the handle from
-                // above - any controller angle is hidden. It then turns with the door's swing.
+                // above - any controller angle is hidden. No swing yaw: the anchor (position) follows the
+                // knob while the hand keeps the same palm-down pose (a yaw here turned it away from the knob).
                 const bool doorLock = OLInteract_HandAnchorLock(hand) != 0;
                 if (doorLock) {
-                    const QIk4 gripBase = IQFromFrames({ 0.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f }, cameraForward, worldUp);
-                    const float yawDeg = OLInteract_HandAnchorYaw(hand);
-                    wristTarget = IQMul(IQAxis({ 0.0f, 0.0f, 1.0f }, yawDeg * 0.0174532925f), gripBase);
+                    wristTarget = IQFromFrames({ 0.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f }, cameraForward, worldUp);
                 }
             }
             {   // [DOORPALM] an open hand pushing a door turns its palm toward the panel, smoothly
@@ -4424,7 +4423,7 @@ static bool PoseApplyVisible(void* comp) {
                             if (IVLen(palmNow) > 0.1f) {
                                 const QIk4 align = IQFromTo(palmNow, dir);
                                 const QIk4 want = IQMul(align, wristTarget);
-                                wristTarget = IQBlend(wristTarget, want, pw * 0.85f);
+                                wristTarget = IQBlend(wristTarget, want, pw);
                             }
                         }
                     }

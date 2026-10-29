@@ -1260,10 +1260,10 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         }
         if (!ng && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
     }
-    // [DOORPALM] ease the palm-turn weight: rises quickly while pushing, fades out slowly
+    // [DOORPALM] ease the palm-turn weight: snaps on quickly while pushing, fades out a bit slower
     for (int h = 0; h < 2; ++h) {
         const float target = s_pushActive[h] ? 1.0f : 0.0f;
-        const float rate = target > s_pushW[h] ? 12.0f : 6.0f;
+        const float rate = target > s_pushW[h] ? 40.0f : 8.0f;
         s_pushW[h] += (target - s_pushW[h]) * (1.0f - expf(-rate * dt));
         if (!s_pushActive[h] && s_pushW[h] < 0.01f) s_pushW[h] = 0.0f;
     }
