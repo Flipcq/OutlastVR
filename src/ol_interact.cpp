@@ -1053,6 +1053,20 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             // must not end up "on the other side" and pull the door back as the hand comes home
             if (sd == 0 && fabsf(perp) > kContactUU + 2.0f) sd = perp > 0 ? 1 : -1;
             s_pushDoor[h] = nd.d; s_pushSide[h] = sd;
+            // [DOORPALM] turn the palm toward the panel as soon as the hand is near it (even when the
+            // door is still and the hand is not touching yet), so the approach reads correctly.
+            if (fabsf(perp) < 30.0f) {
+                const float pn = phi0 * 0.0174532925f;
+                const float nx = -sinf(pn), ny = cosf(pn);
+                int psd = sd;
+                if (psd == 0) {
+                    const float headN = (s_headW.x - nd.hinge.x) * nx + (s_headW.y - nd.hinge.y) * ny;
+                    psd = headN < 0.0f ? -1 : 1;
+                }
+                s_pushPoint[h] = handW[h];
+                s_pushNormal[h] = { -(float)psd * nx, -(float)psd * ny, 0.0f };
+                s_pushActive[h] = true;
+            }
             if (sd == 0 || perp * sd > kContactUU + 0.5f) continue;     // not touching (or no side yet)
             // the panel angle (in "ratio degrees") where it just touches this hand on its side, and which
             // way is toward the hand: the panel may not pass that angle toward the hand
@@ -1061,11 +1075,6 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             contact[h] = true;
             aC[h] = nd.ratio * nd.maxAng + sign * Wrap180(aTouch - phi0);
             dirA[h] = sign * (float)sd;
-            // [DOORPALM] where the palm should point: into the panel, away from this hand
-            const float pn = phi0 * 0.0174532925f;
-            s_pushPoint[h] = handW[h];
-            s_pushNormal[h] = { -(float)sd * (-sinf(pn)), -(float)sd * cosf(pn), 0.0f };
-            s_pushActive[h] = true;
         }
         int ng = 0; int gh[2];
         for (int h = 0; h < 2; ++h) if (s_grab[h].d == nd.d) gh[ng++] = h;
@@ -1145,7 +1154,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         bool anyPush = false;
         for (int h = 0; h < 2; ++h) {
             if (!contact[h] || now < s_pushSuppressUntil[h]) continue;
-            if (ng > 0) continue;                                      // a hand on the handle is driving it
+            if (ng > 0 || s->autoRun) continue;                        // a hand (or the finish) is driving it
             anyPush = true;
             const float need = (aC[h] - A) / dt, maxDv = kPushAccel * dt;
             float dv = need - Om; if (dv > maxDv) dv = maxDv; if (dv < -maxDv) dv = -maxDv;
