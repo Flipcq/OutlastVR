@@ -1152,10 +1152,9 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                     s->sndOpened = true; s->sndClosed = false;
                     s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
                 } else if (dir < 0 && !s->sndClosed && An > lo + 0.08f * maxA) {
-                    // only sound the closing once pushed far enough to close by itself;
-                    // keep only the start of the sound (its latch end is harsh).
+                    // use the same opening sound for closing too - consistent door movement sound
                     if (s->sndFrom - sndRatio >= kSndMove) {
-                        OLSound_PostByName("EV_Closing_Wood_Door", 0);
+                        OLSound_PostByName(anyPush ? "EV_Push_Wood_Door" : "EV_Opening_Wood_Door", 0);
                         s->sndClosed = true; s->sndOpened = false;
                         s->sndBlockUntil = now + kSndBlockMs; s->sndFrom = sndRatio;
                         s->sndCloseCut = now + kSndCloseCutMs;
@@ -1215,13 +1214,28 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             }
         }
         s->lastCmd = tn; s->om = Om; s->ms = now;
-        // the hand on the handle stays at the exact controller position it had when the grab happened.
-        // Miles's hand does not wander with the door's swing, so it always sits on the same spot of the
-        // knob - never inside the door, never between two knobs, never at a distance when you walk away.
+        // [DOOR] magnet: Miles's hand is anchored to the knob of the face he grabbed, so it is pulled to
+        // the correct spot on the handle and follows the door as it swings. This keeps the hand from
+        // drifting away or ending up inside the door / between two knobs when you walk around.
         for (int k = 0; k < ng; ++k) {
             const int h = gh[k];
-            s_doorAnchor[h] = s_grabFixPt[h];   // original controller position at grab time
+            const float da = sign * (An - A) * 0.0174532925f, c = cosf(da), sn = sinf(da);
+            const float kx = nd.knob.x - nd.hinge.x, ky = nd.knob.y - nd.hinge.y;
+            const float nkx = kx * c - ky * sn, nky = kx * sn + ky * c;      // the knob after this swing
+            const float phiN = phi0 * 0.0174532925f + da;
+            const float px = -sinf(phiN), py = cosf(phiN);                   // the panel's normal
+            const float dNative = nkx * px + nky * py;                       // how far the game's knob sits off the panel
+            const int nativeSide = dNative > 1.0f ? 1 : (dNative < -1.0f ? -1 : 0);
+            float off = fabsf(dNative);
+            if (nativeSide == 0) off = kHandleFaceUU;                        // knob on the panel plane: use the door depth
+            else if (s_grabSide[h] != nativeSide) off += kHandleFaceUU;      // the handle on the other face
+            const float ipx = nd.hinge.x + nkx - px * dNative;               // the knob projected onto the panel
+            const float ipy = nd.hinge.y + nky - py * dNative;
+            s_doorAnchor[h] = { ipx + px * s_grabSide[h] * off,
+                                ipy + py * s_grabSide[h] * off,
+                                nd.knob.z };
             s_doorAnchorOn[h] = true;
+            s_anchorYaw[h] = sign * (An - s_grabA0[h]);   // total swing since the grab: the wrist turns with the door
         }
         if (!ng && !anyPush && !contact[0] && !contact[1] && fabsf(Om) < 1.5f) s->live = false;   // at rest: the game's again
     }
