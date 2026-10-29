@@ -767,9 +767,9 @@ static const ULONGLONG kSndCloseCutMs = 900; // keep only the start of the closi
 // (the arm is fully extended, so the door stops moving instead of the hand staying behind).
 static const float kMaxArmReachUU = 95.0f;   // cm beyond which the door stops following the hand
 // [DOOR] how far the wrist is kept from the panel when an open hand comes near it. This is the
-// hand's own length (wrist to fingertips), so the whole hand - palm, back or fingers leading in any
-// rotation (including pronation) - stays outside the door.
-static const float kHandDepthUU = 16.0f;
+// hand's own length (wrist to fingertips, with margin), so the whole hand - palm, back or fingers
+// leading in any rotation (including pronation) - stays outside the door.
+static const float kHandDepthUU = 22.0f;
 // [DOOR] after letting go of a held door, keep that hand out of the push loop for a moment so the
 // door can swing through it (it was just keeping the door from finishing its travel).
 static const ULONGLONG kPushSuppressMs = 2500;
@@ -1156,14 +1156,13 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             }
         }
         // [DOOR] movement sound: a material-aware event (EV_Opening_Wood/Metal/Security_Door) plays
-        // once per direction change. sndDir is the state (0 rest, 1 opening, 2 closing). A new sound
-        // needs a real direction change AND the door must have moved at least 15% since the last
-        // sound, so a small oscillation near the end cannot retrigger the same/clashing sound.
+        // once per direction. Evaluated every frame while the door moves (not just on the transition),
+        // because on the first moving frame the door has not travelled far enough yet. A sound needs
+        // 15% of travel since the last one, so a bounce near the end cannot retrigger.
         {
             const float sndRatio = An / maxA;
             const int st = (fabsf(Om) <= kSndSpeed) ? 0 : (Om > 0.0f ? 1 : 2);
-            if (st != s->sndDir) {
-                s->sndDir = st;
+            if (st != 0) {
                 const bool wantOpen = (st == 1 && !s->sndOpened);
                 const bool wantClose = (st == 2 && !s->sndClosed);
                 const bool moved = fabsf(sndRatio - s->sndFrom) > 0.15f;
@@ -1178,12 +1177,13 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                     else { s->sndClosed = true; s->sndOpened = false; s->sndCloseCut = now + kSndCloseCutMs; }
                 }
             }
+            s->sndDir = st;
         }
 
         // open hands stay in front of the panel. The wrist is kept kHandDepthUU (the hand's own
-        // length) from the surface on the player's side, so the whole hand stays outside the door
-        // whatever its rotation - including pronation, where the fingers lead and a forward-only
-        // tip test missed them. The head is the stable reference for the player's side.
+        // length + margin) from the surface on the player's side, so the whole hand stays outside
+        // the door whatever its rotation - including pronation, where the fingers lead and a
+        // forward-only tip test missed them. The head is the stable reference for the player's side.
         for (int h = 0; h < 2; ++h) {
             if (!handOk[h] || s_gripDown[h] || s_grab[h].d || ClimbHolding(h) ||
                 (h == 1 && (CamInRightHand() || g_camButton)) || (h == 0 && s_bat)) continue;
@@ -1193,8 +1193,9 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             const float hx = handW[h].x - nd.hinge.x, hy = handW[h].y - nd.hinge.y;
             const float perpPalm = hx * nx + hy * ny;            // wrist signed distance from the plane
             if (fabsf(perpPalm) >= kHandDepthUU) continue;        // wrist clear: leave the hand free
-            const float t = hx * c + hy * sn;
-            if (t < 0.0f || t > width) continue;                  // beyond the panel's edge
+            float t = hx * c + hy * sn;                           // along the panel from the hinge
+            if (t < -40.0f || t > width + 40.0f) continue;        // well past the panel: not this door
+            if (t < 0.0f) t = 0.0f; if (t > width) t = width;
             // always keep the hand on the player's side of the panel (the head never crosses it)
             const float headN = (s_headW.x - nd.hinge.x) * nx + (s_headW.y - nd.hinge.y) * ny;
             const int sd = headN < 0.0f ? -1 : 1;
@@ -1202,6 +1203,12 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
                                 nd.hinge.y + sn * t + c * sd * kHandDepthUU,
                                 handW[h].z };
             s_doorAnchorOn[h] = true;
+            static ULONGLONG s_handLogMs = 0;
+            if (now - s_handLogMs > 3000) {
+                s_handLogMs = now;
+                ILog("[OLVR][DOORHAND] %s hand clamped: wrist %.0f uu off the panel (limit %.0f), side %d, t %.0f/%.0f",
+                     h ? "right" : "left", fabsf(perpPalm), kHandDepthUU, sd, t, width);
+            }
         }
         // Miles: the panel now passes through him in both directions - opening *and* closing - so the
         // door never bounces back on Miles when you try to open or close it.
