@@ -4400,10 +4400,26 @@ static bool PoseApplyVisible(void* comp) {
                 wristTarget = IQBlend(wristTarget, IQMul(camQ, IQConj(g_gripAux.q)), camHold);
             }
             const bool doorLock = OLInteract_HandAnchorLock(hand) != 0;
-            if (doorLock) {   // [DOOR] fixed grip pose: palm down, fingers along the body's facing.
-                // UE hand frame: +X forward (fingers), +Y right, +Z up (dorsum). Palm is -Y.
-                wristTarget = IQFromFrames({ 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, cameraForward, worldUp);
+            static QIk4 s_doorWrist[2] = { {0,0,0,1}, {0,0,0,1} };
+            static bool s_doorWristValid[2] = { false, false };
+            static bool s_doorLockPrev[2] = { false, false };
+            if (doorLock) {
+                if (OLInteract_HandGripRound(hand)) {
+                    // [DOOR] round knob (wood): fixed grip pose - palm down, fingers along the body.
+                    // UE hand frame: +X forward (fingers), +Y right, +Z up (dorsum). Palm is -Y.
+                    wristTarget = IQFromFrames({ 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, cameraForward, worldUp);
+                } else {
+                    // other doors: the old handle-following pose (controller pose at the grab + swing)
+                    if (!s_doorLockPrev[hand] || !s_doorWristValid[hand]) {
+                        s_doorWrist[hand] = wristTarget; s_doorWristValid[hand] = true;
+                    }
+                    const float yawDeg = OLInteract_HandAnchorYaw(hand);
+                    wristTarget = IQMul(IQAxis({ 0.0f, 0.0f, 1.0f }, yawDeg * 0.0174532925f), s_doorWrist[hand]);
+                }
+            } else {
+                s_doorWristValid[hand] = false;
             }
+            s_doorLockPrev[hand] = doorLock;
             if (!doorLock) {   // [DOORPALM] an open hand near/pushing a door turns its palm toward it.
                 // Skipped while the hand holds the knob (that pose is fixed above) so the two never fight.
                 float pp[3], pn[3];
@@ -4418,8 +4434,17 @@ static bool PoseApplyVisible(void* comp) {
                             dir = IVScale(dir, 1.0f / dl);
                             const VIk3 palmNow = IQRotate(wristTarget, { 0.0f, -1.0f, 0.0f });   // -Y = palm in the UE hand frame
                             if (IVLen(palmNow) > 0.1f) {
-                                const QIk4 align = IQFromTo(palmNow, dir);
-                                const QIk4 want = IQMul(align, wristTarget);
+                                // limit the turn so the wrist never flips unnaturally (max ~55 deg)
+                                QIk4 limited = IQFromTo(palmNow, dir);
+                                float cosA = IVDot(palmNow, dir);
+                                if (cosA < -1.0f) cosA = -1.0f; if (cosA > 1.0f) cosA = 1.0f;
+                                const float ang = acosf(cosA);
+                                const float maxAng = 55.0f * 0.0174532925f;
+                                if (ang > maxAng && ang > 1e-4f) {
+                                    const VIk3 axis = IVNorm(IVCross(palmNow, dir));
+                                    if (IVLen(axis) > 0.1f) limited = IQAxis(axis, maxAng);
+                                }
+                                const QIk4 want = IQMul(limited, wristTarget);
                                 wristTarget = IQBlend(wristTarget, want, pw);
                             }
                         }

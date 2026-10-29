@@ -738,7 +738,7 @@ static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
-static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
+static const float kGrabUU = 32.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
 static const float kDoorWideUU = 80.0f;   // near enough that the right grip belongs to the door, not the camcorder
 // (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
 static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
@@ -812,6 +812,7 @@ static float s_grabA0[2] = {0.0f,0.0f};           // door angle at the grab (deg
 static float s_grabS[2] = {0.0f,0.0f};            // hand travel along that tangent since the grab (uu, + opens)
 static float s_grabSPrev[2] = {0.0f,0.0f};
 static int   s_grabSide[2] = {1,1};               // which face of the door the palm is on
+static bool  s_grabRound[2] = {false,false};      // [DOORGRIP] the grabbed door has a round knob (wood)
 static float s_anchorYaw[2] = {0.0f,0.0f};        // door swing since the grab, for the locked wrist
 static bool  s_anchorLock[2] = {false,false};     // true while the wrist is pinned to the door, not the controller
 static ULONGLONG s_grabHapUntil[2] = {0,0};       // light buzz while a hand is holding a knob
@@ -1004,6 +1005,9 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
         const float nx = -sinf(phi0), ny = cosf(phi0);
         const float side = (handW[h].x - nd.hinge.x) * nx + (handW[h].y - nd.hinge.y) * ny;
         s_grabSide[h] = side < 0.0f ? -1 : 1;
+        // [DOORGRIP] a wood door has the round knob the fixed palm-down pose suits; other doors keep
+        // the old handle-following pose.
+        s_grabRound[h] = (nd.mat == 0);
         s_anchorYaw[h] = 0.0f; s_anchorLock[h] = true; s_grabFixed[h] = true;
         s_grabHapUntil[h] = now + 250;   // buzz while holding the knob
         DoorSim* ds = SimFor(nd.d, false);
@@ -1056,7 +1060,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2]) {
             // [DOORPALM] turn the palm toward the panel as soon as the hand is near it (even when the
             // door is still and the hand is not touching yet). No turn in a small area around the knob:
             // there the fixed grip pose handles the hand, so the two never fight.
-            if (fabsf(perp) < 18.0f && Len(Sub(handW[h], nd.knob)) > 25.0f) {
+            if (fabsf(perp) < 18.0f && Len(Sub(handW[h], nd.knob)) > 35.0f) {
                 const float pn = phi0 * 0.0174532925f;
                 const float nx = -sinf(pn), ny = cosf(pn);
                 int psd = sd;
@@ -2372,7 +2376,7 @@ extern "C" void OLInteract_Tick() {
             bool on = false;
             if (s_hold[h] && (s_cl == CL_IDLE || s_cl == CL_PULLING)) { s_anchorW[h] = s_holdW[h]; on = true; }
             else if (s_doorAnchorOn[h]) { s_anchorW[h] = s_doorAnchor[h]; on = true; }
-            const float rate = on ? 40.0f : 9.0f;   // stronger magnet: hand snaps to the knob faster
+            const float rate = on ? 60.0f : 9.0f;   // strong magnet: hand snaps to the knob faster
             s_anchorWt[h] += ((on ? 1.0f : 0.0f) - s_anchorWt[h]) * (1.0f - expf(-rate * dt));
             if (!on && s_anchorWt[h] < 0.01f) s_anchorWt[h] = 0.0f;
         }
@@ -2517,6 +2521,12 @@ extern "C" int OLInteract_HandAnchorLock(int h) {
 extern "C" float OLInteract_HandAnchorYaw(int h) {
     if (h < 0 || h > 1) return 0.0f;
     return s_anchorYaw[h];
+}
+// [DOORGRIP] 1 = the held door has a round knob (use the fixed palm-down grip pose); 0 = other doors
+// keep the old handle-following pose.
+extern "C" int OLInteract_HandGripRound(int h) {
+    if (h < 0 || h > 1) return 0;
+    return s_grabRound[h] ? 1 : 0;
 }
 // [DOORPALM] while an open hand pushes a door: the world point on the panel, the direction into the
 // door and a 0..1 weight. ol_ue3 turns the palm toward the door with it, smoothly.
