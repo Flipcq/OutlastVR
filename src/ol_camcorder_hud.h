@@ -48,6 +48,8 @@ constexpr int Width = 1920, Height = 1080, DynamicTop = 0, DynamicHeight = 160;
 // 2.0, 1.4 at 2.5). PanelWidth scales with PanelDistance, so the display covers exactly the same
 // part of the view as before - only the depth the eyes are asked for changes, which no monitor can
 // show. If the brackets ever read double again, move this further out, never back to the lenses.
+// (Since the box is the shape the eyes actually fight over, it has since moved to a plane of its own
+// even further out - see FocusDistance below. The readouts stay here at PanelDistance.)
 constexpr float PanelDistance = 2.00f;      // metres in front of the eye
 constexpr float PanelMargin = 0.97f;        // hair of margin so the corner readouts are not clipped
 // Fill the view, but stop short of the lens edge, where a readout smears and pulls the eye away
@@ -181,7 +183,8 @@ template<class C> inline void DrawBrackets(C& c, int x, int y) {
     bar(x, y+1, 1, BracketH-2);                  bar(x+BracketW-1, y+1, 1, BracketH-2);
 }
 // The focus layer's whole texture: the box alone, on transparent. Nothing else is ever drawn here, so
-// the layer is uploaded once and costs a texture smaller than one HUD glyph cell.
+// the layer is uploaded once and the texture is 169x141 px - a rounding error next to the display's
+// 1920x1080, and cheaper than a second full-size image by two orders of magnitude.
 inline void Focus(FocusCanvas& c) { DrawBrackets(c, FocusPad, FocusPad); }
 // text(canvas, x, y, pixelHeight, bold, string, red, green, blue)
 // Static artwork at the reference screenshot's own 1920x1080 positions, for the display's texture: the
