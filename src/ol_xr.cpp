@@ -3481,6 +3481,16 @@ static std::vector<bool> g_hudInitialized;
 static OLCamHud::Canvas g_hudCanvas;
 static HudText g_hudText;
 static bool g_hudFailed = false;
+static float g_hudPanelWidth = 0.0f;      // the display's width in metres, as last submitted
+// [CAMFOCUS] The focusing brackets get a quad of their own, FocusDistance out (ol_camcorder_hud.h):
+// the display keeps the readouts at PanelDistance and the box alone is set deeper, so the one thin
+// shape in the middle of the view stops competing with the scene's own convergence. Its texture is
+// just the box (169x141 px), drawn once - it never changes - and it costs one more layer slot.
+static XrSwapchain g_focusSc = 0;
+static std::vector<XrSwapchainImageD3D11KHR> g_focusImages;
+static std::vector<bool> g_focusInitialized;
+static OLCamHud::FocusCanvas g_focusCanvas;
+static bool g_focusFailed = false;
 static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLayerQuad& q) {
     if (g_hudFailed) return false;
     if (!g_hudSc) {
@@ -3545,6 +3555,7 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
     OLXR_GetHmdFovDeg(&hmdFovX, nullptr);
     q.size.width = OLCamHud::PanelWidth(hmdFovX);
     q.size.height = q.size.width * OLCamHud::Height / OLCamHud::Width;
+    g_hudPanelWidth = q.size.width;   // the focus quad is placed from the same measurement
     // [CAMHUD] The one property of this layer a monitor cannot show, so it belongs in the log:
     // the convergence the display asks the eyes for. "The focus brackets look doubled" is this
     // number being larger than the scene's own (see ol_camcorder_hud.h).
@@ -3555,6 +3566,65 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
         XLOG("[OLVR][CAMHUD] display %.2f x %.2f m, parked %.2f m out: %.1f deg of convergence",
              q.size.width, q.size.height, OLCamHud::PanelDistance, conv);
     }
+    return true;
+}
+
+// [CAMFOCUS] The focusing brackets alone, on their own quad, FocusDistance out. Everything here is
+// static (the box never changes), so the texture is drawn once and each swapchain image is uploaded
+// the first time it is acquired. The quad is scaled and offset by FocusDistance/PanelDistance, which
+// is what keeps it covering exactly the pixels the display used to: same place, same size on screen,
+// deeper. Nothing else on the HUD is touched.
+static bool CamcorderFocusLayer(XrCompositionLayerQuad& q) {
+    if (g_focusFailed || g_hudPanelWidth <= 0.0f) return false;
+    if (!g_focusSc) {
+        XrSwapchainCreateInfo ci = {}; ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO_VALUE;
+        ci.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT_VALUE | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT_VALUE;
+        ci.format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        ci.sampleCount = 1; ci.width = OLCamHud::FocusWidth; ci.height = OLCamHud::FocusHeight;
+        ci.faceCount = ci.arraySize = ci.mipCount = 1;
+        if (!XrSucceeded(g_fn.createSwapchain(g_session,&ci,&g_focusSc))) {
+            g_focusSc = 0; g_focusFailed = true;
+            XLOG("[OLVR][CAMFOCUS] swapchain creation failed; brackets stay on the display");
+            return false;
+        }
+        uint32_t n = 0;
+        if (!XrSucceeded(g_fn.enumerateSwapchainImages(g_focusSc,0,&n,nullptr)) || !n) {
+            g_focusFailed = true; return false;
+        }
+        g_focusImages.resize(n);
+        for (auto& im : g_focusImages) { im.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR_VALUE; }
+        if (!XrSucceeded(g_fn.enumerateSwapchainImages(g_focusSc,n,&n,
+            (XrSwapchainImageBaseHeader*)g_focusImages.data()))) { g_focusFailed = true; return false; }
+        g_focusInitialized.assign(n,false);
+        OLCamHud::Focus(g_focusCanvas);
+        const float conv = 2.0f * atanf(0.0315f / OLCamHud::FocusDistance) * 57.2957795f;
+        XLOG("[OLVR][CAMFOCUS] brackets %ux%u px on their own plane, parked %.2f m out: %.1f deg",
+             (unsigned)OLCamHud::FocusWidth, (unsigned)OLCamHud::FocusHeight,
+             OLCamHud::FocusDistance, conv);
+    }
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
+    if (!XrSucceeded(g_fn.acquireSwapchainImage(g_focusSc,&ai,&index))) return false;
+    XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE;
+    wi.timeout = XR_INFINITE_DURATION_VALUE;
+    if (!XrSucceeded(g_fn.waitSwapchainImage(g_focusSc,&wi))) { g_focusFailed = true; return false; }
+    if (!g_focusInitialized[index]) {
+        g_ctx->UpdateSubresource(g_focusImages[index].texture,0,nullptr,
+            g_focusCanvas.pixels.data(),OLCamHud::FocusWidth*4,0);
+        g_focusInitialized[index] = true;
+    }
+    XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
+    if (!XrSucceeded(g_fn.releaseSwapchainImage(g_focusSc,&ri))) { g_focusFailed = true; return false; }
+    const OLCamHud::FocusQuadSize f = OLCamHud::FocusQuadFor(g_hudPanelWidth);
+    q.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
+    q.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT_VALUE |
+        XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT_VALUE;
+    q.space = g_viewSpace; q.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
+    q.subImage.swapchain = g_focusSc;
+    q.subImage.imageRect.extent = { OLCamHud::FocusWidth, OLCamHud::FocusHeight };
+    q.pose = IdentityPose();
+    q.pose.position = { f.offsetX, f.offsetY, -OLCamHud::FocusDistance };
+    q.size.width = f.width; q.size.height = f.height;
     return true;
 }
 
@@ -5445,12 +5515,17 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
     }
 
     XrCompositionLayerQuad camcorderQuad = {};
+    XrCompositionLayerQuad camcorderFocusQuad = {};   // [CAMFOCUS] the brackets, one plane deeper
     OLCamcorderHudState camcorderState;
     bool camcorderShown = false;
     if (fs.shouldRender && !g_screenOn && !blackOnly && layerCount > 0 && layerCount < 20 &&
         OLInteract_CamcorderHud(&camcorderState) && CamcorderHudLayer(camcorderState,camcorderQuad)) {
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&camcorderQuad);
         camcorderShown = true;
+        // The focusing brackets go over it on a quad of their own, FocusDistance out. If that layer
+        // cannot be prepared the display is still correct, it just carries no box this frame.
+        if (layerCount < 20 && CamcorderFocusLayer(camcorderFocusQuad))
+            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&camcorderFocusQuad);
     }
 
     // [POSEFREEZE] OLUE3_FrameTick is NOT called here any more - it ages GAME-frame counters

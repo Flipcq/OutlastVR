@@ -19,8 +19,9 @@ namespace OLCamHud {
 // Two inks, straight from the reference artwork. #A71000 is the recording red - the REC lamp and its
 // caption, the timecode and the spare-battery count. #808079 is the neutral grey of everything else
 // that is drawn: the lever, the charge gauge, the badges and the viewfinder marks (and the brackets,
-// which read as one thin light line rather than the bright white box they were). Both are drawn
-// opaque, so the per-eye blend cannot shift them the way a translucent grey once came out black.
+// which read as one thin light line rather than the bright white box they were, and which live on a
+// quad of their own - see FocusDistance below). Both are drawn opaque, so the per-eye blend cannot
+// shift them the way a translucent grey once came out black.
 constexpr uint8_t RecRed = 167, RecGreen = 16, RecBlue = 0;        // #A71000
 constexpr uint8_t IconRed = 128, IconGreen = 128, IconBlue = 121;  // #808079
 
@@ -61,6 +62,35 @@ inline float PanelWidth(float hmdFovDeg) {
     return 2.0f * PanelDistance * std::tan(deg * 0.5f * 3.14159265358979f / 180.0f) * PanelMargin;
 }
 inline float Unit(float v) { return std::isfinite(v) && v > 0 ? (v < 1 ? v : 1) : 0; }
+
+// ---- the focusing brackets, on a plane of their own ----------------------------------------------
+// The box you aim the camcorder with is the one thin, bright, dead-centre shape in the middle of the
+// view, and the middle of a plane is where its stereo disparity is largest - which is why it used to
+// read as two squares. Drawn into the display's own texture it sat at PanelDistance with every
+// readout; it now rides a quad of its own, FocusDistance out, so the box is set deeper than the rest
+// of the HUD (REC, clock, lever, gauge, badges all stay on the display). The quad is scaled by
+// FocusDistance/PanelDistance and offset by the same factor, so it covers exactly the same pixels of
+// the view as before: ~0.9 deg of convergence instead of the display's 1.8, and nothing on screen
+// moves. Only the depth the eyes are asked for changes, which no monitor can show.
+constexpr int BracketX = 877, BracketY = 481;      // the box, in the display's 1920x1080 artwork
+constexpr int BracketW = 167, BracketH = 139, BracketArm = 44;
+constexpr int FocusPad = 1;                        // transparent hair around the arms, so nothing clips
+constexpr int FocusWidth = BracketW + 2*FocusPad, FocusHeight = BracketH + 2*FocusPad;
+constexpr float FocusDistance = 4.00f;             // metres in front of the eye: the brackets' plane
+struct FocusQuadSize { float offsetX, offsetY, width, height; };   // view-space metres, eye-centred
+// The angles the box would have on the display, projected onto the focus plane instead: same
+// direction, same apparent size, FocusDistance away (a quad layer is composited per eye, so the
+// distance IS the convergence it asks for - see PanelDistance above).
+inline FocusQuadSize FocusQuadFor(float panelWidth) {
+    const float scale = FocusDistance / PanelDistance;
+    const float texel = (std::isfinite(panelWidth) && panelWidth > 0 ? panelWidth : 0.0f) / float(Width);
+    FocusQuadSize q;
+    q.width  = FocusWidth * texel * scale;
+    q.height = FocusHeight * texel * scale;
+    q.offsetX = (BracketX + 0.5f*BracketW - 0.5f*Width) * texel * scale;
+    q.offsetY = (0.5f*Height - (BracketY + 0.5f*BracketH)) * texel * scale;
+    return q;
+}
 // The W-T thumb. Outlast publishes the camcorder zoom as a 0..1 factor; normalising a
 // percentage as well keeps a build that reports 0..100 from pinning the thumb at the far end,
 // which is exactly what "the W-T bar never changes" looks like.
@@ -77,12 +107,15 @@ inline void Timecode(float seconds, char (&text)[12]) {
         unsigned(ticks / 360000), unsigned(ticks / 6000 % 60),
         unsigned(ticks / 100 % 60), unsigned(ticks % 100));
 }
-struct Canvas {
+// A raster the size of the artwork it holds. The display is 1920x1080; the brackets get a texture of
+// their own, just the box plus FocusPad, so their layer costs nothing next to the display's.
+template<int W, int H>
+struct CanvasT {
     std::vector<uint8_t> pixels;
-    Canvas() : pixels(size_t(Width) * Height * 4, 0) {}
+    CanvasT() : pixels(size_t(W) * H * 4, 0) {}
     void Pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
-        if (x < 0 || x >= Width || y < 0 || y >= Height) return;
-        uint8_t* p = &pixels[(size_t(y) * Width + x) * 4];
+        if (x < 0 || x >= W || y < 0 || y >= H) return;
+        uint8_t* p = &pixels[(size_t(y) * W + x) * 4];
         // Straight alpha, matching XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA.
         const unsigned alpha = a + (p[3] * (255 - a) + 127) / 255;
         if (!alpha) return;
@@ -110,8 +143,8 @@ struct Canvas {
                 if (edge < 0.0f) continue;
             }
             const int px = x + xx, py = y + yy;
-            if (px < 0 || px >= Width || py < 0 || py >= Height) continue;
-            uint8_t* p = &pixels[(size_t(py) * Width + px) * 4];
+            if (px < 0 || px >= W || py < 0 || py >= H) continue;
+            uint8_t* p = &pixels[(size_t(py) * W + px) * 4];
             p[0] = p[1] = p[2] = p[3] = 0;
         }
     }
@@ -130,23 +163,34 @@ struct Canvas {
         }
     }
 };
+using Canvas = CanvasT<Width, Height>;                 // the display's own texture
+using FocusCanvas = CanvasT<FocusWidth, FocusHeight>;  // just the focusing brackets
+// The focusing brackets - the one shape in the middle of the view with nothing behind it, so it reads
+// as a square hanging in front of the face. Kept small and FINER: BracketW x BracketH (167x139, was
+// 212x178) centred on (960.5, 550.5) with 44 px arms, one pixel thin, in the HUD grey (#808079)
+// instead of a bright 175. It is the thing you aim the camcorder with, so the arms stay long enough to
+// read as a box, but nothing about it is allowed to pull the eye off the picture.
+// Translucency is not usable here: the compositor multiplies the layer's colour by its own alpha even
+// though the layer asks for XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, and what should have been
+// a soft grey box came out black at 200/255 and still dark at 235/255. Alpha stays 255.
+// Drawn from (x,y) so the display can leave the box out and the focus layer can carry it alone.
+template<class C> inline void DrawBrackets(C& c, int x, int y) {
+    auto bar = [&](int bx, int by, int w, int h) { c.Fill(bx, by, w, h, IconRed, IconGreen, IconBlue); };
+    bar(x, y, BracketArm, 1);                    bar(x+BracketW-BracketArm, y, BracketArm, 1);
+    bar(x, y+BracketH-1, BracketArm, 1);         bar(x+BracketW-BracketArm, y+BracketH-1, BracketArm, 1);
+    bar(x, y+1, 1, BracketH-2);                  bar(x+BracketW-1, y+1, 1, BracketH-2);
+}
+// The focus layer's whole texture: the box alone, on transparent. Nothing else is ever drawn here, so
+// the layer is uploaded once and costs a texture smaller than one HUD glyph cell.
+inline void Focus(FocusCanvas& c) { DrawBrackets(c, FocusPad, FocusPad); }
 // text(canvas, x, y, pixelHeight, bold, string, red, green, blue)
-// Static artwork at the reference screenshot's own 1920x1080 positions: the lens markings sit in
-// the bottom-left corner of the display, the focusing brackets in the middle of it.
+// Static artwork at the reference screenshot's own 1920x1080 positions, for the display's texture: the
+// lens markings at the bottom-left corner. The focusing brackets are NOT here - they ride their own,
+// deeper quad (see FocusDistance above), so this texture stays empty in the middle of the view.
 template<class Text> void Static(Canvas& c, Text& text) {
-    // Focusing brackets - the one shape in the middle of the view with nothing behind it, so it reads
-    // as a square hanging in front of the face. Kept small and made FINER: 167x139 (was 212x178) on
-    // the same centre (960.5, 550.5) with 44 px arms, one pixel thin, drawn in the HUD grey (#808079)
-    // instead of a bright 175. It is the thing you aim the camcorder with, so the arms stay long
-    // enough to read as a box, but nothing about it is allowed to pull the eye off the picture.
-    // Translucency is not usable here: the compositor multiplies the layer's colour by its own alpha
-    // even though the layer asks for XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT, and what should
-    // have been a soft grey box came out black at 200/255 and still dark at 235/255. Alpha stays 255.
-    const int bx = 877, by = 481, bw = 167, bh = 139, arm = 44;
-    auto bar = [&](int x, int y, int w, int h) { c.Fill(x, y, w, h, IconRed, IconGreen, IconBlue); };
-    bar(bx, by, arm, 1);            bar(bx+bw-arm, by, arm, 1);
-    bar(bx, by+bh-1, arm, 1);       bar(bx+bw-arm, by+bh-1, arm, 1);
-    bar(bx, by+1, 1, bh-2);         bar(bx+bw-1, by+1, 1, bh-2);
+    // The focusing brackets used to be drawn here. They now ride their own quad, deeper than the
+    // display (FocusDistance), so this texture is deliberately empty in the middle of the view - see
+    // DrawBrackets/Focus above.
     // Lens markings, bottom-left corner, in the same grey. The HD badge's perforations are HOLES:
     // the display is transparent over the scene, so the squares were never meant to be black plates.
     c.RoundFill(149, 819, 108, 52, 4.0f, IconRed, IconGreen, IconBlue);
@@ -248,15 +292,26 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // No dark rim: the display is a transparent layer over the scene, so a black outline around a
     // readout is a black line drawn on the picture, not a shadow.
     text(c,1524,61,25,true,count,IconRed,IconGreen,IconBlue);
-    // The gauge: the reference's long, thin cell, contact on the LEFT as a bracket that opens into the
-    // body, drawn as a rounded frame with a transparent window - no black body behind it, no rim.
+    // The gauge: the reference's battery, drawn from the artwork itself. A rounded outline with a
+    // hollow window (no black body behind it, no rim), a compact terminal tab on the LEFT whose slot
+    // stops at the outline, and the charge as one solid block inset from the window, light at the top
+    // and darker at the bottom.
+    // Proportions taken off the reference (a 1140x267 cell): the stroke is 1/13 of the height, the
+    // corners a hair over one stroke, the terminal a little under half the height and about 1/16 of
+    // the width, and the charge block covers ~91% of the width and ~66% of the height, square
+    // cornered, sitting ~8 px in from the outline on every side at this size. The cell keeps its own
+    // 212x48 footprint, so nothing else on the display moves with it.
     const int gaugeX = 1636, gaugeY = 52, gaugeW = 212, gaugeH = 48;
-    c.RoundFill(gaugeX, gaugeY, gaugeW, gaugeH, 7.0f, IconRed, IconGreen, IconBlue);
-    c.Clear(gaugeX+4, gaugeY+4, gaugeW-8, gaugeH-8, 4.0f);
-    // Contact: a bracket that opens into the body, exactly as in the reference.
-    c.RoundFill(gaugeX-18, gaugeY+9, 18, 30, 3.0f, IconRed, IconGreen, IconBlue);
-    c.Clear(gaugeX-9, gaugeY+18, 9, 12);
-    const int barX = gaugeX + 10, barY = gaugeY + 10, barW = gaugeW - 20, barH = gaugeH - 20;
+    c.RoundFill(gaugeX, gaugeY, gaugeW, gaugeH, 5.0f, IconRed, IconGreen, IconBlue);   // the outline
+    c.Clear(gaugeX+4, gaugeY+4, gaugeW-8, gaugeH-8, 3.0f);                            // ...and its window
+    // Terminal: a rounded tab centred on the cell, 13x22, with the slot cut out of its middle. The
+    // remaining 5 px cap and the 4 px arms are what the reference shows, and the slot dead-ends at
+    // the outline instead of opening into the window.
+    c.RoundFill(gaugeX-13, gaugeY+13, 13, 22, 3.0f, IconRed, IconGreen, IconBlue);
+    c.Clear(gaugeX-8, gaugeY+17, 8, 14, 2.0f);
+    // The charge block: 196x32, inset 8 px from the outline (so it fills about two thirds of the
+    // cell's height, as the reference does), square corners.
+    const int barX = gaugeX + 8, barY = gaugeY + 8, barW = gaugeW - 16, barH = gaugeH - 16;
     const float charge = Unit(s.energy);
     // Preserve the large gauge's low-charge warning (one bar or less), with a continuous fill.
     const bool low = std::ceil(charge*4.0f-0.05f) <= 1;
@@ -264,7 +319,7 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // contact end, so what is left of the bar sits against the far (right) end of the cell.
     const int filled = int(barW * charge + 0.5f);
     for (int y = 0; y < barH; ++y) {
-        const int drop = 12 - 26*y/(barH-1);                        // the reference's soft vertical fall
+        const int drop = 14 - 22*y/(barH-1);                        // the reference's soft vertical fall
         for (int x = 0; x < filled; ++x) {
             if (low) c.Pixel(barX+barW-filled+x, barY+y, RecRed, RecGreen, RecBlue);
             else c.Pixel(barX+barW-filled+x, barY+y,
