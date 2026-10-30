@@ -1704,7 +1704,7 @@ static void Climb(ULONGLONG now, float dt, const OLXrFrameHands& fh, V3 handW[2]
                 s_hold[h] = false; OLXR_HapticPulse(h, 0.15f, 15);
                 continue;
             }
-            if (s_hold[h] || lm != 0 || (h == 1 && camHand)  continue;
+            if (s_hold[h] || lm != 0 || (h == 1 && camHand)) continue;
             V3 at, n, ep; const int k = HandOnEdge(handW[h], &at, &n, &ep);
             if (k && !s_gripDown[h]) { s_edgeNear = ep; s_edgeNearOn = true; }
             if (k && s_gripEdge[h] && !RunGripLow(h, fh)) {   // (Test48) [RUNGRIP]
@@ -1967,7 +1967,7 @@ static void Breath(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& fh
     // which free hand is over the mouth (enter 11 cm, leave 16 cm), in front of the face
     int hand = -1; float best = 9.0f;
     for (int h = 0; h < 2; ++h) {
-        if (!(fh.valid & (1u << h)) || s_grab[h].d || s_hold[h] || (h == 1 && CamInRightHand())  continue;
+        if (!(fh.valid & (1u << h)) || s_grab[h].d || s_hold[h] || (h == 1 && CamInRightHand())) continue;
         const V3 p = P3(fh.hand[h]);
         const float d = Len(Sub(p, s_mouth)), ahead = (p.x - s_headT.x) * fwd.x + (p.y - s_headT.y) * fwd.y + (p.z - s_headT.z) * fwd.z;
         const float lim = (s_cover && s_coverHand == h) ? 0.16f : 0.11f;
