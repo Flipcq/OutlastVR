@@ -193,8 +193,6 @@ namespace Outlast1VR
                    "FREE: it moves and turns exactly with your\ncontroller, like a real camcorder. GAME POSE: held\nupright in front of you, lens ahead, the way Miles\nraises it (your hand still places it)."),
                 N_("HANDS", "Motion", "RaiseToEyeReachM", "Camcorder to eye distance", 0.14, 0.08, 0.25, 0.01, "cm", null,
                    "How close the camcorder has to come to your eye\nbefore you are looking through it."),
-                T_("HANDS", "Motion", "BatteryGesture", "Reload with your hands", 0,
-                   "OFF: Y reloads the camcorder. ON: pull the old\nbattery out with your left hand, take a new one\nfrom your left hip and slide it in."),
                 T_("HANDS", "Motion", "DoorGrab", "Hands-on doors", 1,
                    "Doors are heavy: push one with your open hand\nand it swings as far as you push, or squeeze the\ngrip on its handle and swing it. X still works."),
                 C_("HANDS", "Motion", "ClimbMode", "Climbing", 2, new[] { "PHYSICAL", "GUIDED", "A BUTTON" }, new double[] { 2, 1, 0 },

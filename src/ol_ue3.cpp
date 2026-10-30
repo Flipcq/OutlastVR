@@ -3581,17 +3581,6 @@ extern "C" int OLUE3_HolsterVisual(float out[3]) {
     out[0] = g_camChestTrack[0]; out[1] = g_camChestTrack[1]; out[2] = g_camChestTrack[2];
     return 1;
 }
-// (reload) Where the camcorder's battery slot - its back, 7 cm behind the lens and 3 cm up - is on the
-// model actually drawn in the hand, back in the recenter frame (metres), for ol_interact's reload.
-// The model is oriented by the controller's AIM pose (free hold), not its grip pose, so the slot has to
-// follow the model the player sees instead of the raw grip frame the old fixed offset used.
-static float g_camSlotTrack[3] = {};
-static volatile ULONGLONG g_camSlotMs = 0;
-extern "C" int OLUE3_CamSlotVisual(float out[3]) {
-    if (!g_camSlotMs || GetTickCount64() - g_camSlotMs > 300) return 0;
-    out[0] = g_camSlotTrack[0]; out[1] = g_camSlotTrack[1]; out[2] = g_camSlotTrack[2];
-    return 1;
-}
 static bool  g_camVisible = false;                         // the mod made the model visible
 static void* g_camMeshSeen = nullptr;
 static UEAttachment* g_camEntry[2] = { nullptr, nullptr }; // main, shadow: offsets the mod wrote
@@ -3983,19 +3972,6 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
     const float b = v.blend < 0.0f ? 0.0f : (v.blend > 1.0f ? 1.0f : v.blend);
     const VIk3 T = IVAdd(chestT, IVScale(IVSub(handT, chestT), b));
     const QIk4 Q = IQBlend(chestQ, handQ, b);
-    // (reload) The battery sits in the back of the camcorder the player sees: 7 cm behind the lens
-    // (-X of the model's canonical frame) and 3 cm up (+Z), reported in the recenter frame so
-    // ol_interact's hands-on reload detects the left hand at the model's back, not at the grip pose
-    // (the free-hold model follows the aim pose; its grip "forward" runs up the handle).
-    {
-        const VIk3 ax = IQRotate(Q, { 1, 0, 0 }), az = IQRotate(Q, { 0, 0, 1 });
-        const VIk3 slot = IVAdd(T, IVAdd(IVScale(ax, -7.0f), IVScale(az, 3.0f)));   // uu: 7 cm back, 3 cm up
-        const VIk3 ds = IVSub(slot, cam);
-        g_camSlotTrack[0] = headRef[0] + IVDot(ds, right) / kMetersToUU;
-        g_camSlotTrack[1] = headRef[1] + ds.z / kMetersToUU;
-        g_camSlotTrack[2] = headRef[2] - IVDot(ds, fwd) / kMetersToUU;
-        g_camSlotMs = GetTickCount64();
-    }
     if (which == 0) {
         // [FLIPSCREEN] (Test43) the screen's pose and the lens, in the recenter frame, for the compositor
         OLFlipScreen fsc = {};

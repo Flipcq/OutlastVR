@@ -60,7 +60,7 @@ static const ActionWord kActions[] = {
 };
 
 // ---- whole hints the hands now do (English text, OLGame.int) -----------------------------------------
-enum Gate { G_ALWAYS, G_DOORS, G_RAISE, G_BATTERY, G_DUCK, G_HOLSTER, G_HOLSTER_BATTERY, G_CLIMB };
+enum Gate { G_ALWAYS, G_DOORS, G_RAISE, G_DUCK, G_HOLSTER, G_CLIMB };
 struct Sentence { Gate gate; const wchar_t* game; const wchar_t* quest; const wchar_t* mouseQuest = nullptr; };
 static const Sentence kSentences[] = {
     // [DOOR] the game's door hints are removed (the game text is matched, the hint shown is empty):
@@ -73,18 +73,10 @@ static const Sentence kSentences[] = {
     // (Test38) the chest holster and the hands-on reload come first; without them, Test37's wording
     { G_HOLSTER, L"To raise your camcorder, press {OLA_ToggleCamcorder}",
                  L"Your camcorder is on your right hip: take it with your right hand and bring it to your eye, or hold the right stick click" },
-    { G_HOLSTER_BATTERY, L"Press {OLA_Reload} to reload batteries",
-                 L"To reload, pull the old battery out of the camcorder, take a new one from your left hip and slide it in, or press Y" },
-    { G_HOLSTER_BATTERY, L"Batteries are used for the infrared light of your camcorder. You can reload by pressing {OLA_Reload}",
-                 L"Batteries are used for the infrared light of your camcorder. To reload, pull the old one out of the camcorder with your left hand, take a new one from your left hip and slide it in, or press Y" },
     { G_RAISE, L"To raise your camcorder, press {OLA_ToggleCamcorder}",
                L"To raise your camcorder, lift your right hand to your eye, squeeze the right grip, or hold the right stick click" },
-    { G_BATTERY, L"Press {OLA_Reload} to reload batteries",
-                 L"To reload, take a battery from your left hip to the camcorder, or press Y" },
-    { G_BATTERY, L"Batteries are used for the infrared light of your camcorder. You can reload by pressing {OLA_Reload}",
-                 L"Batteries are used for the infrared light of your camcorder. To reload, take one from your left hip and bring it to your right hand, or press Y" },
     { G_DUCK, L"Crouch or uncrouch with {OLA_CrouchToggle}", L"Duck down to crouch and stand up to stand, or press B",
-               L"Duck down to crouch and stand up to stand, or press X" },
+           L"Duck down to crouch and stand up to stand, or press X" },
     // (Test40) climbing with your hands
     { G_CLIMB, L"To climb up, press {OLA_Jump}",
                L"To climb up, grab the edge with both hands and pull yourself up (or press A)" },
@@ -102,11 +94,9 @@ static bool GateOn(Gate g) {
     switch (g) {
     case G_DOORS:   return OLInteract_Get(0) != 0;
     case G_RAISE:   return OLInteract_Get(1) != 0;
-    case G_BATTERY: return OLInteract_Get(2) != 0;
     case G_DUCK:    return OLMotion_GetPhysCrouch() != 0;
-    case G_HOLSTER: return OLInteract_Get(6) != 0;
-    case G_HOLSTER_BATTERY: return OLInteract_Get(6) != 0 && OLInteract_Get(2) != 0;
-    case G_CLIMB:   return OLInteract_Get(8) != 0;
+    case G_HOLSTER: return OLInteract_Get(5) != 0;
+    case G_CLIMB:   return OLInteract_Get(7) != 0;
     default:        return true;
     }
 }

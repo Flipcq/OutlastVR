@@ -663,37 +663,31 @@ static void BuildUI() {
           "swings it left or right, roll twists it; forward / up / right move your hand\n"
           "and the camcorder together. Close the menu to see it, adjust again, and\n"
           "save. Zero everywhere: the lens points where your controller points."); }
-    if (false) { bool b = OLInteract_Get(9) != 0;   // (Test46c) the live screen is out for now ([Motion] CamcorderLiveScreen)
+    if (false) { bool b = OLInteract_Get(8) != 0;   // (Test46c) the live screen is out for now ([Motion] CamcorderLiveScreen)
       if (ImGui::Checkbox("Live camcorder screen", &b)) OLInteract_Set(9, b);
       Help(
           "The flip-out screen shows what the lens sees, like a real camcorder: point\n"
           "it behind you, round a corner, at yourself. Click the right stick while you\n"
           "hold the camcorder for night vision on the screen. It is a second camera,\n"
           "drawn only while the screen faces you; off saves a little speed."); }
-    if (!OLInteract_Get(6)) {
+    if (!OLInteract_Get(5)) {
       bool b = OLInteract_Get(1) != 0;
       if (ImGui::Checkbox("Raise it by lifting your hand to your eye", &b)) OLInteract_Set(1, b);
       Help(
           "Lift your right hand up to your eye and the camcorder comes up; drop it\n"
           "and it goes down. The right grip still toggles it too."); }
     }   // (Test49) end of the hands-on camcorder settings
-    { bool b = OLInteract_Get(12) != 0;   // (Test46)
+    { bool b = OLInteract_Get(11) != 0;   // (Test46)
       if (ImGui::Checkbox("Zoom in a framed viewfinder (black around it)", &b)) OLInteract_Set(12, b);
       Help(
           "Off (default): when you zoom, the zoomed picture fills your view.\n"
           "On: it sits in a camcorder-shaped window with black around it."); }
-    { bool b = OLInteract_Get(3) != 0;
+    { bool b = OLInteract_Get(2) != 0;
       if (ImGui::Checkbox("Zoom in a viewfinder", &b)) OLInteract_Set(3, b);
       Help(
           "Right stick up/down zooms. Zoomed, the picture sits in a camcorder\n"
           "viewfinder in front of you, dark around it, like holding it to your eye."); }
-    { bool b = OLInteract_Get(2) != 0;
-      if (ImGui::Checkbox("Reload with your hands (off: Y reloads)", &b)) OLInteract_Set(2, b);
-      Help(
-          "Y reloads the camcorder. On: with the camcorder in your right hand, pull\n"
-          "the old battery out of its back with your left hand, take a new one from\n"
-          "your left hip and slide it in."); }
-    { bool b = OLInteract_Get(7) != 0;
+    { bool b = OLInteract_Get(6) != 0;
       if (ImGui::Checkbox("How-to labels", &b)) OLInteract_Set(7, b);
       Help(
           "Labels in front of you show what to do next (take the camcorder, pull out\n"
@@ -721,7 +715,7 @@ static void BuildUI() {
           "Get the edge to your chest and he hauls himself over; let go of everything\n"
           "and he drops. Guided: the game's own climb, playing only as fast as you pull.\n"
           "A button: the old way. A climbs in every mode."); }
-    { bool b = OLInteract_Get(13) != 0;   // (Beta 1.1) [AUTOLEDGE]
+    { bool b = OLInteract_Get(12) != 0;   // (Beta 1.1) [AUTOLEDGE]
       if (ImGui::Checkbox("Catch ledges automatically when jumping", &b)) OLInteract_Set(13, b);
       Help(
           "Jump toward a ledge and Miles grabs it by himself, like the original game.\n"
@@ -729,12 +723,12 @@ static void BuildUI() {
           "Off: in the air your hands take the edge only when you squeeze a grip."); }
     // (Test45) cover-your-mouth removed from the menu ([Motion] CoverMouth=1 still turns it on)
     Section("DEVELOPER");
-    { bool b = OLInteract_Get(4) != 0;
+    { bool b = OLInteract_Get(3) != 0;
       if (ImGui::Checkbox("Show interaction markers (developer)", &b)) OLInteract_Set(4, b);
       Help(
           "Rings for every grab zone: knobs (green open, red locked, yellow in reach),\n"
           "the hip pouch (orange), the raise-to-eye spot (cyan)."); }
-    { bool b = OLInteract_Get(5) != 0;
+    { bool b = OLInteract_Get(4) != 0;
       if (ImGui::Checkbox("Hints name the Quest controls", &b)) OLInteract_Set(5, b);
       Help(
           "The game's hints say what to do on Quest 3 controllers instead of showing\n"

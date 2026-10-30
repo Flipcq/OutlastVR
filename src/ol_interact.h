@@ -1,6 +1,6 @@
 #pragma once
 // ol_interact.h - [INTERACT] (Test37/38) physical doors, the camcorder's chest holster, raise-to-eye,
-// the VR battery reload, the camcorder viewfinder, how-to labels and the developer markers.
+// the camcorder viewfinder, how-to labels and the developer markers.
 #include "ol_xr.h"
 #include "ol_camcorder_hud.h"
 
@@ -60,11 +60,11 @@ extern "C" int OLInteract_ClimbHold(int h);
 // Miles onto a ladder no hand has taken.
 extern "C" void OLInteract_FilterMoveStick(float* x, float* y);
 
-// 0 doors, 1 raise gesture, 2 battery, 3 viewfinder, 4 markers, 5 Quest prompts, 6 hip holster,
-// 7 how-to labels, 8 (Test40) climbing with your hands, 9 (Test43) the camcorder's live screen,
-// 10 (Test43) cover your mouth, 11 (Test44) walk around for real (roomscale: Miles walks with you),
-// 12 (Test46) the camcorder zoom in a framed viewfinder (0: the zoomed picture fills the view),
-// 13 (Beta 1.1) auto ledge grab: in the air the game catches the edge (physical climbing steps aside)
+// 0 doors, 1 raise gesture, 2 viewfinder, 3 markers, 4 Quest prompts, 5 hip holster,
+// 6 how-to labels, 7 (Test40) climbing with your hands, 8 (Test43) the camcorder's live screen,
+// 9 (Test43) cover your mouth, 10 (Test44) walk around for real (roomscale: Miles walks with you),
+// 11 (Test46) the camcorder zoom in a framed viewfinder (0: the zoomed picture fills the view),
+// 12 (Beta 1.1) auto ledge grab: in the air the game catches the edge (physical climbing steps aside)
 extern "C" int  OLInteract_Get(int which);
 extern "C" void OLInteract_Set(int which, int on);
 // (Test43) climbing: 0 the A button, 1 guided (the game's climb at your pace), 2 physical (your hands

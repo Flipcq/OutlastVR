@@ -54,7 +54,6 @@ extern "C" int   OLUE3_DoorHinge(void* door, float out[3]);
 extern "C" int   OLUE3_GameplayActive();
 extern "C" int   OLUE3_InGameMenu();
 extern "C" int   OLUE3_HolsterVisual(float out[3]);   // where the holstered model is drawn
-extern "C" int   OLUE3_CamSlotVisual(float out[3]);   // where the camcorder's battery slot is drawn (in hand)
 extern "C" int   OLUE3_HeroMoveState(int* lm, int* sm);                 // (Test40) LocomotionMode, SpecialMove
 extern "C" int   OLUE3_DoorSetRatioAndTarget(void* door, float r);      // (Test40) 0xCC46A0
 extern "C" int   OLUE3_CameraBoneWorld(float out[3]);                   // (Test40) for the anchor check
@@ -86,18 +85,17 @@ static void ILog(const char* fmt, ...) {
 }
 
 // ---- settings ([Motion] in outlastvr.ini) ---------------------------------------------------------
-enum { ON_DOORS, ON_RAISE, ON_BATTERY, ON_VIEWFINDER, ON_MARKERS, ON_PROMPTS, ON_HOLSTER, ON_HOWTO, ON_CLIMB,
+enum { ON_DOORS, ON_RAISE, ON_VIEWFINDER, ON_MARKERS, ON_PROMPTS, ON_HOLSTER, ON_HOWTO, ON_CLIMB,
        ON_SCREEN, ON_BREATH, ON_ROOMWALK, ON_VFFRAME, ON_AUTOLEDGE, ON_COUNT };   // (Beta 1.1) ON_AUTOLEDGE   // (Test46) the framed zoom viewfinder   // (Test43) the camcorder's live screen, cover your mouth; (Test44) walk around for real
-// Beta defaults (Test39): reload is the Y button (the hands-on reload stays as an option), the
-// developer rings are off.
+// Beta defaults (Test39): reload is the Y button (always), the developer rings are off.
 // (Test40) climbing with your hands is on by default ([Motion] ClimbWithHands=0: A climbs, as before).
 // (Test45) the live screen (a compositor overlay, not the model's own screen) and cover-your-mouth are off.
 // (Test46) the live screen is ON again: it shows the camcorder lens's own picture now ([LIVESCREEN] ol_ue3 +
 // [LENSCAM] ol_xr), a second camera that runs only while the camcorder is in your hand facing you.
 // (Test46c) the user: "remove the live screen for now" - off by default and out of the menus again.
-static const int kOnDefault[ON_COUNT] = { 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0 };
-static volatile long g_on[ON_COUNT] = { 1, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0 };
-static const wchar_t* kKeys[ON_COUNT] = { L"DoorGrab", L"CamcorderRaiseGesture", L"BatteryGesture",
+static const int kOnDefault[ON_COUNT] = { 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0 };
+static volatile long g_on[ON_COUNT] = { 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0 };
+static const wchar_t* kKeys[ON_COUNT] = { L"DoorGrab", L"CamcorderRaiseGesture",
                                           L"CamcorderViewfinder", L"DevMarkers", L"QuestPrompts",
                                           L"CamcorderHolster", L"HowToHints", L"ClimbWithHands",
                                           L"CamcorderLiveScreen", L"CoverMouth", L"RoomscaleWalk", L"ViewfinderFrame",
@@ -195,9 +193,9 @@ void OLInteract_Init() {
         OLInteract_SetCamAdjust(r, o);
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
-    ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) battery=%ld viewfinder=%ld howTo=%ld "
+    ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) viewfinder=%ld howTo=%ld "
          "devMarkers=%ld questPrompts=%ld climbWithHands=%ld climbMode=%ld camHold=%ld liveScreen=%ld coverMouth=%ld roomscaleWalk=%ld | learned take=%d raise=%d eject=%d insert=%d door=%d climb=%d breath=%d",
-         g_on[ON_DOORS], g_on[ON_HOLSTER], g_on[ON_RAISE], g_eyeReach, g_on[ON_BATTERY], g_on[ON_VIEWFINDER],
+         g_on[ON_DOORS], g_on[ON_HOLSTER], g_on[ON_RAISE], g_eyeReach, g_on[ON_VIEWFINDER],
          g_on[ON_HOWTO], g_on[ON_MARKERS], g_on[ON_PROMPTS], g_on[ON_CLIMB], g_climbMode, g_camHold, g_on[ON_SCREEN], g_on[ON_BREATH], g_on[ON_ROOMWALK],
          g_learn[0], g_learn[1], g_learn[2], g_learn[3], g_learn[4], g_learn[5], g_learn[6]);
 }
@@ -393,7 +391,7 @@ static ULONGLONG s_camPulseUntil = 0, s_camCooldown = 0, s_reloadUntil = 0;
 static bool  s_blockGrip[2] = { false, false };
 static bool  s_nearKnob[2] = { false, false };
 static bool  s_nearDoorWide[2] = { false, false };   // near a knob: the right grip is the door's, not the camcorder's
-static bool  s_inPouch = false, s_moving = false;
+static bool  s_moving = false;
 static V3    s_anchorW[2] = {};                // [ANCHOR] (Test40) where each hand holds on (world)
 static float s_anchorWt[2] = { 0.0f, 0.0f };    // eased weight
 
@@ -428,8 +426,6 @@ static ULONGLONG s_inEyeSince = 0;
 // One raise attempt per time the hand comes to the eye: a reload (or a cutscene) lowers the camcorder
 // while the hand is still there, and retrying every cooldown fought the game's own animation.
 static bool s_eyeArmed = true;
-static ULONGLONG s_gesturePauseUntil = 0;   // after a reload, while the game swaps the battery
-static bool s_rearmAfterPause = false;       // it was up when you reloaded: bring it back up once
 static V3 s_eyeZone;
 static float s_dEye = 9.0f;
 // (Beta 1.1.4) [FACECAM] Hold the right stick click and the camcorder is raised by the game and
@@ -502,8 +498,6 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
     const bool holster = HolsterOn();
     const bool allowed = holster ? (s_hState == H_IN_HAND) : (g_on[ON_RAISE] != 0 && !g_camButton);   // (Test49) no gesture
     if (!allowed || s_camUp < 0) { s_inEyeSince = 0; return; }
-    if (now < s_gesturePauseUntil) { s_inEyeSince = 0; return; }
-    if (s_rearmAfterPause) { s_rearmAfterPause = false; s_eyeArmed = true; }
     if (s_camUp == 0) {
         if (s_camByGesture && now > s_camCooldown) s_camByGesture = false;   // lowered some other way
         if (s_dEye < EyeEnter() && s_eyeArmed) {
@@ -609,121 +603,9 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
     }
 }
 
-// ---- battery ----------------------------------------------------------------------------------------
-// s_bat: 0 nothing in the left hand, 1 a NEW battery, 2 gripping the old one in the camcorder (not out
-// yet), 3 holding the old one (pulled out). The old battery's removal is only shown: the game's own
-// battery keeps running until the new one goes in and its reload replaces it - so pulling one out and
-// walking off can never leave you without a camcorder light.
-static int s_bat = 0;
-static bool s_slotLoaded = true;
-static ULONGLONG s_emptyFlashUntil = 0, s_reloadFlashUntil = 0, s_chargedUntil = 0, s_ejectFirstUntil = 0;
-static V3 s_pouch, s_slot;
-static bool s_slotValid = false;
-// The battery sits in the back of the camcorder: 7 cm behind and 3 cm above the right controller's grip.
-static const V3 kSlotOff = { 0.0f, 0.03f, 0.07f };
-static void BatteryInsert(ULONGLONG now, float d) {
-    s_reloadUntil = now + 150; s_reloadFlashUntil = now + 600; s_chargedUntil = now + 1100;
-    s_gesturePauseUntil = now + 2500;   // let the game's reload play out before any gesture
-    s_rearmAfterPause = (s_camUp == 1);
-    OLXR_HapticPulse(0, 0.7f, 50); OLXR_HapticPulse(1, 0.9f, 70);
-    ILog("[OLVR][INTERACT] battery inserted at the camcorder (%.2f m) -> reload", d);
-}
-static void Battery(ULONGLONG now, const OLXrFrameHands& fh, const OLXrPad& p) {
-    s_pouch = OnBody(-0.20f, -0.58f, -0.04f);
-    const bool lOk = (fh.valid & 1u) != 0, rOk = (fh.valid & 2u) != 0;
-    const V3 L = P3(fh.hand[0]), R = P3(fh.hand[1]);
-    s_inPouch = lOk && Len(Sub(L, s_pouch)) < 0.18f;
-    s_moving = sqrtf(p.moveX * p.moveX + p.moveY * p.moveY) > 0.35f;
-    s_slotValid = rOk && HolsterOn() && s_hState == H_IN_HAND;
-    // The slot follows the camcorder the player actually sees: the model is oriented by the controller's
-    // AIM pose (free hold), and its grip "forward" runs up the handle, so the old fixed grip-pose offset
-    // landed the slot ~10-14 cm away from the model's back and the hand never reached it. Use the point
-    // ol_ue3 reports from the drawn model; fall back to the grip offset only until that is ready.
-    if (rOk) {
-        float sv[3];
-        if (s_hState == H_IN_HAND && OLUE3_CamSlotVisual(sv)) s_slot = V3{ sv[0], sv[1], sv[2] };
-        else s_slot = Add(R, QRot(fh.hand[1], kSlotOff));
-    }
-    // A reload the game did by itself (Y) always leaves a loaded camcorder.
-    if (s_prevNumBat >= 0 && s_numBat < s_prevNumBat) { s_slotLoaded = true; if (s_bat == 1) s_bat = 0; }
-    s_prevNumBat = s_numBat;
-    if (!g_on[ON_BATTERY]) { s_bat = 0; return; }
 
-    if (!HolsterOn()) {
-        // Test37: battery from the hip, let go at the camcorder hand.
-        if (s_bat == 0) {
-            if (s_gripEdge[0] && s_inPouch && !s_moving) {
-                if (s_numBat > 0) { s_bat = 1; OLXR_HapticPulse(0, 0.6f, 45); ILog("[OLVR][INTERACT] battery taken from the hip pouch (%d left)", s_numBat); }
-                else { s_emptyFlashUntil = now + 700; OLXR_HapticPulse(0, 0.9f, 25); ILog("[OLVR][INTERACT] hip pouch is EMPTY (no spare batteries)"); }
-            }
-        } else if (!s_gripDown[0]) {
-            const float d = (lOk && rOk) ? Len(Sub(L, R)) : 9.0f;
-            if (d < 0.18f) BatteryInsert(now, d);
-            else ILog("[OLVR][INTERACT] battery let go away from the camcorder (%.2f m) - put back", d);
-            s_bat = 0;
-        }
-        return;
-    }
 
-    // Test38: eject, drop, new one from the hip, slide it in.
-    const float dSlot = (lOk && s_slotValid) ? Len(Sub(L, s_slot)) : 9.0f;
-    switch (s_bat) {
-    case 0:
-        if (!s_gripEdge[0]) break;
-        if (s_slotLoaded && dSlot < 0.09f) {
-            if (s_numBat > 0) {
-                s_bat = 2; OLXR_HapticPulse(0, 0.45f, 30);
-                ILog("[OLVR][RELOAD] old battery gripped at the camcorder (%.2f m) - pull it out", dSlot);
-            } else {
-                s_emptyFlashUntil = now + 900; OLXR_HapticPulse(0, 0.9f, 25);
-                ILog("[OLVR][RELOAD] no spare batteries - the old one stays in");
-            }
-        } else if (s_inPouch && !s_moving) {
-            if (s_slotLoaded) {
-                s_ejectFirstUntil = now + 2000; OLXR_HapticPulse(0, 0.2f, 15);   // first the old one out
-                ILog("[OLVR][RELOAD] hip pouch: the old battery has to come out first");
-            } else if (s_numBat > 0) {
-                s_bat = 1; OLXR_HapticPulse(0, 0.6f, 45);
-                ILog("[OLVR][RELOAD] new battery taken from the hip pouch (%d left)", s_numBat);
-            } else {
-                s_emptyFlashUntil = now + 900; OLXR_HapticPulse(0, 0.9f, 25);
-                ILog("[OLVR][RELOAD] hip pouch is EMPTY (no spare batteries)");
-            }
-        }
-        break;
-    case 2:
-        if (!s_gripDown[0] || !s_slotValid) { s_bat = 0; break; }        // let go before it came out
-        if (dSlot > 0.08f) {
-            s_bat = 3; s_slotLoaded = false;
-            OLXR_HapticPulse(0, 0.8f, 40); OLXR_HapticPulse(1, 0.4f, 25);
-            Learn(LN_EJECT);
-            ILog("[OLVR][RELOAD] old battery pulled out of the camcorder");
-        }
-        break;
-    case 3:
-        if (!s_gripDown[0]) {
-            if (s_slotValid && dSlot < 0.07f) {
-                s_slotLoaded = true; OLXR_HapticPulse(0, 0.5f, 30);
-                ILog("[OLVR][RELOAD] the old battery went back in");
-            } else {
-                OLXR_HapticPulse(0, 0.3f, 25);
-                ILog("[OLVR][RELOAD] old battery dropped");
-            }
-            s_bat = 0;
-        }
-        break;
-    case 1:
-        if (s_slotValid && dSlot < 0.07f) {
-            s_bat = 0; s_slotLoaded = true;
-            Learn(LN_INSERT);
-            BatteryInsert(now, dSlot);
-        } else if (!s_gripDown[0]) {
-            s_bat = 0;
-            ILog("[OLVR][RELOAD] new battery let go away from the camcorder - back in the pouch");
-        }
-        break;
-    }
-}
+
 
 // ---- doors (Test40: [DOORPHYS] a hinged body with weight) --------------------------------------------
 // Test39 wrote TargetOpenRatio and let OLDoor's tick chase it at a constant CurrentSpeed: a robot swing
@@ -985,7 +867,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OL
             continue;
         }
         if (!s_gripEdge[h] || best[h] < 0 || bestD[h] >= kGrabUU) continue;
-        if (h == 0 && s_bat) continue;                                     // the left hand holds a battery
+                                             // the left hand holds a battery
         const NearDoor& nd = s_near[best[h]];
         if (nd.locked) {
             s_lockedFlashUntil = now + 900; s_lockedDoor = nd.d;
@@ -1047,7 +929,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OL
         // open hands against this panel: which side, how far in
         bool contact[2] = { false, false }; float aC[2] = { 0, 0 }, dirA[2] = { 0, 0 };
         for (int h = 0; h < 2; ++h) {
-            if (!handOk[h] || s_gripDown[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton)) || (h == 0 && s_bat)) {
+            if (!handOk[h] || s_gripDown[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton))  {
                 if (s_pushDoor[h] == nd.d) { s_pushDoor[h] = nullptr; s_pushSide[h] = 0; }
                 continue;
             }
@@ -1622,7 +1504,7 @@ static void PhysClimb(ULONGLONG now, float dt, const OLXrFrameHands& fh, V3 hand
             s_hold[h] = false; s_holdLadder[h] = false; s_pcEdge[h] = -1; OLXR_HapticPulse(h, 0.15f, 15);
             continue;
         }
-        if (s_hold[h] || !handOk[h] || (h == 1 && camHand) || (h == 0 && s_bat) || s_grab[h].d) continue;
+        if (s_hold[h] || !handOk[h] || (h == 1 && camHand)  || s_grab[h].d) continue;
         V3 at, n, ep; int ei = -1;
         const int k = HandOnEdge(handW[h], &at, &n, &ep, &ei);
         if (k == 1 && !s_gripDown[h]) { s_edgeNear = ep; s_edgeNearOn = true; }
@@ -1822,7 +1704,7 @@ static void Climb(ULONGLONG now, float dt, const OLXrFrameHands& fh, V3 handW[2]
                 s_hold[h] = false; OLXR_HapticPulse(h, 0.15f, 15);
                 continue;
             }
-            if (s_hold[h] || lm != 0 || (h == 1 && camHand) || (h == 0 && s_bat)) continue;
+            if (s_hold[h] || lm != 0 || (h == 1 && camHand)  continue;
             V3 at, n, ep; const int k = HandOnEdge(handW[h], &at, &n, &ep);
             if (k && !s_gripDown[h]) { s_edgeNear = ep; s_edgeNearOn = true; }
             if (k && s_gripEdge[h] && !RunGripLow(h, fh)) {   // (Test48) [RUNGRIP]
@@ -2085,7 +1967,7 @@ static void Breath(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& fh
     // which free hand is over the mouth (enter 11 cm, leave 16 cm), in front of the face
     int hand = -1; float best = 9.0f;
     for (int h = 0; h < 2; ++h) {
-        if (!(fh.valid & (1u << h)) || s_grab[h].d || s_hold[h] || (h == 1 && CamInRightHand()) || (h == 0 && s_bat)) continue;
+        if (!(fh.valid & (1u << h)) || s_grab[h].d || s_hold[h] || (h == 1 && CamInRightHand())  continue;
         const V3 p = P3(fh.hand[h]);
         const float d = Len(Sub(p, s_mouth)), ahead = (p.x - s_headT.x) * fwd.x + (p.y - s_headT.y) * fwd.y + (p.z - s_headT.z) * fwd.z;
         const float lim = (s_cover && s_coverHand == h) ? 0.16f : 0.11f;
@@ -2128,34 +2010,8 @@ static void Markers(ULONGLONG now, const OLXrFrameHands& fh) {
                 if (Teach(LN_TAKECAM) && rOk && s_dHolster < 0.60f && s_camBlend < 0.01f)
                     teachLabel(OnBody(kHolsterOff.x, kHolsterOff.y + 0.18f, kHolsterOff.z + 0.18f), OLMK_L_TAKE_CAM);
             }
-            // reload guidance: the camcorder is in your hand and the battery is low, or you have started
-            bool reloadShown = false;
-            if (g_on[ON_BATTERY] && s_slotValid) {
-                const bool started = s_bat != 0 || !s_slotLoaded || (lOk && Len(Sub(L, s_slot)) < 0.30f);
-                const bool want = started || s_energy < 0.30f || now < s_emptyFlashUntil || now < s_ejectFirstUntil;
-                reloadShown = want || now < s_chargedUntil;
-                if (now < s_chargedUntil) { add(s_slot, 0.08f, OLMK_GLOW, 0.0f); label(s_slot, OLMK_L_CHARGED); ++labels; }
-                else if (want) {
-                    if (s_bat == 0 && s_slotLoaded) {
-                        if (s_numBat > 0) { add(s_slot, 0.05f, OLMK_GLOW, 0.0f); if (Teach(LN_EJECT) || now < s_ejectFirstUntil) teachLabel(s_slot, OLMK_L_PULL_OLD); }
-                        else { add(s_slot, 0.05f, OLMK_GLOW_RED, 0.0f); teachLabel(s_slot, OLMK_L_NO_SPARE); }
-                    } else if (s_bat == 2) {
-                        add(s_slot, 0.05f, OLMK_GLOW, 0.0f);
-                    } else if (s_bat == 3 && lOk) {
-                        if (Teach(LN_EJECT)) teachLabel(L, OLMK_L_DROP_OLD);
-                    } else if (s_bat == 0 && !s_slotLoaded) {
-                        // the label floats up in front of the hip, where a glance down finds it, pointing at the pouch
-                        const V3 hipLabel = OnBody(-0.20f, -0.42f, 0.12f);
-                        if (s_numBat > 0) { add(s_pouch, s_inPouch ? 0.12f : 0.10f, OLMK_GLOW, 0.0f); if (Teach(LN_INSERT)) teachLabel(hipLabel, OLMK_L_TAKE_NEW); }
-                        else { add(s_pouch, 0.10f, OLMK_GLOW_RED, 0.0f); teachLabel(hipLabel, OLMK_L_NO_SPARE); }
-                    } else if (s_bat == 1) {
-                        add(s_slot, 0.06f, OLMK_GLOW, 0.0f);
-                        if (Teach(LN_INSERT)) teachLabel(s_slot, OLMK_L_SLIDE_IN);
-                    }
-                }
-            }
-            // "look through it" only while nothing about the battery is being shown
-            if (s_hState == H_IN_HAND && !reloadShown && s_camUp == 0 && rOk && Teach(LN_RAISE) && s_bat == 0 && s_camBlend > 0.99f)
+            // "look through it"
+            if (s_hState == H_IN_HAND && s_camUp == 0 && rOk && Teach(LN_RAISE) && s_camBlend > 0.99f)
                 teachLabel(R, OLMK_L_RAISE);
         }
         // doors: a hand near a free knob; a locked one says so while it buzzes
@@ -2213,17 +2069,10 @@ static void Markers(ULONGLONG now, const OLXrFrameHands& fh) {
             add(s_eyeZone, 0.012f, col, 0.0f);   // it sits 11 cm from your eye: keep it small
         }
         {
-            int col = OLMK_ORANGE;
-            if (now < s_emptyFlashUntil) col = OLMK_RED;
-            else if (now < s_reloadFlashUntil || s_bat == 1) col = OLMK_GREEN;
-            else if (s_inPouch) col = OLMK_YELLOW;
-            add(s_pouch, 0.09f, col, 0.0f);
             if (HolsterOn()) {
                 const int hc = s_hState == H_IN_HAND ? OLMK_GREEN : (s_inHolster ? OLMK_YELLOW : OLMK_CYAN);
                 add(s_holster, 0.06f, hc, 0.0f); add(s_holsterVis, 0.04f, hc, 0.0f);
             }
-            if (s_slotValid) add(s_slot, 0.03f, s_slotLoaded ? OLMK_WHITE : OLMK_ORANGE, 0.0f);
-            if (s_bat && lOk) add(L, 0.04f, s_bat == 1 ? OLMK_YELLOW : OLMK_RED, 0.0f);
         }
     }
     OLXR_SetMarkers(mk, n);
@@ -2412,7 +2261,6 @@ extern "C" void OLInteract_Tick() {
     CamHoldGesture(now, p);      // (Beta 1.1.4) [FACECAM] a held right stick click: raise / pin / lower
     Holster(now, fh);           // first: a squeeze at the hip is the camcorder's, not a door's
     CamRaise(now, head, fh);
-    Battery(now, fh, p);
     Climb(now, dt, fh, handW, handOk);   // (Test40) a squeeze on a climbable edge holds the edge
     RoomWalkTick(now);                    // (Test44) after Climb: it knows whether the hands are climbing
     Doors(now, dt, handW, handOk, fh);
@@ -2442,10 +2290,8 @@ extern "C" void OLInteract_Tick() {
             if (s_gripW[h] < 0.0f) s_gripW[h] = 0.0f; if (s_gripW[h] > 1.0f) s_gripW[h] = 1.0f;
         }
     }
-    // A grip that is on a knob, holding a battery or reaching into the pouch is not sprint/camcorder.
-    // With the holster the right grip is only ever the hand holding the camcorder.
-    s_blockGrip[0] = s_grab[0].d || s_nearKnob[0] || s_bat || (g_on[ON_BATTERY] && s_inPouch && !s_moving) ||
-                     (s_slotValid && Len(Sub(P3(fh.hand[0]), s_slot)) < 0.12f);
+    // A grip that is on a knob is not sprint/camcorder.
+    s_blockGrip[0] = s_grab[0].d || s_nearKnob[0];
     s_blockGrip[1] = HolsterOn() || s_grab[1].d || s_nearKnob[1] || (!g_camButton && s_nearDoorWide[1]);
     // (Test40) [CLIMB] a grip holding an edge, a ledge or a rung is not sprint / the camcorder
     for (int h = 0; h < 2; ++h) if (g_on[ON_CLIMB] && (s_hold[h] || s_cl == CL_HANG || s_cl == CL_LADDER || s_cl == CL_CLIMBING)) s_blockGrip[h] = true;
@@ -2468,10 +2314,10 @@ extern "C" void OLInteract_Tick() {
         const OLXrPose& rq = fh.hand[1];
         const V3 rf = QRot(rq, V3{ 0.0f, 0.0f, -1.0f }), ru = QRot(rq, V3{ 0.0f, 1.0f, 0.0f });
         ILog("[OLVR][INTERACT] alive: cam=%d zoom=%.2f vf=%.2f batteries=%d energy=%.2f | holster %s blend %.2f (reach head%+.2f %+.2f %+.2f, drawn head%+.2f %+.2f %+.2f, hand %.2f m) "
-             "slot %s bat=%d | doors %d/%d (moving %d) | climb %s%s (move %d/%d, edges %d) | eye %.2f m, pouch %s | right grip fwd (%+.2f %+.2f %+.2f) up (%+.2f %+.2f %+.2f) | breath %s",
+             "slot | doors %d/%d (moving %d) | climb %s%s (move %d/%d, edges %d) | eye %.2f m | right grip fwd (%+.2f %+.2f %+.2f) up (%+.2f %+.2f %+.2f) | breath %s",
              s_camUp, s_zoom, (float)s_vfZoom, s_numBat, s_energy, s_hState == H_IN_HAND ? "IN HAND" : "holstered", s_camBlend,
-             hr.x, hr.y, hr.z, hvr.x, hvr.y, hvr.z, s_dHolster, s_slotLoaded ? "loaded" : "EMPTY", s_bat, s_nearN, s_allN, live,
-             kClName[s_cl], s_pc ? " (carried by the hands)" : "", s_lm, s_sm, s_ledgeN, s_dEye, s_inPouch ? "hand in" : "-", rf.x, rf.y, rf.z, ru.x, ru.y, ru.z,
+             hr.x, hr.y, hr.z, hvr.x, hvr.y, hvr.z, s_dHolster, s_nearN, s_allN, live,
+             kClName[s_cl], s_pc ? " (carried by the hands)" : "", s_lm, s_sm, s_ledgeN, s_dEye, rf.x, rf.y, rf.z, ru.x, ru.y, ru.z,
              s_cover ? "HELD" : (s_heavyNow ? "heavy" : "calm"));
     }
 }
@@ -2491,7 +2337,7 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
     const bool fresh = s_tickMs && now - s_tickMs <= 250;
     for (int h = 0; h < 2; ++h) {
         if (g[h] < 0.35f) { s_sticky[h] = false; s_gameHas[h] = false; }
-        const bool owns = s_grab[h].d || (h == 0 && s_bat) || (h == 1 && s_hState == H_IN_HAND) || (g_on[ON_CLIMB] && s_hold[h]);
+        const bool owns = s_grab[h].d || (h == 1 && s_hState == H_IN_HAND) || (g_on[ON_CLIMB] && s_hold[h]);
         if (fresh && (owns || (s_blockGrip[h] && !s_gameHas[h]))) s_sticky[h] = true;
         if (!s_sticky[h] && g[h] > 0.60f) s_gameHas[h] = true;
     }
@@ -2506,8 +2352,6 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
             ILog("[OLVR][INTERACT] door let go by the %s hand (interactions paused)", h ? "right" : "left");
             s_grab[h].d = nullptr;
         }
-        if (s_bat == 2) s_bat = 0;
-        if (s_bat == 1 && HolsterOn()) s_bat = 0;
         if (s_pc) PcStop("interactions paused (menu, cutscene, loading)", false);   // (Test43)
         if (s_hushed || s_cover) BreathRelease(now, "interactions paused");
         if (s_cl != CL_IDLE || s_hold[0] || s_hold[1]) { s_cl = CL_IDLE; ClearHolds(); }
