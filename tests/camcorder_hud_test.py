@@ -122,25 +122,38 @@ int main() {
     OLCamHud::Canvas canvas;
     OLCamHud::Static(canvas,noText);
     assert(canvas.pixels[(500*1920+960)*4+3]==0); // transparent scene, no black screenshot background
-    // Focusing brackets: opaque, one pixel thin, grey (#808079) and slimmer than they were - a 167x139
-    // box with 44 px arms instead of 212x178 with 56, on the same centre (960.5, 550.5). Translucency
-    // is still not an option: the compositor multiplies the layer by its own alpha despite
-    // XR_COMPOSITION_LAYER_UNPREMULTIPLIED and a 200/255 (and even a 235/255) grey box came out black.
-    assert(canvas.pixels[(481*1920+877)*4+3]==255);  // opaque: the blend is a plain copy
-    assert(canvas.pixels[(481*1920+877)*4+2]==128 && canvas.pixels[(481*1920+877)*4+1]==128
-        && canvas.pixels[(481*1920+877)*4+0]==121);  // #808079, not the old bright 175
-    assert(canvas.pixels[(482*1920+900)*4+3]==0);    // one pixel thick: the bar is not two rows tall
-    assert(canvas.pixels[(500*1920+878)*4+3]==0);    // ...nor two columns wide
-    assert(canvas.pixels[(500*1920+877)*4+3]==255);  // the vertical arm is still there
-    assert(canvas.pixels[(462*1920+855)*4+3]==0);    // the old, larger box is gone
-    assert(canvas.pixels[(481*1920+1043)*4+3]==255 && canvas.pixels[(619*1920+877)*4+3]==255);
-    assert(canvas.pixels[(550*1920+960)*4+3]==0);    // brackets stay hollow
+    // [CAMFOCUS] The focusing brackets are NOT in the display's texture any more: they ride a quad of
+    // their own, deeper than the display, so the middle of the display is empty and the box has its
+    // own small raster. The display must not carry a second copy of it.
+    assert(canvas.pixels[(481*1920+877)*4+3]==0);
+    assert(canvas.pixels[(550*1920+877)*4+3]==0);
+    assert(canvas.pixels[(550*1920+960)*4+3]==0);
     // HD badge: the perforations are transparent HOLEs, not black squares - the layer sits over the
     // scene, so a black square would be paint on the picture.
     assert(canvas.pixels[(825*1920+158)*4+3]==0);    // inside the first perforation
     assert(canvas.pixels[(836*1920+158)*4+3]==255);  // ...and the plate between them
     assert(canvas.pixels[(836*1920+158)*4+2]==128);  // #808079, like every other HUD icon
     assert(canvas.pixels[(825*1920+245)*4+3]==0);    // the right column is a hole too
+    // The focus layer's own texture: 169x141 (the 167x139 box plus a transparent pixel), the box
+    // drawn at (FocusPad, FocusPad), opaque, one pixel thin, grey #808079, hollow in the middle,
+    // transparent everywhere else. Translucency is still not an option: the compositor multiplies the
+    // layer by its own alpha despite XR_COMPOSITION_LAYER_UNPREMULTIPLIED and a 200/255 (and even a
+    // 235/255) grey box came out black.
+    OLCamHud::FocusCanvas focus;
+    OLCamHud::Focus(focus);
+    auto fx=[&](int x,int y,int ch){ return focus.pixels[(y*OLCamHud::FocusWidth+x)*4+ch]; };
+    assert(fx(1,1,3)==255);                          // opaque: the blend is a plain copy
+    assert(fx(1,1,2)==128 && fx(1,1,1)==128 && fx(1,1,0)==121);   // #808079, not the old bright 175
+    assert(fx(10,2,3)==0);                           // one pixel thin: the bar is not two rows tall
+    assert(fx(2,24,3)==0);                           // ...nor two columns wide
+    assert(fx(1,24,3)==255);                         // the vertical arm is still there
+    assert(fx(1,OLCamHud::FocusPad+OLCamHud::BracketH-1,3)==255); // bottom arm, last pixel of the box
+    assert(fx(OLCamHud::FocusPad+OLCamHud::BracketW-1, OLCamHud::FocusPad+OLCamHud::BracketH-1, 3)==255);
+    assert(fx(OLCamHud::FocusPad+OLCamHud::BracketW-1,24,3)==255); // right arm
+    assert(fx(OLCamHud::FocusPad+OLCamHud::BracketArm,1,3)==0);    // gap between the top arms
+    assert(fx(OLCamHud::FocusPad+OLCamHud::BracketW-OLCamHud::BracketArm,1,3)==255);
+    assert(fx(84,70,3)==0);                          // hollow in the middle
+    assert(fx(0,0,3)==0 && fx(84,0,3)==0 && fx(84,OLCamHud::FocusHeight-1,3)==0); // the pad is clear
     s.energy=1; s.zoom=0; s.nightVision=false; OLCamHud::Top(canvas,s,inkText);
     // The palette, on the strings themselves: the REC caption and the clock are the recording red,
     // everything else - the spare count included - is the HUD grey.
@@ -155,22 +168,27 @@ int main() {
         && canvas.pixels[(80*1920+55)*4+0]==0);      // REC lamp in #A71000
     assert(canvas.pixels[(100*1920+100)*4+3]==0);
     assert(canvas.pixels[(100*1920+1599)*4+3]==0);   // the gauge no longer starts at the old x
-    // No dark rim anywhere around the gauge or its terminal: those pixels are transparent now.
+    // The gauge keeps its 212x48 cell in the top-right corner; the outline, the terminal and the
+    // charge block are the reference's own proportions.
     assert(canvas.pixels[(75*1920+1850)*4+3]==0);    // right of the frame
     assert(canvas.pixels[(40*1920+1750)*4+3]==0);    // above it
-    assert(canvas.pixels[(75*1920+1677)*4+2]==128);  // the old terminal tab's spot is the bar now
+    assert(canvas.pixels[(75*1920+1677)*4+3]==255);  // the bar
+    assert(canvas.pixels[(75*1920+1677)*4+2]==132);  // ...with the reference's soft fall (grey+4 at row 14)
     assert(canvas.pixels[(75*1920+1845)*4+3]==255);  // the grey frame itself
     assert(canvas.pixels[(75*1920+1845)*4+2]==128);
     assert(canvas.pixels[(75*1920+1641)*4+3]==0);    // ...and its window is transparent
-    // Contact on the left, a bracket that opens into the body: bar and arms solid, notch transparent.
-    assert(canvas.pixels[(75*1920+1620)*4+3]==255 && canvas.pixels[(75*1920+1630)*4+3]==0);
-    assert(canvas.pixels[(64*1920+1630)*4+3]==255);
+    // Contact on the left: a compact tab, 13x22 centred on the cell, whose 8x14 slot dead-ends at the
+    // outline - cap and arms solid, slot transparent, and nothing above the tab.
+    assert(canvas.pixels[(75*1920+1625)*4+3]==255);  // the tab's cap
+    assert(canvas.pixels[(75*1920+1631)*4+3]==0);    // the slot
+    assert(canvas.pixels[(67*1920+1630)*4+3]==255);  // the top arm, above the slot
+    assert(canvas.pixels[(58*1920+1630)*4+3]==0);    // ...and the cell is empty above the tab
     // The charge DRAINS LEFT TO RIGHT: at half charge the bar that is left sits against the far end,
     // and the contact end is already empty.
     s.energy=.5f; OLCamHud::Top(canvas,s,noText);
     assert(canvas.pixels[(75*1920+1700)*4+3]==0);    // empty at the contact end ...
     assert(canvas.pixels[(75*1920+1800)*4+3]==255);  // ... filled toward the right
-    assert(canvas.pixels[(75*1920+1800)*4+2]==128 && canvas.pixels[(75*1920+1800)*4+0]==121);
+    assert(canvas.pixels[(75*1920+1800)*4+2]==132 && canvas.pixels[(75*1920+1800)*4+0]==125);
     // Low charge keeps its warning, now in the recording red.
     s.energy=.25f; OLCamHud::Top(canvas,s,noText);
     assert(canvas.pixels[(75*1920+1800)*4+2]==167 && canvas.pixels[(75*1920+1800)*4+1]==16);
@@ -196,7 +214,8 @@ int main() {
     assert(canvas.pixels[(75*1920+1700)*4+3]==0); // empty battery actually empty
     assert(canvas.pixels[(75*1920+1836)*4+3]==0);
     assert(canvas.pixels[(462*1920+855)*4+3]==0); // dynamic updates preserve nothing of the old box
-    assert(canvas.pixels[(481*1920+877)*4+3]==255); // ...and the new brackets are static, so still there
+    assert(canvas.pixels[(481*1920+877)*4+3]==0); // ...and the display carries no brackets at all
+    assert(fx(1,1,3)==255);                       // (they live in the focus layer's own texture)
     assert(OLCamHud::Unit(std::numeric_limits<float>::infinity())==0);
     // Fullscreen scale: the display has to span the view, not sit as a panel in the middle of it.
     // The width follows PanelDistance (2 m now), so the same fill is a wider plane than it was at 1 m.
@@ -221,6 +240,29 @@ int main() {
     assert(OLCamHud::ZoomUnit(-1.0f)==0 && OLCamHud::ZoomUnit(4000.0f)==1);
     assert(std::fabs(OLCamHud::ZoomUnit(0.4f)-0.4f) < 1e-6f);
     assert(std::fabs(OLCamHud::ZoomUnit(40.0f)-0.4f) < 1e-6f);   // a 0..100 build still moves
+    // [CAMFOCUS] The focusing brackets ride a quad of their own, FocusDistance out. The quad is scaled
+    // and offset by FocusDistance/PanelDistance, which is what keeps the box on exactly the same pixels
+    // of the view: same place, same apparent size, more depth. Anything else would move the one shape
+    // the readouts were laid out around.
+    assert(OLCamHud::FocusDistance > OLCamHud::PanelDistance);
+    const float pw = OLCamHud::PanelWidth(96.0f);
+    const float ps = OLCamHud::FocusDistance / OLCamHud::PanelDistance;
+    const float pt = pw / float(OLCamHud::Width);                 // metres per display pixel
+    const OLCamHud::FocusQuadSize fq = OLCamHud::FocusQuadFor(pw);
+    assert(std::fabs(fq.width  - float(OLCamHud::FocusWidth ) * pt * ps) < 1e-5f);
+    assert(std::fabs(fq.height - float(OLCamHud::FocusHeight) * pt * ps) < 1e-5f);
+    assert(std::fabs(fq.offsetX - (OLCamHud::BracketX + 0.5f*OLCamHud::BracketW - 0.5f*OLCamHud::Width) * pt * ps) < 1e-5f);
+    assert(std::fabs(fq.offsetY - (0.5f*OLCamHud::Height - (OLCamHud::BracketY + 0.5f*OLCamHud::BracketH)) * pt * ps) < 1e-5f);
+    assert(std::fabs(fq.offsetX) < 0.01f && fq.offsetY < 0.0f);   // dead centre, a hair below it
+    // The same angle the box subtended on the display: 2*atan(half/far) is unchanged by the move.
+    const float boxDegPanel = 2.0f * std::atan(0.5f*(float(OLCamHud::FocusWidth)*pt)/OLCamHud::PanelDistance) * 57.29578f;
+    const float boxDegFocus = 2.0f * std::atan(0.5f*fq.width/OLCamHud::FocusDistance) * 57.29578f;
+    assert(std::fabs(boxDegPanel - boxDegFocus) < 1e-3f);
+    // ...and it asks for roughly half the display's convergence: ~0.9 deg, well inside any room's own.
+    const float focusConvDeg = 2.0f * std::atan(kHalfIpd / OLCamHud::FocusDistance) * 57.29578f;
+    assert(focusConvDeg > 0.6f && focusConvDeg < 1.2f);
+    assert(focusConvDeg < convDeg);
+    assert(OLCamHud::FocusQuadFor(0.0f).width == 0.0f);          // no panel width: no quad, no NaN
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

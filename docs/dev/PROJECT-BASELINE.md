@@ -448,3 +448,30 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   per axis, 8-pixel steps - and an empty field is refused with a note in the tape log rather than applied.
   While a field is open the keyboard belongs to it, so W/A/S/D cannot move the list; clicking anywhere
   else (the slider, another row, BACK) saves what was typed, and Esc cancels it.
+
+## Beta 1.1.7 changes: the reference battery, and a deeper focus box
+
+- **The charge gauge is now the reference cell, drawn to its own proportions.** The cell keeps the
+  212x48 footprint and the top-right corner it had (nothing else on the display moves), but the artwork
+  inside it follows the reference: a rounded outline one uniform stroke thick (4 px, ~1/13 of the
+  height) around a hollow window, corners a hair over one stroke (radius 5, was 7), a compact terminal
+  tab on the LEFT - 13x22, centred on the cell, with an 8x14 slot cut out of its middle that dead-ends
+  at the outline instead of opening into the window - and the charge as one solid, square-cornered block
+  inset 8 px from the outline on every side (196x32, was 192x28 at 10 px) with the reference's soft
+  vertical fall (grey +14 at the top to -8 at the bottom, was +12 to -14). It still drains left to right,
+  and a quarter or less is still drawn in the recording red. `tests/camcorder_hud_test.py` asserts the
+  outline, the window, the tab (cap solid, slot clear, nothing above it), the block's gradient value and
+  both ends of the drain.
+- **`[CAMFOCUS]` the focusing brackets moved to a quad of their own, twice as far out.** The box is the
+  one thin shape in the middle of the view, and the middle of a plane is where stereo disparity is
+  largest - the old "the brackets look doubled" report. It used to ride the display's texture at
+  `PanelDistance` (2.00 m, ~1.8 deg of convergence). It now has its own 169x141 px swapchain (the
+  167x139 box plus a transparent pixel) and its own quad at `OLCamHud::FocusDistance = 4.00 m`, ~0.9 deg.
+  The quad is scaled AND offset by `FocusDistance/PanelDistance` (`OLCamHud::FocusQuadFor`), so it covers
+  exactly the pixels the display used to: same place, same apparent size on screen, deeper. The display
+  no longer draws the box at all, and every other readout - REC, clock, W-T lever, spare count, gauge,
+  HD/AUTO/F2.4, the night-vision tell-tales - stays at `PanelDistance` in its own position, untouched.
+  `CamcorderFocusLayer` logs `[CAMFOCUS] brackets WxH px on their own plane, parked D m out: N deg`, falls
+  back to "no box this frame" if the extra swapchain cannot be created, and is submitted only while the
+  camcorder HUD itself is. The test checks the scale/offset against the display's own angles, the
+  unchanged subtended angle, the ~0.9 deg convergence and that the display's texture carries no box.
