@@ -929,7 +929,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OL
         // open hands against this panel: which side, how far in
         bool contact[2] = { false, false }; float aC[2] = { 0, 0 }, dirA[2] = { 0, 0 };
         for (int h = 0; h < 2; ++h) {
-            if (!handOk[h] || s_gripDown[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton))  {
+            if (!handOk[h] || s_gripDown[h] || ClimbHolding(h) || (h == 1 && (CamInRightHand() || g_camButton))) {
                 if (s_pushDoor[h] == nd.d) { s_pushDoor[h] = nullptr; s_pushSide[h] = 0; }
                 continue;
             }

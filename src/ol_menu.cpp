@@ -628,8 +628,8 @@ static void BuildUI() {
               "1.00 aims entirely with your hand. Lower it to keep some of your\n"
               "head aim mixed in, which is steadier while walking.");
       } }
-    { bool b = OLInteract_Get(6) != 0;
-      if (ImGui::Checkbox("Camcorder on your hip", &b)) OLInteract_Set(6, b);
+    { bool b = OLInteract_Get(5) != 0;
+      if (ImGui::Checkbox("Camcorder on your hip", &b)) OLInteract_Set(5, b);
       Help(
           "Reach to your right hip (or your lap, when you play seated) and squeeze\n"
           "the grip: the camcorder glides into your hand. Bring it to your eye to look\n"
