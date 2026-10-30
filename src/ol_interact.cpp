@@ -54,6 +54,7 @@ extern "C" int   OLUE3_DoorHinge(void* door, float out[3]);
 extern "C" int   OLUE3_GameplayActive();
 extern "C" int   OLUE3_InGameMenu();
 extern "C" int   OLUE3_HolsterVisual(float out[3]);   // where the holstered model is drawn
+extern "C" int   OLUE3_CamSlotVisual(float out[3]);   // where the camcorder's battery slot is drawn (in hand)
 extern "C" int   OLUE3_HeroMoveState(int* lm, int* sm);                 // (Test40) LocomotionMode, SpecialMove
 extern "C" int   OLUE3_DoorSetRatioAndTarget(void* door, float r);      // (Test40) 0xCC46A0
 extern "C" int   OLUE3_CameraBoneWorld(float out[3]);                   // (Test40) for the anchor check
@@ -634,7 +635,15 @@ static void Battery(ULONGLONG now, const OLXrFrameHands& fh, const OLXrPad& p) {
     s_inPouch = lOk && Len(Sub(L, s_pouch)) < 0.18f;
     s_moving = sqrtf(p.moveX * p.moveX + p.moveY * p.moveY) > 0.35f;
     s_slotValid = rOk && HolsterOn() && s_hState == H_IN_HAND;
-    if (rOk) s_slot = Add(R, QRot(fh.hand[1], kSlotOff));
+    // The slot follows the camcorder the player actually sees: the model is oriented by the controller's
+    // AIM pose (free hold), and its grip "forward" runs up the handle, so the old fixed grip-pose offset
+    // landed the slot ~10-14 cm away from the model's back and the hand never reached it. Use the point
+    // ol_ue3 reports from the drawn model; fall back to the grip offset only until that is ready.
+    if (rOk) {
+        float sv[3];
+        if (s_hState == H_IN_HAND && OLUE3_CamSlotVisual(sv)) s_slot = V3{ sv[0], sv[1], sv[2] };
+        else s_slot = Add(R, QRot(fh.hand[1], kSlotOff));
+    }
     // A reload the game did by itself (Y) always leaves a loaded camcorder.
     if (s_prevNumBat >= 0 && s_numBat < s_prevNumBat) { s_slotLoaded = true; if (s_bat == 1) s_bat = 0; }
     s_prevNumBat = s_numBat;
