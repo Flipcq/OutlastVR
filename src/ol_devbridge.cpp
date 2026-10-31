@@ -104,6 +104,7 @@ extern "C" void OLUE3_DevQueueHide(void* comp, int hidden);
 extern "C" void OLUE3_DevCamTune(int which, float a, float b, float c);
 extern "C" void OLUE3_DevBatteryTune(int which, float a, float b, float c);
 extern "C" void OLUE3_DevBatteryDiag();
+extern "C" void OLUE3_DevDocumentTune(int which, float a, float b, float c);
 extern "C" void OLXR_DevButtons(unsigned mask, int ms);
 extern "C" void OLXR_DevTrigger(int hand, float v);
 extern "C" void OLUE3_DevBones();
@@ -478,6 +479,9 @@ extern "C" void OLDev_OnPresent(IDirect3DDevice9* dev, long presentCount) {
             if (sscanf_s(a, "%d %f %f %f", &w, &x, &y, &z) == 4 && w >= 0 && w <= 3) OLUE3_DevBatteryTune(w, x, y, z);
         } else if (!_stricmp(cmd, "batdiag")) {
             OLUE3_DevBatteryDiag();
+        } else if (!_stricmp(cmd, "doctune")) {
+            int w = 0; float x = 0, y = 0, z = 0;
+            if (sscanf_s(a, "%d %f %f %f", &w, &x, &y, &z) == 4 && w >= 0 && w <= 3) OLUE3_DevDocumentTune(w, x, y, z);
         } else if (!_stricmp(cmd, "hide")) {
             unsigned long long addr = 0; int hv = 1;
             if (sscanf_s(a, "%llx %d", &addr, &hv) >= 1 && addr > 0x10000) OLUE3_DevQueueHide((void*)(uintptr_t)addr, hv);

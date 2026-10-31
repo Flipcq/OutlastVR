@@ -215,7 +215,8 @@ int main() {
     Hint(L"Press {OLA_CrouchToggle}",L"Press X");
     Hint(L"Press {OLA_Crouch}",L"Press X");
     Hint(L"Press {OLA_ShowTabMenu}",L"Press no shortcut");
-    Hint(L"Press {OLA_ShowRecordingMenu}",L"Press no shortcut");
+    Hint(L"Press {OLA_ShowRecordingMenu}",L"Press left grip + Y");
+    Hint(L"Press {OLA_ShowEvidenceMenu}",L"Press no shortcut");
     Hint(L"Press {OLA_Use} to close",L"Grab the handle to close, or press B");
     gameMenu=true;Hint(L"Press {OLA_Use}",L"Press X");Hint(L"Press {OLA_CrouchToggle}",L"Press B");
     gameMenu=false;g_mouseUse=0;Hint(L"Press {OLA_Use} to close",L"Grab the handle to close, or press X");

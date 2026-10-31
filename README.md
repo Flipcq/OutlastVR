@@ -79,7 +79,8 @@ Run the launcher again after Steam updates or verifies Outlast, because Steam ca
 | Y: reload the camcorder battery | B: use / open / close / pick up |
 | Trigger: lean left / look back | Trigger: lean right / look back |
 | Menu: pause | Grip at your right hip: take the camcorder |
-| Left grip + Menu: **VR settings** | Both stick clicks: recenter |
+| Left grip + Y: notes | Both stick clicks: recenter |
+| Left grip + Menu: **VR settings** | Grip at your left shoulder: the confidential document |
 
 With the camcorder up, push the right stick straight up or down to zoom.
 

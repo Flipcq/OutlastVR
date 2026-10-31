@@ -52,8 +52,10 @@ static const ActionWord kActions[] = {
     { L"LeanLeft", L"the left trigger" },        { L"LeanRight", L"the right trigger" },
     // (Beta 1.1.4) the left-grip chords for the notebook and recordings are removed: the hints say
     // so instead of naming a button that now does nothing.
-    { L"ShowTabMenu", L"no shortcut" },          { L"ShowRecordingMenu", L"no shortcut" },
-    { L"ShowEvidenceMenu", L"left grip + Y" },   { L"ShowMenu", L"the Menu button" },
+    // (Beta 1.1.9) left grip + Y opens the notes list (ShowRecordingMenu); the documents list
+    // (ShowEvidenceMenu) opens by looking at the held document, not by a button.
+    { L"ShowTabMenu", L"no shortcut" },           { L"ShowRecordingMenu", L"left grip + Y" },
+    { L"ShowEvidenceMenu", L"no shortcut" },      { L"ShowMenu", L"the Menu button" },
     { L"MoveForward", L"the left stick" },       { L"MoveBackward", L"the left stick" },
     { L"StrafeLeft", L"the left stick" },        { L"StrafeRight", L"the left stick" },
     { L"TurnLeft", L"the right stick" },         { L"TurnRight", L"the right stick" },

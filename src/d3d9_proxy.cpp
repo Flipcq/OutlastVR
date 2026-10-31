@@ -1949,8 +1949,11 @@ static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
     // (Beta 1.1.4) left grip + B and left grip + X are gone: they opened the notebook / recordings
     // (the documents menu) by accident while sprinting. Only Y still has a grip chord. B and X stay
     // silent while the grip is held, so the sprint cannot also crouch, use or open a menu.
+    // (Beta 1.1.9) left grip + Y opens the NOTES list (D-pad left = ShowRecordingMenu), not the
+    // notebook. The documents list (D-pad right = ShowEvidenceMenu) opens by looking at the held
+    // document instead, so the two shortcuts reach the two different notebook tabs.
     const bool chord = shift && (buttons & OLXR_BTN_Y);
-    if (shift && (buttons & OLXR_BTN_Y)) b |= 0x0008;   // left grip + Y = evidence/documents
+    if (shift && (buttons & OLXR_BTN_Y)) b |= 0x0004;   // left grip + Y = notes (ShowRecordingMenu)
     if (!chord) {
         if (buttons & OLXR_BTN_A) b |= 0x1000;           // A  = OLA_Jump
         if (!shift) {

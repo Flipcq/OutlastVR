@@ -55,10 +55,13 @@ extern "C" int   OLUE3_GameplayActive();
 extern "C" int   OLUE3_InGameMenu();
 extern "C" int   OLUE3_HolsterVisual(float out[3]);   // where the holstered model is drawn
 extern "C" int   OLUE3_BatteryVisual(float out[3]);   // [BATTERY] where the spare battery is drawn on the left hip
+extern "C" int   OLUE3_DocumentVisual(float out[3]);  // [DOCUMENT] where the confidential document is drawn on the left shoulder
+extern "C" int   OLUE3_DocumentHandVisual(float out[3]); // [DOCUMENT] where the held document is, for the "look at it" check
 extern "C" int   OLUE3_CamModelVisual(float out[3]);  // where the camcorder model is drawn in the hand
 extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime); // [BATTERY] play OLHero's reload animation, return its remaining length
 extern "C" void  OLUE3_DevBatteryTune(int which, float a, float b, float c);   // [BATTERY] live tuning
 extern "C" void  OLUE3_GetBatteryTune(float off[3], float rot[3]);
+extern "C" void  OLUE3_DevDocumentTune(int which, float a, float b, float c);  // [DOCUMENT] live tuning
 extern "C" int   OLUE3_HeroMoveState(int* lm, int* sm);                 // (Test40) LocomotionMode, SpecialMove
 extern "C" int   OLUE3_DoorSetRatioAndTarget(void* door, float r);      // (Test40) 0xCC46A0
 extern "C" int   OLUE3_CameraBoneWorld(float out[3]);                   // (Test40) for the anchor check
@@ -161,6 +164,26 @@ extern "C" void OLInteract_SetBatteryAdjust(const float off[3], const float rot[
 extern "C" void OLInteract_ResetBatteryAdjust() {
     OLInteract_SetBatteryAdjust(kBatDefaultOff, kBatDefaultRot);
 }
+// [DOCUMENT] (Beta 1.1.9) the confidential document's in-hand placement, tuned live from the menu.
+static const float kDocDefaultOff[3] = { 18.0f, -5.0f, 2.0f };  // forward, right, up (uu)
+static const float kDocDefaultRot[3] = { 122.0f, -28.0f, -32.0f }; // roll, pitch, yaw (deg)
+static float g_docAdjOff[3] = { 18.0f, -5.0f, 2.0f };
+static float g_docAdjRot[3] = { 122.0f, -28.0f, -32.0f };
+static const wchar_t* kDocAdjKeys[6] = { L"DocumentForward", L"DocumentRight", L"DocumentUp", L"DocumentRoll", L"DocumentPitch", L"DocumentYaw" };
+extern "C" void OLInteract_GetDocumentAdjust(float off[3], float rot[3]) {
+    for (int i = 0; i < 3; ++i) { off[i] = g_docAdjOff[i]; rot[i] = g_docAdjRot[i]; }
+}
+extern "C" void OLInteract_SetDocumentAdjust(const float off[3], const float rot[3]) {
+    for (int i = 0; i < 3; ++i) {
+        g_docAdjOff[i] = off[i] < -30.0f ? -30.0f : (off[i] > 30.0f ? 30.0f : off[i]);
+        g_docAdjRot[i] = rot[i] < -180.0f ? -180.0f : (rot[i] > 180.0f ? 180.0f : rot[i]);
+    }
+    OLUE3_DevDocumentTune(2, g_docAdjOff[0], g_docAdjOff[1], g_docAdjOff[2]);
+    OLUE3_DevDocumentTune(3, g_docAdjRot[0], g_docAdjRot[1], g_docAdjRot[2]);
+}
+extern "C" void OLInteract_ResetDocumentAdjust() {
+    OLInteract_SetDocumentAdjust(kDocDefaultOff, kDocDefaultRot);
+}
 // [BATTERY] where the reload animation starts (seconds in), so the "grab a new cell from the hip"
 // part can be skipped and the animation begins at the insertion. Tunable live from the menu.
 static float g_reloadStart = 1.0f;
@@ -237,6 +260,16 @@ void OLInteract_Init() {
         OLInteract_SetBatteryAdjust(off, rot);
         GetPrivateProfileStringW(L"Motion", L"ReloadAnimStart", L"1.0", v, 32, ini); g_reloadStart = (float)_wtof(v);
     }
+    {   // [DOCUMENT] the confidential document's in-hand placement
+        float off[3], rot[3];
+        GetPrivateProfileStringW(L"Motion", kDocAdjKeys[0], L"18", v, 32, ini); off[0] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocAdjKeys[1], L"-5", v, 32, ini); off[1] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocAdjKeys[2], L"2", v, 32, ini); off[2] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocAdjKeys[3], L"122", v, 32, ini); rot[0] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocAdjKeys[4], L"-28", v, 32, ini); rot[1] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
+        OLInteract_SetDocumentAdjust(off, rot);
+    }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
     ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) viewfinder=%ld howTo=%ld "
          "devMarkers=%ld questPrompts=%ld climbWithHands=%ld climbMode=%ld camHold=%ld liveScreen=%ld coverMouth=%ld roomscaleWalk=%ld | learned take=%d raise=%d eject=%d insert=%d door=%d climb=%d breath=%d",
@@ -253,6 +286,7 @@ void OLInteract_Save(const wchar_t* ini) {
     WritePrivateProfileStringW(L"Motion", L"CamcorderControl", g_camButton ? L"1" : L"0", ini);   // (Test49)
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
+    for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_docAdjOff[i] : g_docAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kDocAdjKeys[i], b, ini); }
     swprintf_s(b, L"%.2f", g_reloadStart); WritePrivateProfileStringW(L"Motion", L"ReloadAnimStart", b, ini);
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
 }
@@ -455,6 +489,7 @@ static float s_anchorWt[2] = { 0.0f, 0.0f };    // eased weight
 // within 35 degrees either side and is dragged along beyond that. The chest holster and the hip
 // pouch hang off it, so glancing sideways no longer swings them round with your head.
 static V3 s_torsoF = { 0.0f, 0.0f, -1.0f };
+static V3 s_headFwd = { 0.0f, 0.0f, -1.0f };   // the head's actual forward this frame (recenter frame)
 static bool s_torsoValid = false;
 static void TorsoUpdate(const OLXrPose& head) {
     V3 f = QRot(head, { 0.0f, 0.0f, -1.0f }); f.y = 0.0f;
@@ -747,14 +782,26 @@ static void BatteryStartReload(ULONGLONG now, float d) {
 // moment, the mod runs the same animation + swap.
 static ULONGLONG s_yReloadAt = 0, s_yLowerAt = 0;
 static bool s_yDown = false, s_yWaitLower = false;
+static ULONGLONG s_yEmptyPulseAt = 0;          // [DOCUMENT] second of the two quick "empty" buzzes on Y
 static void YReload(ULONGLONG now, const OLXrPad& p) {
+    // The second of the two quick "empty" buzzes when Y is pressed at the face with no spare batteries.
+    if (s_yEmptyPulseAt && now >= s_yEmptyPulseAt) {
+        s_yEmptyPulseAt = 0;
+        OLXR_HapticPulse(1, 0.9f, 30);
+    }
     const bool yDown = (p.buttons & OLXR_BTN_Y) != 0;
     const bool yEdge = yDown && !s_yDown;
     s_yDown = yDown;
     if (yEdge && !s_batReloading && !GameReloading() && (s_hState == H_IN_HAND || s_camUp == 1) && !s_gripDown[0]) {
-        if (s_numBat <= 0) {                 // nothing to swap: no lower, one short buzz
-            OLXR_HapticPulse(1, 0.7f, 30);
-            ILog("[OLVR][RELOAD] Y pressed but there are no spare batteries - the camcorder stays as it is");
+        if (s_numBat <= 0) {                 // nothing to swap: no lower
+            if (s_camUp == 1) {              // at the face (held or pinned): two quick buzzes, one after the other
+                s_yEmptyPulseAt = now + 170;
+                OLXR_HapticPulse(1, 0.9f, 30);
+                ILog("[OLVR][RELOAD] Y pressed at the face but there are no spare batteries - two quick buzzes");
+            } else {
+                OLXR_HapticPulse(1, 0.7f, 30);
+                ILog("[OLVR][RELOAD] Y pressed but there are no spare batteries - the camcorder stays as it is");
+            }
             return;
         }
         if (s_camUp == 1) {                 // at the face: lower it so the animation is visible
@@ -879,6 +926,94 @@ static void Battery(ULONGLONG now, float dt, const OLXrFrameHands& fh, const OLX
         s_batState = BAT_NONE; s_batBlend = 0.0f; s_batAlpha = 0.0f;
         OLXR_HapticPulse(0, 0.25f, 20);
         ILog("[OLVR][BATTERY] battery let go - back on the left hip");
+    }
+}
+
+// ---- [DOCUMENT] (Beta 1.1.9) the confidential document on the left shoulder --------------------------
+// A flat document StaticMesh hangs from Miles's left shoulder bone, exactly like the spare battery
+// hangs from his left thigh. It is hidden while it rests there. Squeeze the left grip at the left
+// shoulder and it glides into your left hand; let go and it goes back. Look at the held document for
+// a moment and the documents/notes notebook opens (the mod sends ShowTabMenu), and the document
+// returns to his shoulder - no separate shortcut needed to read it.
+enum { DOC_NONE = 0, DOC_HELD };
+static int   s_docState = DOC_NONE;
+static float s_docBlend = 0.0f;              // 0 on the shoulder .. 1 in the left hand
+static float s_docAlpha = 0.0f;              // 0 invisible .. 1 shown
+static float s_dDoc = 9.0f;
+static bool  s_docInShoulder = false;
+static V3    s_docShoulder, s_docShoulderVis;
+static ULONGLONG s_docLookAt = 0;            // how long the head has been looking at the held document
+static ULONGLONG s_docMenuPulseUntil = 0;    // the ShowTabMenu press (Back) sent to the game
+// The left shoulder in the torso frame: 15 cm left, 16 cm below the eyes, a touch forward.
+static const V3 kDocShoulderOff = { -0.15f, -0.16f, 0.02f };
+static const float kDocGrabM = 0.24f;        // how close the left hand must come to grab it
+static const float kDocLookCos = 0.90f;      // ~26 deg half-angle of "looking at" the document
+static const ULONGLONG kDocLookMs = 800;     // how long to look before the notebook opens
+
+static void Document(ULONGLONG now, float dt, const OLXrFrameHands& fh, const OLXrPad& p) {
+    s_docShoulder = OnBody(kDocShoulderOff.x, kDocShoulderOff.y, kDocShoulderOff.z);
+    float sv[3];
+    s_docShoulderVis = OLUE3_DocumentVisual(sv) ? V3{ sv[0], sv[1], sv[2] } : s_docShoulder;
+    const bool lOk = (fh.valid & 1u) != 0;
+    const V3 L = P3(fh.hand[0]);
+    const float dReal = lOk ? Len(Sub(L, s_docShoulder)) : 9.0f;
+    const float dVis = lOk ? Len(Sub(L, s_docShoulderVis)) : 9.0f;
+    s_dDoc = dReal < dVis ? dReal : dVis;
+    s_docInShoulder = lOk && s_dDoc < kDocGrabM;
+
+    if (!HolsterOn() || s_camUp < 0 || OLUE3_InGameMenu()) {
+        if (s_docState != DOC_NONE)
+            ILog("[OLVR][DOCUMENT] interactions paused - the document goes back to the left shoulder");
+        s_docState = DOC_NONE; s_docBlend = 0.0f; s_docAlpha = 0.0f; s_docLookAt = 0;
+        return;
+    }
+
+    if (s_docState == DOC_HELD) {
+        s_docAlpha = 1.0f;
+        s_docBlend += dt * 6.0f;                 // ~0.17 s from the shoulder into the hand
+        if (s_docBlend > 1.0f) s_docBlend = 1.0f;
+    } else {
+        s_docBlend = 0.0f; s_docAlpha = 0.0f;
+    }
+
+    if (s_docState == DOC_NONE) {
+        // Squeeze at the left shoulder. Not while sprinting, on a door, or holding a battery (the
+        // same guard as the spare battery at the hip).
+        if (s_gripEdge[0] && s_docInShoulder && !s_moving && !s_nearDoorWide[0] && s_batState == BAT_NONE) {
+            s_gripEdge[0] = false;
+            s_docState = DOC_HELD; s_docBlend = 0.0f; s_docAlpha = 1.0f; s_docLookAt = 0;
+            OLXR_HapticPulse(0, 0.55f, 35);
+            ILog("[OLVR][DOCUMENT] confidential document taken from the left shoulder (%.2f m)", s_dDoc);
+        }
+    } else if (s_docState == DOC_HELD) {
+        if (!s_gripDown[0] || !lOk) {
+            // Let go: the document is back on the shoulder, invisible.
+            s_docState = DOC_NONE; s_docBlend = 0.0f; s_docAlpha = 0.0f; s_docLookAt = 0;
+            OLXR_HapticPulse(0, 0.25f, 20);
+            ILog("[OLVR][DOCUMENT] document let go - back on the left shoulder");
+            return;
+        }
+        // Look at the held document for a moment: open the documents menu and stow it. Aim at the
+        // document's actual centre (hand + held offset), not the hand it hangs from.
+        V3 docPos = L;
+        float dh[3];
+        if (OLUE3_DocumentHandVisual(dh)) docPos = V3{ dh[0], dh[1], dh[2] };
+        const V3 toDoc = Sub(docPos, s_headT);
+        const float dLen = Len(toDoc);
+        if (dLen > 0.05f) {
+            const V3 dir = Mul(toDoc, 1.0f / dLen);
+            const float dot = dir.x * s_headFwd.x + dir.y * s_headFwd.y + dir.z * s_headFwd.z;
+            if (dot > kDocLookCos) {
+                if (!s_docLookAt) s_docLookAt = now;
+                else if (now - s_docLookAt >= kDocLookMs) {
+                    s_docLookAt = 0;
+                    s_docMenuPulseUntil = now + 120;   // D-pad right = OLA_ShowEvidenceMenu (documents)
+                    s_docState = DOC_NONE; s_docBlend = 0.0f; s_docAlpha = 0.0f;
+                    OLXR_HapticPulse(0, 0.7f, 45);
+                    ILog("[OLVR][DOCUMENT] looked at the document - opening the documents/notes notebook");
+                }
+            } else s_docLookAt = 0;
+        } else s_docLookAt = 0;
     }
 }
 
@@ -2528,6 +2663,7 @@ extern "C" void OLInteract_Tick() {
     }
     s_headW = { hw[0], hw[1], hw[2] }; s_cy = cosf(yaw); s_sy = sinf(yaw);
     s_headT = { fh.headRaw[0], fh.headRaw[1], fh.headRaw[2] };
+    s_headFwd = QRot(head, V3{ 0.0f, 0.0f, -1.0f });   // [DOCUMENT] the head's forward, for "look at it"
     TorsoUpdate(head);
     // grips with hysteresis, and their press edges
     const float g[2] = { p.gripL, p.gripR };
@@ -2561,6 +2697,7 @@ extern "C" void OLInteract_Tick() {
         }
     }
     Battery(now, dt, fh, p);    // [BATTERY] left hip, left hand, and the reload animation
+    Document(now, dt, fh, p);   // [DOCUMENT] the confidential document on the left shoulder
     Climb(now, dt, fh, handW, handOk);   // (Test40) a squeeze on a climbable edge holds the edge
     RoomWalkTick(now);                    // (Test44) after Climb: it knows whether the hands are climbing
     Doors(now, dt, handW, handOk, fh);
@@ -2584,6 +2721,8 @@ extern "C" void OLInteract_Tick() {
     }
     {   // [DOORGRIP] the hand closes round the handle in ~0.12 s and opens in ~0.18 s
         for (int h = 0; h < 2; ++h) {
+            // The document does not clench the hand: it stays in its normal pose (following the
+            // controller) while the grip is held, so the document can be tuned to sit over it.
             const float target = (s_grab[h].d || (s_hold[h] && (s_cl == CL_IDLE || s_cl == CL_PULLING)) ||
                                   (h == 0 && s_batState != BAT_NONE)) ? 1.0f : 0.0f;
             const float rate = target > s_gripW[h] ? 8.0f : 5.5f;
@@ -2595,7 +2734,7 @@ extern "C" void OLInteract_Tick() {
         }
     }
     // A grip that is on a knob is not sprint/camcorder.
-    s_blockGrip[0] = s_grab[0].d || s_nearKnob[0] || s_batState != BAT_NONE || s_batReloading;
+    s_blockGrip[0] = s_grab[0].d || s_nearKnob[0] || s_batState != BAT_NONE || s_batReloading || s_docState != DOC_NONE;
     s_blockGrip[1] = HolsterOn() || s_grab[1].d || s_nearKnob[1] || (!g_camButton && s_nearDoorWide[1]) || s_batReloading;
     // (Test40) [CLIMB] a grip holding an edge, a ledge or a rung is not sprint / the camcorder
     for (int h = 0; h < 2; ++h) if (g_on[ON_CLIMB] && (s_hold[h] || s_cl == CL_HANG || s_cl == CL_LADDER || s_cl == CL_CLIMBING)) s_blockGrip[h] = true;
@@ -2642,7 +2781,7 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
     for (int h = 0; h < 2; ++h) {
         if (g[h] < 0.35f) { s_sticky[h] = false; s_gameHas[h] = false; }
         const bool owns = s_grab[h].d || (h == 1 && s_hState == H_IN_HAND) ||
-            (h == 0 && (s_batState != BAT_NONE || s_batReloading)) ||
+            (h == 0 && (s_batState != BAT_NONE || s_batReloading || s_docState != DOC_NONE)) ||
             (s_batReloading && h == 1) || (g_on[ON_CLIMB] && s_hold[h]);
         if (fresh && (owns || (s_blockGrip[h] && !s_gameHas[h]))) s_sticky[h] = true;
         if (!s_sticky[h] && g[h] > 0.60f) s_gameHas[h] = true;
@@ -2673,6 +2812,7 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
     if (now < s_reloadUntil)   out->addButtons |= 0x8000;   // Y  = OLA_Reload
     if (now < s_aUntil && now >= s_aFrom) out->addButtons |= 0x1000;   // (Test40) A = OLA_Jump: climb (up)
     if (now < s_bUntil)        out->addButtons |= 0x2000;   // (Test40) B = OLA_CrouchToggle: drop from a ledge
+    if (now < s_docMenuPulseUntil) out->addButtons |= 0x0008;   // [DOCUMENT] D-pad right = OLA_ShowEvidenceMenu (documents)
     out->stickOn = false; out->stickLX = 0.0f; out->stickLY = 0.0f;
     if (g_on[ON_CLIMB] && s_cl == CL_LADDER && s_ladderStickOn) { out->stickOn = true; out->stickLY = s_ladderStick; }
     else if (now < s_stepUntil) { out->stickOn = true; out->stickLX = s_stepX; out->stickLY = s_stepY; }
@@ -2801,8 +2941,38 @@ extern "C" int OLInteract_BatteryVisual(OLBatteryVisual* v) {
     v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
     return 1;
 }
+// [DOCUMENT] (Beta 1.1.9) Where the confidential document should be drawn this frame: hidden on the
+// left shoulder, in the left hand, or nothing at all (the same shape as the battery visual).
+extern "C" int OLInteract_DocumentVisual(OLDocumentVisual* v) {
+    if (!v) return 0;
+    memset(v, 0, sizeof(*v));
+    if (!HolsterOn() || !s_tickMs || GetTickCount64() - s_tickMs > 1000 || s_camUp < 0) return 0;
+    if (s_docState == DOC_NONE) return 0;
+    v->mode = 1;
+    v->blend = s_docBlend;
+    v->alpha = s_docAlpha;
+    const V3 rel = Sub(s_docShoulder, s_headT);
+    v->shoulderRel[0] = rel.x; v->shoulderRel[1] = rel.y; v->shoulderRel[2] = rel.z;
+    v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
+    return 1;
+}
+// [DOCUMENT] The document is held in the left hand.
+extern "C" int OLInteract_DocumentHeld() {
+    if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
+    return (s_docState != DOC_NONE) ? 1 : 0;
+}
 // [BATTERY] The game's reload animation is playing: do not solve the arms from the controllers.
 extern "C" int OLInteract_ReloadNative() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
     return (s_batReloading || GameReloading()) ? 1 : 0;
+}
+// [BATTERY] While the mod's reload animation starts, hand the arms from the IK to the animation
+// gradually: 1 (full IK) at the start, 0 (full animation) after ~0.45 s. This keeps the hands from
+// snapping to the animation's start pose. The game's own reload (GameReloading, not ours) returns 0
+// straight away so it still takes the arms over at once.
+extern "C" float OLInteract_ReloadBlend() {
+    if (!s_batReloading || !s_batReloadAt) return 0.0f;
+    const float t = (float)(GetTickCount64() - s_batReloadAt) * 0.001f;
+    const float k = t / 0.45f;
+    return k >= 1.0f ? 0.0f : (1.0f - k);
 }

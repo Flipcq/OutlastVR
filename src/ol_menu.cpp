@@ -713,6 +713,23 @@ static void BuildUI() {
           "battery - it moves live as you drag the sliders, so you can find the right\n"
           "spot without taking the headset off. It is saved to outlastvr.ini."); }
 
+    // [DOCUMENT] (Beta 1.1.9) the confidential document's in-hand placement, tuned live
+    Section("CONFIDENTIAL DOCUMENT");
+    { float off[3], rot[3]; OLInteract_GetDocumentAdjust(off, rot);
+      bool ch = false;
+      ch |= ImGui::SliderFloat("Document forward", &off[0], -20.0f, 20.0f, "%.0f");
+      ch |= ImGui::SliderFloat("Document right",   &off[1], -20.0f, 20.0f, "%.0f");
+      ch |= ImGui::SliderFloat("Document up",      &off[2], -20.0f, 20.0f, "%.0f");
+      ch |= ImGui::SliderFloat("Document roll",    &rot[0], -180.0f, 180.0f, "%.0f deg");
+      ch |= ImGui::SliderFloat("Document pitch",   &rot[1], -180.0f, 180.0f, "%.0f deg");
+      ch |= ImGui::SliderFloat("Document yaw",     &rot[2], -180.0f, 180.0f, "%.0f deg");
+      if (ch) OLInteract_SetDocumentAdjust(off, rot);
+      if (ImGui::Button("Reset the document's position")) OLInteract_ResetDocumentAdjust();
+      Help(
+          "Where the confidential document sits in your left hand. Grab it from your left\n"
+          "shoulder and keep holding it, then drag the sliders - it moves live so you can\n"
+          "find the right spot without taking the headset off. It is saved to outlastvr.ini."); }
+
     // [INTERACT] (Test37)
     Section("DOORS");
     { bool b = OLInteract_Get(0) != 0;

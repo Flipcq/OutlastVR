@@ -3628,7 +3628,7 @@ static IkAtom g_gripLocal[73];
 static bool   g_gripHas[73];
 static IkAtom g_gripAux;           // the hand auxiliary bone relative to the wrist
 static bool   g_gripValid = false, g_gripLive = false;
-static int    g_rAux = -1, g_lAux = -1, g_hipBone = -1, g_lHipBone = -1;
+static int    g_rAux = -1, g_lAux = -1, g_hipBone = -1, g_lHipBone = -1, g_lShoulderBone = -1;
 static IkAtom IkLocalOf(const IkArray& s, int child, int parent) {
     IkAtom l; const IkAtom& p = s.d[parent]; const IkAtom& c = s.d[child];
     const QIk4 inv = IQConj(p.q);
@@ -3658,9 +3658,11 @@ static void GripBones(void* mesh) {
     static const char* const kRA[] = { "R-Hand_aux", "R_Hand_aux" }, *const kLA[] = { "L-Hand_aux", "L_Hand_aux" };
     static const char* const kHip[] = { "R-Thigh", "R_Thigh", "RThigh", "R-UpLeg", "Pelvis" };
     static const char* const kLHip[] = { "L-Thigh", "L_Thigh", "LThigh", "L-UpLeg", "Pelvis" };
+    static const char* const kLShoulder[] = { "Hero-L-Clavicle", "L-Clavicle", "L_Clavicle", "LClavicle", "L-Shoulder", "L_Shoulder", "LShoulder", "L-UpperArm", "L_UpperArm" };
     g_rAux = BoneFind(mesh, kRA, 2); g_lAux = BoneFind(mesh, kLA, 2); g_hipBone = BoneFind(mesh, kHip, 5);
     g_lHipBone = BoneFind(mesh, kLHip, 5);
-    char l[220]; sprintf_s(l, "[OLVR][NATIVEGRIP] bones: right hand aux %d, left hand aux %d, right hip %d, left hip %d", g_rAux, g_lAux, g_hipBone, g_lHipBone);
+    g_lShoulderBone = BoneFind(mesh, kLShoulder, 9);
+    char l[260]; sprintf_s(l, "[OLVR][NATIVEGRIP] bones: right hand aux %d, left hand aux %d, right hip %d, left hip %d, left shoulder %d", g_rAux, g_lAux, g_hipBone, g_lHipBone, g_lShoulderBone);
     OLProxyLog(l);
 }
 // [NATIVEGRIP] the grip this build captured (bone index, local quaternion, local translation)
@@ -4502,6 +4504,320 @@ extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime) {
     return remaining > 0.05f ? remaining : dur;
 }
 
+// ---- [DOCUMENT] (Beta 1.1.9) the confidential document on Miles's left shoulder ------------------
+// The same spawn-and-hang mechanism as the spare battery, but the document hangs from the left
+// shoulder (clavicle) bone and is invisible while it rests there. ol_interact drives the blend from
+// the shoulder to the left hand and the visibility; this code spawns the StaticMesh, attaches it to
+// the shoulder bone, and rewrites the attachment transform every frame.
+static void* g_docMeshAsset = nullptr;
+static void* g_docActor = nullptr;
+static void* g_docComp = nullptr;
+static void* g_docHero = nullptr;
+static UEAttachment* g_docEntry = nullptr;
+static void* g_docEntryComp = nullptr;
+static bool g_docVisible = false;
+static void* g_docAttachFn = nullptr;
+static uint32_t g_docBoneName = 0;
+static ULONGLONG g_docMeshTry = 0, g_docAttachTry = 0, g_docSpawnTry = 0;
+static float g_docShoulderTrack[3] = {};
+static volatile ULONGLONG g_docShoulderMs = 0;
+static float g_docHandTrack[3] = {};          // where the HELD document is, in ol_interact's recenter frame
+static volatile ULONGLONG g_docHandMs = 0;
+static float g_docScale = 1.0f;
+static float g_docShoulderOff[3] = { 2.0f, 5.0f, -3.0f };   // up, forward, right (uu) from the left clavicle joint
+static float g_docShoulderRot[3] = { 0.0f, 0.0f, 0.0f };
+static float g_docHeldOff[3] = { 18.0f, -5.0f, 2.0f };       // in the left hand's bone frame (uu): forward, right, up
+static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, yaw (deg)
+extern "C" int OLUE3_DocumentVisual(float out[3]) {
+    if (!g_docShoulderMs || GetTickCount64() - g_docShoulderMs > 300) return 0;
+    out[0] = g_docShoulderTrack[0]; out[1] = g_docShoulderTrack[1]; out[2] = g_docShoulderTrack[2];
+    return 1;
+}
+extern "C" int OLUE3_DocumentHandVisual(float out[3]) {
+    if (!g_docHandMs || GetTickCount64() - g_docHandMs > 300) return 0;
+    out[0] = g_docHandTrack[0]; out[1] = g_docHandTrack[1]; out[2] = g_docHandTrack[2];
+    return 1;
+}
+extern "C" void OLUE3_DevDocumentTune(int which, float a, float b, float c) {
+    float* t = which == 0 ? g_docShoulderOff : (which == 1 ? g_docShoulderRot : (which == 2 ? g_docHeldOff : g_docHeldRot));
+    t[0] = a; t[1] = b; t[2] = c;
+    char l[180];
+    sprintf_s(l, "[OLVR][DOCUMENT] tune %s = (%.2f %.2f %.2f)",
+        which == 0 ? "shoulderOff (up fwd right)" : (which == 1 ? "shoulderRot" : (which == 2 ? "heldOff" : "heldRot")), a, b, c);
+    OLProxyLog(l);
+}
+static void* DocumentMesh() {
+    if (g_docMeshAsset) return g_docMeshAsset;
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_docMeshTry) return nullptr;
+    g_docMeshTry = now + 1000;
+    BP_RefreshObjects();
+
+    auto pickupMesh = [](void* obj) -> void* {
+        void* pm = obj ? ProbeReadPtr((char*)obj + 0x240) : nullptr;
+        return pm ? ProbeReadPtr((char*)pm + 0x240) : nullptr;
+    };
+
+    // "Document-01" names BOTH the StaticMesh and its Texture2D in the same package, so a plain
+    // name lookup can return the texture (which cannot render as a static mesh). Match the
+    // StaticMesh class explicitly.
+    void* smCls = BP_FindClassObj("StaticMesh");
+    for (int i = 0; smCls && i < g_bpObjNum; ++i) {
+        void* p = nullptr;
+        if (!BP_Read(g_bpObjs + i, &p, 8) || !p || LS_ClassOf(p) != smCls) continue;
+        char nm[96];
+        if (!BP_ObjName(p, nm, sizeof(nm)) || strcmp(nm, "Document-01")) continue;
+        g_docMeshAsset = p;
+        OLProxyLog("[OLVR][DOCUMENT] document mesh: Document-01 (StaticMesh found by name)");
+        return p;
+    }
+    // A live OLPickableObject whose PickupMesh is a document (not a battery).
+    for (int i = 0; i < g_bpObjNum; ++i) {
+        void* p = nullptr;
+        if (!BP_Read(g_bpObjs + i, &p, 8) || !p || !ObjIsA(p, "OLPickableObject")) continue;
+        void* m = pickupMesh(p);
+        if (!m) continue;
+        char nm[96];
+        if (!BP_ObjName(m, nm, sizeof(nm))) continue;
+        if (!strstr(nm, "Document") && !strstr(nm, "Paper") && !strstr(nm, "Note")) continue;
+        g_docMeshAsset = m;
+        char l[200]; sprintf_s(l, "[OLVR][DOCUMENT] document mesh: %s (from a live pickable object)", nm); OLProxyLog(l);
+        return m;
+    }
+    // Any StaticMesh named Document*.
+    for (int i = 0; smCls && i < g_bpObjNum; ++i) {
+        void* p = nullptr;
+        if (!BP_Read(g_bpObjs + i, &p, 8) || !p || LS_ClassOf(p) != smCls) continue;
+        char nm[96];
+        if (!BP_ObjName(p, nm, sizeof(nm)) || !strstr(nm, "Document")) continue;
+        g_docMeshAsset = p;
+        char l[180]; sprintf_s(l, "[OLVR][DOCUMENT] document mesh: %s (first Document StaticMesh)", nm); OLProxyLog(l);
+        return p;
+    }
+    static ULONGLONG s_failLog = 0;
+    if (GetTickCount64() - s_failLog > 3000) {
+        s_failLog = GetTickCount64();
+        OLProxyLog("[OLVR][DOCUMENT] no document StaticMesh yet (Document-01 StaticMesh not found)");
+    }
+    return nullptr;
+}
+static void DocumentRestore() {
+    // Visibility is HiddenGame, not scale (scale is not applied for skeletal-mesh attachments here).
+    if (g_docComp) {
+        __try { OLUE3_SetHiddenGame(g_docComp, 1); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    g_docVisible = false;
+    g_docEntry = nullptr; g_docEntryComp = nullptr;
+}
+static bool DocumentSpawn(void* hero, void* milesComp, void* meshAsset, uint32_t boneName) {
+    void* spawnFn = LS_FindFunction("Actor", "Spawn");
+    void* attachFn = LS_FindFunction("SkeletalMeshComponent", "AttachComponent");
+    void* collFn = LS_FindFunction("Actor", "SetCollisionType");
+    if (!spawnFn || !milesComp || !boneName) {
+        OLProxyLog("[OLVR][DOCUMENT] could not spawn the document (Actor.Spawn missing)");
+        return false;
+    }
+    unsigned heroLoc = 0;
+    SP_FindPropAny("Actor", "Location", &heroLoc, nullptr);
+    void* actor = nullptr; const char* usedCls = "?";
+    const char* clsNames[2] = { "StaticMeshActor", "DynamicSMActor" };
+    for (const char* cn : clsNames) {
+        void* actorCls = BP_FindClassObj(cn);
+        if (!actorCls) continue;
+        alignas(16) char p[0x80] = {};
+        *(void**)(p + 0x00) = actorCls;
+        *(void**)(p + 0x08) = hero;
+        if (heroLoc) BP_Read((char*)hero + heroLoc, p + 0x18, 12);
+        *(int*)(p + 0x38) = 1;   // bNoCollisionFail
+        *(int*)(p + 0x3C) = 1;   // bNoFail
+        if (!LS_Call(hero, spawnFn, p)) continue;
+        actor = *(void**)(p + 0x40);
+        if (actor) { usedCls = cn; break; }
+    }
+    if (!actor) {
+        OLProxyLog("[OLVR][DOCUMENT] Actor.Spawn returned no actor (tried StaticMeshActor and DynamicSMActor)");
+        return false;
+    }
+    char l[180]; sprintf_s(l, "[OLVR][DOCUMENT] spawned a %s for the document", usedCls); OLProxyLog(l);
+    unsigned compOff = 0;
+    if (!SP_FindPropAny("StaticMeshActor", "StaticMeshComponent", &compOff, nullptr) &&
+        !SP_FindPropAny("DynamicSMActor", "StaticMeshComponent", &compOff, nullptr)) compOff = 0x240;
+    void* comp = ProbeReadPtr((char*)actor + compOff);
+    if (!comp) { OLProxyLog("[OLVR][DOCUMENT] the document actor has no StaticMeshComponent"); return false; }
+    {
+        unsigned leOff = 0;
+        if (SP_FindPropAny("PrimitiveComponent", "LightEnvironment", &leOff, nullptr) && leOff < 0x300) {
+            void* le = ProbeReadPtr((char*)milesComp + leOff);
+            if (le) __try { *(void**)((char*)comp + leOff) = le; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            else OLProxyLog("[OLVR][DOCUMENT] Miles's mesh has no LightEnvironment to share");
+        }
+    }
+    {
+        unsigned smOff = 0;
+        if (SP_FindPropAny("StaticMeshComponent", "StaticMesh", &smOff, nullptr) && smOff < 0x300)
+            __try { *(void**)((char*)comp + smOff) = meshAsset; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        OLUE3_SetHiddenGame(comp, 1);
+        OLUE3_SetHiddenGame(comp, 0);
+        void* cur = smOff ? ProbeReadPtr((char*)comp + smOff) : nullptr;
+        char ml[220];
+        sprintf_s(ml, "[OLVR][DOCUMENT] mesh applied: comp->StaticMesh=%p (want %p)", cur, meshAsset);
+        OLProxyLog(ml);
+    }
+    if (collFn) {
+        alignas(16) char cp[0x20] = {};
+        LS_Call(actor, collFn, cp);   // COLLIDE_NoCollision = 0
+    }
+    if (!attachFn) { OLProxyLog("[OLVR][DOCUMENT] SkeletalMeshComponent.AttachComponent missing"); return false; }
+    g_docAttachFn = attachFn; g_docBoneName = boneName;
+    alignas(16) char ap[0x40] = {};
+    const int acOff = LS_ParamOff(attachFn, "Component"), abOff = LS_ParamOff(attachFn, "BoneName");
+    const int arsOff = LS_ParamOff(attachFn, "RelativeScale");
+    *(void**)(ap + (acOff >= 0 ? acOff : 0)) = comp;
+    *(uint32_t*)(ap + (abOff >= 0 ? abOff : 8)) = boneName;
+    if (arsOff >= 0) { *(float*)(ap + arsOff) = 0.0f; *(float*)(ap + arsOff + 4) = 0.0f; *(float*)(ap + arsOff + 8) = 0.0f; }
+    if (!LS_Call(milesComp, attachFn, ap)) { OLProxyLog("[OLVR][DOCUMENT] AttachComponent failed"); return false; }
+    g_docActor = actor; g_docComp = comp; g_docHero = hero;
+    g_docEntry = nullptr; g_docEntryComp = nullptr; g_docAttachTry = 0;
+    g_docVisible = false;
+    OLProxyLog("[OLVR][DOCUMENT] document spawned, collisionless, and hung from Miles's left shoulder");
+    return true;
+}
+static bool DocumentAttach(void* milesComp) {
+    if (!milesComp || !g_docComp || !g_docAttachFn || !g_docBoneName) return false;
+    alignas(16) char p[0x40] = {};
+    const int acOff = LS_ParamOff(g_docAttachFn, "Component"), abOff = LS_ParamOff(g_docAttachFn, "BoneName");
+    const int arsOff = LS_ParamOff(g_docAttachFn, "RelativeScale");
+    *(void**)(p + (acOff >= 0 ? acOff : 0)) = g_docComp;
+    *(uint32_t*)(p + (abOff >= 0 ? abOff : 8)) = g_docBoneName;
+    if (arsOff >= 0) { *(float*)(p + arsOff) = 0.0f; *(float*)(p + arsOff + 4) = 0.0f; *(float*)(p + arsOff + 8) = 0.0f; }
+    return LS_Call(milesComp, g_docAttachFn, p);
+}
+static UEAttachment* DocumentEntry(void* comp) {
+    UEAttachArray at = {};
+    if (!BP_Read((char*)comp + kCompAttachmentsOff, &at, sizeof(at)) || !at.d || at.n <= 0 || at.n > 64) return nullptr;
+    for (int i = 0; i < at.n; ++i) if (at.d[i].comp == g_docComp) return &at.d[i];
+    return nullptr;
+}
+static void DocumentPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk3 fwd, VIk3 right,
+                          const float headRef[3], const float headRaw[3]) {
+    if (!comp || !mesh) return;
+    GripBones(mesh);
+    const int shoulder = (g_lShoulderBone >= 0 && g_lShoulderBone < space.n) ? g_lShoulderBone : -1;
+    const int att = shoulder >= 0 ? shoulder : 0;
+    if (att < 0 || att >= space.n) return;
+    OLDocumentVisual v; memset(&v, 0, sizeof(v));
+    const bool visual = OLInteract_DocumentVisual(&v) != 0 && v.mode == 1;
+    const VIk3 up = { 0, 0, 1 };
+    auto map = [&](float px, float py, float pz) -> VIk3 {
+        const float dR = (px - headRef[0]) * kMetersToUU, dU = (py - headRef[1]) * kMetersToUU, dF = -(pz - headRef[2]) * kMetersToUU;
+        return IVAdd(cam, IVAdd(IVScale(right, dR), IVAdd(IVScale(up, dU), IVScale(fwd, dF))));
+    };
+    const QIk4 shoulderQ = IQMul(PoseUprightHand(fwd), IQEulerDeg(g_docShoulderRot));
+    bool shoulderOk = false; VIk3 shoulderT = { 0, 0, 0 };
+    if (shoulder >= 0) {
+        const float side = (shoulder == g_lShoulderBone) ? g_docShoulderOff[2] : -g_docShoulderOff[2];
+        shoulderT = IVAdd(space.d[shoulder].t, IVAdd(IVScale(up, g_docShoulderOff[0]),
+                          IVAdd(IVScale(fwd, g_docShoulderOff[1]), IVScale(right, side))));
+        shoulderOk = true;
+    } else if (visual) {
+        shoulderT = map(headRaw[0] + v.shoulderRel[0], headRaw[1] + v.shoulderRel[1], headRaw[2] + v.shoulderRel[2]);
+        shoulderOk = true;
+    }
+    if (shoulderOk) {   // where the resting document is, in ol_interact's recenter frame, for the shoulder grab zone
+        const VIk3 d = IVSub(shoulderT, cam);
+        g_docShoulderTrack[0] = headRef[0] + IVDot(d, right) / kMetersToUU;
+        g_docShoulderTrack[1] = headRef[1] + d.z / kMetersToUU;
+        g_docShoulderTrack[2] = headRef[2] - IVDot(d, fwd) / kMetersToUU;
+        g_docShoulderMs = GetTickCount64();
+    }
+    void* hero = OLUE3_Hero();
+    if (!hero) { DocumentRestore(); return; }
+    if (hero != g_docHero && g_docComp) {   // a new level: the old actor went with the old world
+        g_docVisible = false; g_docActor = nullptr; g_docComp = nullptr;
+        g_docEntry = nullptr; g_docEntryComp = nullptr; g_docHero = nullptr;
+    }
+    const float alpha = visual ? (v.alpha < 0.0f ? 0.0f : (v.alpha > 1.0f ? 1.0f : v.alpha)) : 0.0f;
+    if (!g_docComp) {
+        if (alpha <= 0.01f) return;   // nothing to spawn while it is hidden
+        if (GetTickCount64() < g_docSpawnTry) return;
+        g_docSpawnTry = GetTickCount64() + 500;
+        void* asset = DocumentMesh();
+        const uint32_t boneName = BoneNameIndex(mesh, att);
+        if (!asset || !boneName || !DocumentSpawn(hero, comp, asset, boneName)) return;
+    }
+    if (!g_docEntry || g_docEntryComp != g_docComp) {
+        g_docEntry = DocumentEntry(comp);
+        g_docEntryComp = g_docComp;
+        if (!g_docEntry && GetTickCount64() > g_docAttachTry) {
+            g_docAttachTry = GetTickCount64() + 1000;
+            if (DocumentAttach(comp)) {
+                g_docEntry = DocumentEntry(comp);
+                g_docEntryComp = g_docComp;
+                OLProxyLog("[OLVR][DOCUMENT] the document was re-attached to the left shoulder");
+            } else {
+                OLProxyLog("[OLVR][DOCUMENT] the document is not in Miles's attachment list yet - retrying the attach");
+            }
+        }
+    }
+    if (!g_docEntry) return;
+    const bool wantVisible = alpha > 0.01f && shoulderOk;
+    if (wantVisible != g_docVisible) {
+        OLUE3_SetHiddenGame(g_docComp, wantVisible ? 0 : 1);
+        g_docVisible = wantVisible;
+    }
+    if (!wantVisible) return;
+    static bool s_shownLog = false;
+    if (!s_shownLog) {
+        s_shownLog = true;
+        char nm[96] = "?"; if (g_docMeshAsset) BP_ObjName(g_docMeshAsset, nm, sizeof(nm));
+        char l[300];
+        sprintf_s(l, "[OLVR][DOCUMENT] shown: mesh=%s(%p) comp=%p entry=%p", nm, g_docMeshAsset, g_docComp, (void*)g_docEntry);
+        OLProxyLog(l);
+    }
+    // In the left hand: the left hand auxiliary bone, with the placement correction. The document
+    // follows the hand (rotates with it) like the spare battery, so it can be turned by hand.
+    VIk3 handT = shoulderT; QIk4 handQ = shoulderQ;
+    if (g_lAux >= 0 && g_lAux < space.n) {
+        const IkAtom& A = space.d[g_lAux];
+        handT = IVAdd(A.t, IQRotate(A.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
+        handQ = IQMul(A.q, IQEulerDeg(g_docHeldRot));
+    }
+    {   // where the held document actually is, for ol_interact's "look at it" check (its centre, not the hand)
+        const VIk3 dh = IVSub(handT, cam);
+        g_docHandTrack[0] = headRef[0] + IVDot(dh, right) / kMetersToUU;
+        g_docHandTrack[1] = headRef[1] + dh.z / kMetersToUU;
+        g_docHandTrack[2] = headRef[2] - IVDot(dh, fwd) / kMetersToUU;
+        g_docHandMs = GetTickCount64();
+    }
+    const float b = v.blend < 0.0f ? 0.0f : (v.blend > 1.0f ? 1.0f : v.blend);
+    const VIk3 T = IVAdd(shoulderT, IVScale(IVSub(handT, shoulderT), b));
+    const QIk4 Q = IQBlend(shoulderQ, handQ, b);
+    const IkAtom& B = space.d[att];
+    const QIk4 inv = IQConj(B.q);
+    const float bs = fabsf(B.scale) > 1e-4f ? B.scale : 1.0f;
+    const VIk3 rl = IVScale(IQRotate(inv, IVSub(T, B.t)), 1.0f / bs);
+    int32_t rr[3]; IQToRotator(IQMul(inv, Q), rr);
+    __try {
+        g_docEntry->loc[0] = rl.x; g_docEntry->loc[1] = rl.y; g_docEntry->loc[2] = rl.z;
+        g_docEntry->rot[0] = rr[0]; g_docEntry->rot[1] = rr[1]; g_docEntry->rot[2] = rr[2];
+        const float sc = alpha * g_docScale;
+        g_docEntry->scale[0] = sc; g_docEntry->scale[1] = sc; g_docEntry->scale[2] = sc;
+        g_docEntryComp = g_docEntry->comp;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { g_docEntry = nullptr; }
+    static ULONGLONG s_heldLog = 0;
+    if (g_docVisible && GetTickCount64() - s_heldLog > 2000) {
+        s_heldLog = GetTickCount64();
+        float ext[3] = { 0,0,0 }, world[3] = { 0,0,0 };
+        BP_Read((char*)g_docComp + 0x98, ext, 12);          // Bounds.BoxExtent (mesh size)
+        BP_Read((char*)g_docComp + 0xF0, world, 12);        // LocalToWorld translation
+        uint32_t hg = 0; BP_Read((char*)g_docComp + kPrimHiddenWordOff, &hg, 4);
+        char l[360];
+        sprintf_s(l, "[OLVR][DOCUMENT] held: loc(%.1f %.1f %.1f) rot(%d %d %d) scale(%.2f) boxExt(%.1f %.1f %.1f) world(%.1f %.1f %.1f) hidden=0x%X",
+                  rl.x, rl.y, rl.z, rr[0], rr[1], rr[2], alpha * g_docScale, ext[0], ext[1], ext[2], world[0], world[1], world[2], hg);
+        OLProxyLog(l);
+    }
+}
+
 // [ANCHOR] (Test40) World points <-> Miles's component space, through the component's LocalToWorld
 // (UPrimitiveComponent: rows X Y Z T at +0xC0; the door hinge reads the same matrix's T at +0xF0).
 static bool CompMatrix(void* comp, float m[16]) {
@@ -4551,6 +4867,7 @@ static bool PoseApplyVisible(void* comp) {
         g_poseRamp[0] = g_poseRamp[1] = 0.0f;
         CamRestore();   // [HOLSTER] the game's own camcorder state while the arms are blocked
         BatteryRestore();   // [BATTERY] nothing of ours may stay on screen
+        DocumentRestore();  // [DOCUMENT] nothing of ours may stay on screen
         return false;
     }
     OLXR_FrameLatch();   // [FRAMETAG] the arms use the same frozen head pose as this frame's camera
@@ -4596,8 +4913,10 @@ static bool PoseApplyVisible(void* comp) {
         GripUseBake();
         // [BATTERY] While the game's own reload animation plays, both arms belong to it: no IK, no
         // finger grip, no controller pose. The camcorder and the spare cell are still placed below.
+        // The hand-off from IK to animation is eased over ~0.45 s so the arms do not snap.
         const bool batReload = OLInteract_ReloadNative() != 0;
-        if (batReload) pad.handValid = 0;
+        const float reloadIk = batReload ? OLInteract_ReloadBlend() : 1.0f;
+        if (batReload && reloadIk <= 0.0f) pad.handValid = 0;
         // [INTERACT] (Test37) The camcorder held up to your eye: Miles's right arm plays the game's own
         // camcorder pose. Following the controller there put his sleeve right across the lens.
         // (Beta 1.1) [CAMTUCK] But that pose holds a camcorder that is hidden at the eye, so in the headset's wide
@@ -4699,6 +5018,7 @@ static bool PoseApplyVisible(void* comp) {
             }
             g_poseRamp[hand]+=(1.0f-g_poseRamp[hand])*ArmPer(0.45f,frames);
             if (g_poseRamp[hand]>0.999f) g_poseRamp[hand]=1.0f;
+            g_poseRamp[hand] *= reloadIk;   // [BATTERY] ease the arms into the reload animation
             const float side=hand ? 1.0f : -1.0f;
             if ((g_armFix & 4) && g_poseTargetSmoothValid[hand]) {
                 // [ARMFIX] the collarbone turns a little toward a raised or far reach (last frame's target)
@@ -4874,6 +5194,12 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
+            // [DOCUMENT] a slight, natural turn of the left wrist while it holds the document, so the
+            // hand does not sit in the neutral controller pose against the turned paper.
+            if (hand == 0 && OLInteract_DocumentHeld()) {
+                static const float kDocWristRot[3] = { -14.0f, 0.0f, 0.0f };  // roll, pitch, yaw (deg)
+                wristTarget = IQMul(wristTarget, IQEulerDeg(kDocWristRot));
+            }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
         }
@@ -4925,8 +5251,10 @@ static bool PoseApplyVisible(void* comp) {
             if (useFrameHands) { headRaw[0] = frameHands.headRaw[0]; headRaw[1] = frameHands.headRaw[1]; headRaw[2] = frameHands.headRaw[2]; }
             if (!g_armLeanFix) { headRaw[0] = headRef[0]; headRaw[1] = headRef[1]; headRaw[2] = headRef[2]; }
             CamPlace(comp, space, mesh, cam, cameraForward, cameraRight, headRef, headRaw, camGrip, camGripOk);
-            if (comp == g_camBodyComp)   // [BATTERY] only the visible body carries the spawned cell
+            if (comp == g_camBodyComp) {   // [BATTERY][DOCUMENT] only the visible body carries the spawned props
                 BatteryPlace(comp, space, mesh, cam, cameraForward, cameraRight, headRef, headRaw);
+                DocumentPlace(comp, space, mesh, cam, cameraForward, cameraRight, headRef, headRaw);
+            }
         }
         if (!changed[0] && !changed[1]) return false;
         const long n=InterlockedIncrement(&g_poseApplied);
@@ -7127,7 +7455,7 @@ static void ReadConfig() {
 void OLUE3_Init() {
     g_base = (uintptr_t)GetModuleHandleW(nullptr);
     char line[256];
-    OLProxyLog("[OLVR] BUILD=OUTLAST1VR-BETA-1.1.4-20261028 (BETA 1.1.4: hold the right stick click to raise the camcorder with the game's animation and pin it at his face (hold again or grab at the face to lower); upright GAME POSE; wider waist grab zone incl. seated; left grip + B/X removed; BETA 1.1.1: head bob fully off while running too; BETA 1.1: Quest Link picture where you look (true pose declared), head bob fully off incl. running, world size + your own IPD, focus 0, body turns with you, doors let go when you turn away + arm resets, doors stop at Miles, auto ledge grab option, hand tucked at the eye, big battery gauge, recenter hint; Test49: camcorder GRIP BUTTON option (seated play); Test48: sprint + A vaults, a running squeeze at the hip is sprint not an edge, stick drift fix + controller layout in the log (Pimax / SteamVR); Test47: streaming freezes gone (texture copies in RAM), film grain switch, arms after Trager, readouts in from the edges; Test46: Quest Link fixed (lens-shaped eyes off there), render thread ~1/3 faster - monitor at 30 fps + forced occlusion tests skipped, turn speed through the game's own turn (arms stay right) + quick snap, live screen off for now, zoom fill without double vision, zoom only on a clear up/down push and filling the view, vault fix, async log + hitch times; Test45: camcorder aims with the controller + adjustable, ladders without the barrier, smoother scan; Test44: walk around for real; Test43: physical climbing, free-hold camcorder with a live screen, door scares fire, cover your mouth)");
+    OLProxyLog("[OLVR] BUILD=OUTLAST1VR-BETA-1.1.9-20261031 (BETA 1.1.9: confidential document on Miles's left shoulder - grab it to hold it, look at it to open the documents/notes notebook, left grip + Y now opens the notebook; Y at the face with no spare batteries buzzes twice; BETA 1.1.4: hold the right stick click to raise the camcorder with the game's animation and pin it at his face (hold again or grab at the face to lower); upright GAME POSE; wider waist grab zone incl. seated; left grip + B/X removed; BETA 1.1.1: head bob fully off while running too; BETA 1.1: Quest Link picture where you look (true pose declared), head bob fully off incl. running, world size + your own IPD, focus 0, body turns with you, doors let go when you turn away + arm resets, doors stop at Miles, auto ledge grab option, hand tucked at the eye, big battery gauge, recenter hint; Test49: camcorder GRIP BUTTON option (seated play); Test48: sprint + A vaults, a running squeeze at the hip is sprint not an edge, stick drift fix + controller layout in the log (Pimax / SteamVR); Test47: streaming freezes gone (texture copies in RAM), film grain switch, arms after Trager, readouts in from the edges; Test46: Quest Link fixed (lens-shaped eyes off there), render thread ~1/3 faster - monitor at 30 fps + forced occlusion tests skipped, turn speed through the game's own turn (arms stay right) + quick snap, live screen off for now, zoom fill without double vision, zoom only on a clear up/down push and filling the view, vault fix, async log + hitch times; Test45: camcorder aims with the controller + adjustable, ladders without the barrier, smoother scan; Test44: walk around for real; Test43: physical climbing, free-hold camcorder with a live screen, door scares fire, cover your mouth)");
     sprintf_s(line, "[OLVR][S3] module base=%p", (void*)g_base);
     OLProxyLog(line);
 

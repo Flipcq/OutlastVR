@@ -52,13 +52,27 @@ extern "C" void OLInteract_HandGrip(float w[2]);
 // reload. `blend` is 0 on the hip .. 1 in the hand, `alpha` fades it out.
 struct OLBatteryVisual { int mode; float blend; float alpha; float hipRel[3]; float torsoFwd[2]; };
 extern "C" int OLInteract_BatteryVisual(OLBatteryVisual* v);
+// [DOCUMENT] (Beta 1.1.9) The confidential document on Miles's left shoulder: invisible while it
+// rests there (hidden), glides into the left hand while held, and returns to the shoulder when
+// released or read. `blend` is 0 on the shoulder .. 1 in the hand, `alpha` fades it out.
+struct OLDocumentVisual { int mode; float blend; float alpha; float shoulderRel[3]; float torsoFwd[2]; };
+extern "C" int OLInteract_DocumentVisual(OLDocumentVisual* v);
+// [DOCUMENT] the document is held in the left hand (the arm solver turns the wrist a little for it).
+extern "C" int OLInteract_DocumentHeld();
 // While the game's own camcorder reload animation plays: both arms follow the animation, not the
 // controllers, and the pad grips are held back.
 extern "C" int OLInteract_ReloadNative();
+// [BATTERY] how much of the arm solve to keep while the reload animation takes over: 1 (full IK) at
+// the start, fading to 0 (full animation) so the arms do not snap when the animation begins.
+extern "C" float OLInteract_ReloadBlend();
 // [BATTERY] the spare cell's in-hand placement: off = forward, right, up (uu); rot = roll, pitch, yaw (deg).
 extern "C" void OLInteract_GetBatteryAdjust(float off[3], float rot[3]);
 extern "C" void OLInteract_SetBatteryAdjust(const float off[3], const float rot[3]);
 extern "C" void OLInteract_ResetBatteryAdjust();
+// [DOCUMENT] the confidential document's in-hand placement: off = forward, right, up (uu); rot = roll, pitch, yaw (deg).
+extern "C" void OLInteract_GetDocumentAdjust(float off[3], float rot[3]);
+extern "C" void OLInteract_SetDocumentAdjust(const float off[3], const float rot[3]);
+extern "C" void OLInteract_ResetDocumentAdjust();
 // [BATTERY] where the reload animation starts (seconds in): skip the "grab a new cell" part.
 extern "C" float OLInteract_GetReloadStart();
 extern "C" void  OLInteract_SetReloadStart(float s);

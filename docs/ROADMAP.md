@@ -6,6 +6,22 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
 
 ## On `main`, not in a release yet
 
+## Done in Beta 1.1.9 (document menu enhancement)
+
+- **A confidential document on Miles's left shoulder.** A `Document-01` StaticMesh hangs from the
+  left clavicle bone, invisible and collisionless. Squeeze the left grip at the left shoulder to take
+  it (it becomes visible in your hand and follows the hand like the battery), let go and it returns to
+  the shoulder. Look at the held document for about 0.8 s and the **documents list** opens, then the
+  document returns to his shoulder. Position/rotation tuned live in the in-game menu
+  (**CONFIDENTIAL DOCUMENT**). `[DOCUMENT]` in `src/ol_interact.cpp` and `src/ol_ue3.cpp`.
+- **Left grip + Y now opens the notes list** (`ShowRecordingMenu`, D-pad left), not the notebook; the
+  documents list (`ShowEvidenceMenu`, D-pad right) opens by looking at the held document.
+  `MapPadButtons` in `src/d3d9_proxy.cpp`.
+- **Y at the face with no spare batteries buzzes twice** (held or pinned), one buzz right after the
+  other, instead of a single one. `YReload` in `src/ol_interact.cpp`.
+- **The reload animation hands off smoothly** from the controller IK (the arms ease into the game's
+  reload instead of snapping to its start pose). `OLInteract_ReloadBlend` in `src/ol_interact.cpp`.
+
 ## Done in Beta 1.1.4 (camcorder enhancement)
 
 - **GAME POSE is upright.** The camcorder's base pose no longer inherits the raise animation's
