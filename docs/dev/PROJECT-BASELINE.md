@@ -466,7 +466,7 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   one thin shape in the middle of the view, and the middle of a plane is where stereo disparity is
   largest - the old "the brackets look doubled" report. It used to ride the display's texture at
   `PanelDistance` (2.00 m, ~1.8 deg of convergence). It now has its own 169x141 px swapchain (the
-  167x139 box plus a transparent pixel) and its own quad at `OLCamHud::FocusDistance = 4.00 m`, ~0.9 deg.
+  167x139 box plus a transparent pixel) and its own quad at `OLCamHud::FocusDistance = 8.00 m`, ~0.45 deg.
   The quad is scaled AND offset by `FocusDistance/PanelDistance` (`OLCamHud::FocusQuadFor`), so it covers
   exactly the pixels the display used to: same place, same apparent size on screen, deeper. The display
   no longer draws the box at all, and every other readout - REC, clock, W-T lever, spare count, gauge,
@@ -475,3 +475,36 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   back to "no box this frame" if the extra swapchain cannot be created, and is submitted only while the
   camcorder HUD itself is. The test checks the scale/offset against the display's own angles, the
   unchanged subtended angle, the ~0.9 deg convergence and that the display's texture carries no box.
+
+## Beta 1.1.8 changes: the battery reload with your hands
+
+- **The spare cell is physical and lives on Miles's left hip.** `[BATTERY]` spawns a collisionless
+  `StaticMeshActor` (`DynamicSMActor` fallback) with `CamCorderBattery-01` (resolved from the object
+  table, then the batteries pickup factory, then any `CamCorderBattery*` StaticMesh) and hangs it from
+  his left thigh bone through `USkeletalMeshComponent.AttachComponent`, the same mechanism the game's
+  handycam uses. Its `FAttachment` loc/rot is rewritten every frame from `BatteryPlace` in
+  `ol_ue3.cpp`: hidden at the left hip, blended to the left hand's auxiliary bone while held. The mesh
+  is written straight onto the `StaticMesh` property (the ProcessEvent path for `SetStaticMesh` does
+  not apply it) and a `HiddenGame` toggle rebuilds the scene proxy; visibility is `HiddenGame` (this
+  engine ignores the attachment scale). Miles's `LightEnvironment` is copied so the cell is lit. The
+  left hip uses the camcorder's waist-zone box mirrored to `-0.20 right, -0.60 up` (torso frame), so a
+  hand coming down, across, or resting in the lap when seated still reaches it.
+- **Squeeze the left grip at the left hip** to take it. Let go and it is hidden again and back on the
+  hip. The left grip is blocked from the game while it owns the battery. Its in-hand placement is tuned
+  live in the mod menu's **BATTERY RELOAD** section (forward/right/up and roll/pitch/yaw sliders), saved
+  to `[Motion] BatteryForward/Right/Up/Roll/Pitch/Yaw`; the DevBridge `battune` command drives the same
+  values.
+- **The reload is the game's animation, not the reload command.** With the camcorder held in the right
+  hand (`CamcorderHolster` on, model fully in hand, lowered so the animation is visible), bringing the
+  left hand within ~22 cm of the drawn camcorder starts `OLHero.AnimNameReloadBatteries` (the
+  `...Inactive` variant while the camcorder is lowered) through
+  `AnimNodeSlot.PlayCustomAnim` on `OLHero.FullBodyAnimSlot` - the slot the game's own full-body
+  animations go through - and the returned length times the swap. The animation starts at
+  `[Motion] ReloadAnimStart` (default 1.0 s) so the "grab a new cell from the hip" part is skipped.
+  `[BATTERY]` blocks both arms and both grips while it
+  plays, so the IK does not override Miles: no `Y`, no `OLA_Reload` pulse, and the camera need not be
+  at the face. When the animation ends the mod uses one `OLPlayerController.NumBatteries` spare and sets
+  `OLHero.CurrentBatterySetEnergy = 1.0` in code; `Y` remains the fallback reload.
+- The spawn/attach path logs `[BATTERY] spare cell spawned, collisionless, and hung from Miles's left
+  thigh`, and the animation start logs its name and length, so a report can tell a missing mesh from a
+  missing animation.

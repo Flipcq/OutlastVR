@@ -47,6 +47,24 @@ extern "C" int OLInteract_CamVisual(OLCamVisual* v);
 // [DOORGRIP] (Test39) how closed each hand is round a door handle (0 open .. 1 the grip), eased.
 extern "C" void OLInteract_HandGrip(float w[2]);
 
+// [BATTERY] (Beta 1.1.8) The spare battery's visual. It sits on Miles's left hip while it is
+// holstered (hidden), glides into the left hand while held, and fades back to the hip during a
+// reload. `blend` is 0 on the hip .. 1 in the hand, `alpha` fades it out.
+struct OLBatteryVisual { int mode; float blend; float alpha; float hipRel[3]; float torsoFwd[2]; };
+extern "C" int OLInteract_BatteryVisual(OLBatteryVisual* v);
+// While the game's own camcorder reload animation plays: both arms follow the animation, not the
+// controllers, and the pad grips are held back.
+extern "C" int OLInteract_ReloadNative();
+// [BATTERY] the spare cell's in-hand placement: off = forward, right, up (uu); rot = roll, pitch, yaw (deg).
+extern "C" void OLInteract_GetBatteryAdjust(float off[3], float rot[3]);
+extern "C" void OLInteract_SetBatteryAdjust(const float off[3], const float rot[3]);
+extern "C" void OLInteract_ResetBatteryAdjust();
+// [BATTERY] where the reload animation starts (seconds in): skip the "grab a new cell" part.
+extern "C" float OLInteract_GetReloadStart();
+extern "C" void  OLInteract_SetReloadStart(float s);
+// [BATTERY] play the reload animation once without swapping batteries (menu tuning).
+extern "C" void  OLInteract_PreviewReload();
+
 // [ANCHOR] (Test40) the world point (uu) a hand holds - a climbable edge, a door handle, the door panel
 // it pushes - and the weight (0..1, eased) with which Miles's hand reaches there instead.
 extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);

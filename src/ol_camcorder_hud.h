@@ -78,7 +78,7 @@ constexpr int BracketX = 877, BracketY = 481;      // the box, in the display's 
 constexpr int BracketW = 167, BracketH = 139, BracketArm = 44;
 constexpr int FocusPad = 1;                        // transparent hair around the arms, so nothing clips
 constexpr int FocusWidth = BracketW + 2*FocusPad, FocusHeight = BracketH + 2*FocusPad;
-constexpr float FocusDistance = 4.00f;             // metres in front of the eye: the brackets' plane
+constexpr float FocusDistance = 8.00f;             // metres in front of the eye: the brackets' plane
 struct FocusQuadSize { float offsetX, offsetY, width, height; };   // view-space metres, eye-centred
 // The angles the box would have on the display, projected onto the focus plane instead: same
 // direction, same apparent size, FocusDistance away (a quad layer is composited per eye, so the

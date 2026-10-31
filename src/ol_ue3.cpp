@@ -3576,12 +3576,22 @@ static float g_camChestOff[3] = { 0.0f, -1.0f, 21.0f };
 // Where the holstered model is, back in the recenter frame (metres), for ol_interact's glow and grab.
 static float g_camChestTrack[3] = {};
 static volatile ULONGLONG g_camChestMs = 0;
+// [BATTERY] where the camcorder model itself is drawn in the hand, back in the recenter frame. The
+// left hand coming near this point starts the reload animation.
+static float g_camHandTrack[3] = {};
+static volatile ULONGLONG g_camHandMs = 0;
 extern "C" int OLUE3_HolsterVisual(float out[3]) {
     if (!g_camChestMs || GetTickCount64() - g_camChestMs > 300) return 0;
     out[0] = g_camChestTrack[0]; out[1] = g_camChestTrack[1]; out[2] = g_camChestTrack[2];
     return 1;
 }
+extern "C" int OLUE3_CamModelVisual(float out[3]) {
+    if (!g_camHandMs || GetTickCount64() - g_camHandMs > 300) return 0;
+    out[0] = g_camHandTrack[0]; out[1] = g_camHandTrack[1]; out[2] = g_camHandTrack[2];
+    return 1;
+}
 static bool  g_camVisible = false;                         // the mod made the model visible
+static void* g_camBodyComp = nullptr;                      // the visible body mesh (carries CameraMesh)
 static void* g_camMeshSeen = nullptr;
 static UEAttachment* g_camEntry[2] = { nullptr, nullptr }; // main, shadow: offsets the mod wrote
 static void* g_camEntryComp[2] = { nullptr, nullptr };
@@ -3618,7 +3628,7 @@ static IkAtom g_gripLocal[73];
 static bool   g_gripHas[73];
 static IkAtom g_gripAux;           // the hand auxiliary bone relative to the wrist
 static bool   g_gripValid = false, g_gripLive = false;
-static int    g_rAux = -1, g_lAux = -1, g_hipBone = -1;
+static int    g_rAux = -1, g_lAux = -1, g_hipBone = -1, g_lHipBone = -1;
 static IkAtom IkLocalOf(const IkArray& s, int child, int parent) {
     IkAtom l; const IkAtom& p = s.d[parent]; const IkAtom& c = s.d[child];
     const QIk4 inv = IQConj(p.q);
@@ -3647,8 +3657,10 @@ static void GripBones(void* mesh) {
     s_mesh = mesh;
     static const char* const kRA[] = { "R-Hand_aux", "R_Hand_aux" }, *const kLA[] = { "L-Hand_aux", "L_Hand_aux" };
     static const char* const kHip[] = { "R-Thigh", "R_Thigh", "RThigh", "R-UpLeg", "Pelvis" };
+    static const char* const kLHip[] = { "L-Thigh", "L_Thigh", "LThigh", "L-UpLeg", "Pelvis" };
     g_rAux = BoneFind(mesh, kRA, 2); g_lAux = BoneFind(mesh, kLA, 2); g_hipBone = BoneFind(mesh, kHip, 5);
-    char l[200]; sprintf_s(l, "[OLVR][NATIVEGRIP] bones: right hand aux %d, left hand aux %d, hip %d", g_rAux, g_lAux, g_hipBone);
+    g_lHipBone = BoneFind(mesh, kLHip, 5);
+    char l[220]; sprintf_s(l, "[OLVR][NATIVEGRIP] bones: right hand aux %d, left hand aux %d, right hip %d, left hip %d", g_rAux, g_lAux, g_hipBone, g_lHipBone);
     OLProxyLog(l);
 }
 // [NATIVEGRIP] the grip this build captured (bone index, local quaternion, local translation)
@@ -3906,6 +3918,7 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
         if (camShadow && c == camShadow) { a = &at.d[i]; which = 1; break; }
     }
     if (!a) return;
+    if (which == 0) g_camBodyComp = comp;
     // the bone the model hangs from, by name (cached per mesh asset)
     static void* s_boneMesh = nullptr; static uint32_t s_boneName = 0; static int s_bone = -1;
     if (s_boneMesh != mesh || s_boneName != a->boneName) {
@@ -3973,6 +3986,13 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
     const VIk3 T = IVAdd(chestT, IVScale(IVSub(handT, chestT), b));
     const QIk4 Q = IQBlend(chestQ, handQ, b);
     if (which == 0) {
+        {   // [BATTERY] the camcorder model's own point, for the left hand's approach
+            const VIk3 d = IVSub(T, cam);
+            g_camHandTrack[0] = headRef[0] + IVDot(d, right) / kMetersToUU;
+            g_camHandTrack[1] = headRef[1] + d.z / kMetersToUU;
+            g_camHandTrack[2] = headRef[2] - IVDot(d, fwd) / kMetersToUU;
+            g_camHandMs = GetTickCount64();
+        }
         // [FLIPSCREEN] (Test43) the screen's pose and the lens, in the recenter frame, for the compositor
         OLFlipScreen fsc = {};
         {   // [LIVESCREEN] the lens in the world, for the capture camera
@@ -4048,6 +4068,440 @@ static void CamPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk
     }
 }
 
+// ---- [BATTERY] (Beta 1.1.8) the spare cell on Miles's left hip --------------------------------
+// The script-call helpers live further down (with the live screen); the battery uses them too.
+static void* LS_FindFunction(const char* cls, const char* fn);
+static void* LS_FindObject(const char* name);
+static void* LS_ClassOf(void* o);
+static int   LS_ParamOff(void* fn, const char* p);
+static bool  LS_Call(void* obj, void* fn, void* parms);
+// A StaticMeshActor is spawned once, made collisionless and hung from Miles's left thigh bone with
+// USkeletalMeshComponent.AttachComponent (the same mechanism the game's handycam uses). Its attachment
+// offset is rewritten every frame - from the left thigh (hidden on the hip) to the left hand bone
+// (held) - exactly like CamPlace does for the camcorder. During the reload the left hand's cell fades
+// out by shrinking its attachment scale and glides back to the hip.
+static void* g_batMeshAsset = nullptr;
+static void* g_batActor = nullptr;
+static void* g_batComp = nullptr;
+static void* g_batHero = nullptr;
+static UEAttachment* g_batEntry = nullptr;
+static void* g_batEntryComp = nullptr;
+static bool g_batVisible = false;
+static void* g_batAttachFn = nullptr;
+static uint32_t g_batBoneName = 0;
+static ULONGLONG g_batMeshTry = 0, g_batAttachTry = 0, g_batSpawnTry = 0;
+static float g_batHipTrack[3] = {};
+static volatile ULONGLONG g_batHipMs = 0;
+static float g_batScale = 1.0f;
+static float g_batHipOff[3] = { 0.0f, -1.0f, -21.0f };   // up, forward, right (uu) from the left thigh joint
+static float g_batHipRot[3] = { 0.0f, 0.0f, 0.0f };
+static float g_batHeldOff[3] = { 9.0f, -1.0f, -1.0f };   // in the left hand's bone frame (uu): forward, right, up
+static float g_batHeldRot[3] = { 90.0f, -33.0f, 0.0f };  // roll, pitch, yaw (deg)
+extern "C" int OLUE3_BatteryVisual(float out[3]) {
+    if (!g_batHipMs || GetTickCount64() - g_batHipMs > 300) return 0;
+    out[0] = g_batHipTrack[0]; out[1] = g_batHipTrack[1]; out[2] = g_batHipTrack[2];
+    return 1;
+}
+extern "C" void OLUE3_DevBatteryTune(int which, float a, float b, float c) {
+    float* t = which == 0 ? g_batHipOff : (which == 1 ? g_batHipRot : (which == 2 ? g_batHeldOff : g_batHeldRot));
+    t[0] = a; t[1] = b; t[2] = c;
+    char l[180];
+    sprintf_s(l, "[OLVR][BATTERY] tune %s = (%.2f %.2f %.2f)",
+        which == 0 ? "hipOff (up fwd right)" : (which == 1 ? "hipRot" : (which == 2 ? "heldOff" : "heldRot")), a, b, c);
+    OLProxyLog(l);
+}
+extern "C" void OLUE3_GetBatteryTune(float off[3], float rot[3]) {
+    for (int i = 0; i < 3; ++i) { off[i] = g_batHeldOff[i]; rot[i] = g_batHeldRot[i]; }
+}
+extern "C" void OLUE3_DevBatteryDiag() {
+    BP_RefreshObjects();
+    char nm[96] = "?"; void* sm = nullptr; unsigned smOff = 0, leOff = 0;
+    if (g_batMeshAsset) BP_ObjName(g_batMeshAsset, nm, sizeof(nm));
+    if (g_batComp && SP_FindPropAny("StaticMeshComponent", "StaticMesh", &smOff, nullptr))
+        sm = ProbeReadPtr((char*)g_batComp + smOff);
+    void* le = nullptr;
+    if (g_batComp && SP_FindPropAny("PrimitiveComponent", "LightEnvironment", &leOff, nullptr) && leOff < 0x300)
+        le = ProbeReadPtr((char*)g_batComp + leOff);
+    uint32_t hg = 0;
+    if (g_batComp) BP_Read((char*)g_batComp + kPrimHiddenWordOff, &hg, 4);
+    char l[400];
+    sprintf_s(l, "[OLVR][BATTERY] diag: mesh=%s(%p) actor=%p comp=%p entry=%p compMesh=%p lightEnv=%p hiddenWord=0x%X visible=%d",
+              nm, g_batMeshAsset, g_batActor, g_batComp, (void*)g_batEntry, sm, le, hg, g_batVisible ? 1 : 0);
+    OLProxyLog(l);
+}
+static uint32_t BoneNameIndex(void* mesh, int bone) {
+    const char* refs = (const char*)ProbeReadPtr((char*)mesh + 0xC4);
+    int n = 0; BP_Read((char*)mesh + 0xCC, &n, 4);
+    uint32_t ni = 0;
+    if (!refs || bone < 0 || bone >= n || bone >= 256) return 0;
+    BP_Read(refs + (size_t)bone * 0x50, &ni, 4);
+    return ni;
+}
+static void* BatteryMesh() {
+    if (g_batMeshAsset) return g_batMeshAsset;
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_batMeshTry) return nullptr;
+    g_batMeshTry = now + 1000;
+    BP_RefreshObjects();
+
+    // OLPickableObject.PickupMesh is a UStaticMeshComponent at +0x240; its StaticMesh is at +0x240.
+    auto pickupMesh = [](void* obj) -> void* {
+        void* pm = obj ? ProbeReadPtr((char*)obj + 0x240) : nullptr;
+        return pm ? ProbeReadPtr((char*)pm + 0x240) : nullptr;
+    };
+
+    void* o = LS_FindObject("CamCorderBattery-01");
+    if (o) {
+        g_batMeshAsset = o;
+        OLProxyLog("[OLVR][BATTERY] spare cell mesh: CamCorderBattery-01 (found by name)");
+        return o;
+    }
+    void* cdo = LS_FindObject("Default__OLBatteriesPickupFactory");
+    unsigned off = 0;
+    if (cdo && SP_FindPropAny("OLBatteriesPickupFactory", "Mesh1", &off, nullptr)) {
+        void* m = ProbeReadPtr((char*)cdo + off);
+        if (m) {
+            g_batMeshAsset = m;
+            char nm[96] = "?"; BP_ObjName(m, nm, sizeof(nm));
+            char l[180]; sprintf_s(l, "[OLVR][BATTERY] spare cell mesh: %s (from the batteries pickup factory)", nm); OLProxyLog(l);
+            return m;
+        }
+    }
+    if (cdo) {
+        void* m = pickupMesh(cdo);
+        if (m) {
+            g_batMeshAsset = m;
+            char nm[96] = "?"; BP_ObjName(m, nm, sizeof(nm));
+            char l[200]; sprintf_s(l, "[OLVR][BATTERY] spare cell mesh: %s (from the batteries pickup component)", nm); OLProxyLog(l);
+            return m;
+        }
+    }
+    // Any live pickable object whose PickupMesh already has a loaded cell mesh.
+    for (int i = 0; i < g_bpObjNum; ++i) {
+        void* p = nullptr;
+        if (!BP_Read(g_bpObjs + i, &p, 8) || !p || !ObjIsA(p, "OLPickableObject")) continue;
+        void* m = pickupMesh(p);
+        if (!m) continue;
+        g_batMeshAsset = m;
+        char nm[96] = "?"; BP_ObjName(m, nm, sizeof(nm));
+        char l[200]; sprintf_s(l, "[OLVR][BATTERY] spare cell mesh: %s (from a live pickable object)", nm); OLProxyLog(l);
+        return m;
+    }
+    void* smCls = BP_FindClassObj("StaticMesh");
+    for (int i = 0; smCls && i < g_bpObjNum; ++i) {
+        void* p = nullptr;
+        if (!BP_Read(g_bpObjs + i, &p, 8) || !p || LS_ClassOf(p) != smCls) continue;
+        char nm[96];
+        if (!BP_ObjName(p, nm, sizeof(nm)) || !strstr(nm, "CamCorderBattery")) continue;
+        g_batMeshAsset = p;
+        char l[180]; sprintf_s(l, "[OLVR][BATTERY] spare cell mesh: %s (first battery StaticMesh)", nm); OLProxyLog(l);
+        return p;
+    }
+    static ULONGLONG s_failLog = 0;
+    if (GetTickCount64() - s_failLog > 3000) {
+        s_failLog = GetTickCount64();
+        void* m1 = (cdo && off) ? ProbeReadPtr((char*)cdo + off) : nullptr;
+        char l[260];
+        sprintf_s(l, "[OLVR][BATTERY] no battery StaticMesh yet (byName=%s cdo=%s mesh1+0x%X=%p cdoPickup=%p)",
+                  o ? "found" : "none", cdo ? "found" : "none", off, m1, cdo ? pickupMesh(cdo) : nullptr);
+        OLProxyLog(l);
+    }
+    return nullptr;
+}
+static void BatteryRestore() {
+    // Visibility is the attachment scale, not HiddenGame: a scale of zero collapses the cell so the
+    // renderer draws nothing, and it avoids reattaching the component (which could drop it off Miles).
+    if (g_batEntry) {
+        __try { g_batEntry->scale[0] = 0.0f; g_batEntry->scale[1] = 0.0f; g_batEntry->scale[2] = 0.0f; }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    g_batVisible = false;
+    g_batEntry = nullptr; g_batEntryComp = nullptr;
+}
+static bool BatterySpawn(void* hero, void* milesComp, void* meshAsset, uint32_t boneName) {
+    void* spawnFn = LS_FindFunction("Actor", "Spawn");
+    void* attachFn = LS_FindFunction("SkeletalMeshComponent", "AttachComponent");
+    void* collFn = LS_FindFunction("Actor", "SetCollisionType");
+    if (!spawnFn || !milesComp || !boneName) {
+        OLProxyLog("[OLVR][BATTERY] could not spawn the spare cell (Actor.Spawn missing)");
+        return false;
+    }
+    // Hardcoded Spawn layout - the exact offsets the live screen's capture camera uses successfully:
+    // SpawnClass@0, SpawnOwner@8, SpawnTag@16, SpawnLocation@24, SpawnRotation@36, ActorTemplate@48,
+    // bNoCollisionFail@56, bNoFail@60, ReturnValue@64.
+    unsigned heroLoc = 0;
+    SP_FindPropAny("Actor", "Location", &heroLoc, nullptr);
+    void* actor = nullptr; const char* usedCls = "?";
+    const char* clsNames[2] = { "StaticMeshActor", "DynamicSMActor" };
+    for (const char* cn : clsNames) {
+        void* actorCls = BP_FindClassObj(cn);
+        if (!actorCls) continue;
+        alignas(16) char p[0x80] = {};
+        *(void**)(p + 0x00) = actorCls;
+        *(void**)(p + 0x08) = hero;
+        if (heroLoc) BP_Read((char*)hero + heroLoc, p + 0x18, 12);
+        *(int*)(p + 0x38) = 1;   // bNoCollisionFail
+        *(int*)(p + 0x3C) = 1;   // bNoFail
+        if (!LS_Call(hero, spawnFn, p)) continue;
+        actor = *(void**)(p + 0x40);
+        if (actor) { usedCls = cn; break; }
+    }
+    if (!actor) {
+        OLProxyLog("[OLVR][BATTERY] Actor.Spawn returned no actor (tried StaticMeshActor and DynamicSMActor)");
+        return false;
+    }
+    char l[180]; sprintf_s(l, "[OLVR][BATTERY] spawned a %s for the spare cell", usedCls); OLProxyLog(l);
+    unsigned compOff = 0;
+    if (!SP_FindPropAny("StaticMeshActor", "StaticMeshComponent", &compOff, nullptr) &&
+        !SP_FindPropAny("DynamicSMActor", "StaticMeshComponent", &compOff, nullptr)) compOff = 0x240;
+    void* comp = ProbeReadPtr((char*)actor + compOff);
+    if (!comp) { OLProxyLog("[OLVR][BATTERY] the spare cell actor has no StaticMeshComponent"); return false; }
+    // Use Miles's own light environment so the cell is lit exactly like the body it hangs from (a
+    // dynamically spawned primitive with a null LightEnvironment renders invisible in a lit level).
+    {
+        unsigned leOff = 0;
+        if (SP_FindPropAny("PrimitiveComponent", "LightEnvironment", &leOff, nullptr) && leOff < 0x300) {
+            void* le = ProbeReadPtr((char*)milesComp + leOff);
+            if (le) __try { *(void**)((char*)comp + leOff) = le; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            else OLProxyLog("[OLVR][BATTERY] Miles's mesh has no LightEnvironment to share");
+        }
+    }
+    // Set the mesh directly on the component. The ProcessEvent path for SetStaticMesh does not apply it,
+    // so write the property, then force a render-proxy recreation by toggling HiddenGame (the vtable call
+    // reattaches the primitive and rebuilds its scene proxy with the new mesh + light environment).
+    {
+        unsigned smOff = 0;
+        if (SP_FindPropAny("StaticMeshComponent", "StaticMesh", &smOff, nullptr) && smOff < 0x300)
+            __try { *(void**)((char*)comp + smOff) = meshAsset; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        OLUE3_SetHiddenGame(comp, 1);
+        OLUE3_SetHiddenGame(comp, 0);
+        void* cur = smOff ? ProbeReadPtr((char*)comp + smOff) : nullptr;
+        char ml[220];
+        sprintf_s(ml, "[OLVR][BATTERY] mesh applied: comp->StaticMesh=%p (want %p)", cur, meshAsset);
+        OLProxyLog(ml);
+    }
+    if (collFn) {
+        alignas(16) char cp[0x20] = {};
+        LS_Call(actor, collFn, cp);   // COLLIDE_NoCollision = 0
+    }
+    if (!attachFn) { OLProxyLog("[OLVR][BATTERY] SkeletalMeshComponent.AttachComponent missing"); return false; }
+    g_batAttachFn = attachFn; g_batBoneName = boneName;
+    alignas(16) char ap[0x40] = {};
+    const int acOff = LS_ParamOff(attachFn, "Component"), abOff = LS_ParamOff(attachFn, "BoneName");
+    const int arsOff = LS_ParamOff(attachFn, "RelativeScale");
+    *(void**)(ap + (acOff >= 0 ? acOff : 0)) = comp;
+    *(uint32_t*)(ap + (abOff >= 0 ? abOff : 8)) = boneName;
+    if (arsOff >= 0) { *(float*)(ap + arsOff) = 0.0f; *(float*)(ap + arsOff + 4) = 0.0f; *(float*)(ap + arsOff + 8) = 0.0f; }
+    if (!LS_Call(milesComp, attachFn, ap)) { OLProxyLog("[OLVR][BATTERY] AttachComponent failed"); return false; }
+    g_batActor = actor; g_batComp = comp; g_batHero = hero;
+    g_batEntry = nullptr; g_batEntryComp = nullptr; g_batAttachTry = 0;
+    g_batVisible = false;
+    OLProxyLog("[OLVR][BATTERY] spare cell spawned, collisionless, and hung from Miles's left thigh");
+    return true;
+}
+// Re-attach a cell whose attachment entry was lost. It starts at scale zero again until BatteryPlace
+// writes the held scale, so it never flashes full-size at the bone.
+static bool BatteryAttach(void* milesComp) {
+    if (!milesComp || !g_batComp || !g_batAttachFn || !g_batBoneName) return false;
+    alignas(16) char p[0x40] = {};
+    const int acOff = LS_ParamOff(g_batAttachFn, "Component"), abOff = LS_ParamOff(g_batAttachFn, "BoneName");
+    const int arsOff = LS_ParamOff(g_batAttachFn, "RelativeScale");
+    *(void**)(p + (acOff >= 0 ? acOff : 0)) = g_batComp;
+    *(uint32_t*)(p + (abOff >= 0 ? abOff : 8)) = g_batBoneName;
+    if (arsOff >= 0) { *(float*)(p + arsOff) = 0.0f; *(float*)(p + arsOff + 4) = 0.0f; *(float*)(p + arsOff + 8) = 0.0f; }
+    return LS_Call(milesComp, g_batAttachFn, p);
+}
+static UEAttachment* BatteryEntry(void* comp) {
+    UEAttachArray at = {};
+    if (!BP_Read((char*)comp + kCompAttachmentsOff, &at, sizeof(at)) || !at.d || at.n <= 0 || at.n > 64) return nullptr;
+    for (int i = 0; i < at.n; ++i) if (at.d[i].comp == g_batComp) return &at.d[i];
+    return nullptr;
+}
+static void BatteryPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam, VIk3 fwd, VIk3 right,
+                         const float headRef[3], const float headRaw[3]) {
+    if (!comp || !mesh) return;
+    GripBones(mesh);
+    // Attach to the left thigh; if this rig names its thigh bones differently, fall back to the
+    // right thigh, then to the skeleton root, so the cell can always be placed and shown.
+    const int hip = (g_lHipBone >= 0 && g_lHipBone < space.n) ? g_lHipBone :
+                    (g_hipBone  >= 0 && g_hipBone  < space.n) ? g_hipBone  : -1;
+    const int att = hip >= 0 ? hip : 0;
+    if (att < 0 || att >= space.n) return;
+    OLBatteryVisual v; memset(&v, 0, sizeof(v));
+    const bool visual = OLInteract_BatteryVisual(&v) != 0 && v.mode == 1;
+    const VIk3 up = { 0, 0, 1 };
+    auto map = [&](float px, float py, float pz) -> VIk3 {
+        const float dR = (px - headRef[0]) * kMetersToUU, dU = (py - headRef[1]) * kMetersToUU, dF = -(pz - headRef[2]) * kMetersToUU;
+        return IVAdd(cam, IVAdd(IVScale(right, dR), IVAdd(IVScale(up, dU), IVScale(fwd, dF))));
+    };
+    const QIk4 hipQ = IQMul(PoseUprightHand(fwd), IQEulerDeg(g_batHipRot));
+    bool hipOk = false; VIk3 hipT = { 0, 0, 0 };
+    if (hip >= 0) {
+        // g_batHipOff[2] is the right component of the LEFT hip; mirror it if we fell back to the right thigh.
+        const float side = (hip == g_lHipBone) ? g_batHipOff[2] : -g_batHipOff[2];
+        hipT = IVAdd(space.d[hip].t, IVAdd(IVScale(up, g_batHipOff[0]),
+                        IVAdd(IVScale(fwd, g_batHipOff[1]), IVScale(right, side))));
+        hipOk = true;
+    } else if (visual) {
+        hipT = map(headRaw[0] + v.hipRel[0], headRaw[1] + v.hipRel[1], headRaw[2] + v.hipRel[2]);
+        hipOk = true;
+    }
+    if (hipOk) {   // where the holstered cell is, in ol_interact's recenter frame, for the left-hip grab zone
+        const VIk3 d = IVSub(hipT, cam);
+        g_batHipTrack[0] = headRef[0] + IVDot(d, right) / kMetersToUU;
+        g_batHipTrack[1] = headRef[1] + d.z / kMetersToUU;
+        g_batHipTrack[2] = headRef[2] - IVDot(d, fwd) / kMetersToUU;
+        g_batHipMs = GetTickCount64();
+    }
+    void* hero = OLUE3_Hero();
+    if (!hero) { BatteryRestore(); return; }
+    if (hero != g_batHero && g_batComp) {   // a new level: the old actor went with the old world
+        g_batVisible = false; g_batActor = nullptr; g_batComp = nullptr;
+        g_batEntry = nullptr; g_batEntryComp = nullptr; g_batHero = nullptr;
+    }
+    const float alpha = visual ? (v.alpha < 0.0f ? 0.0f : (v.alpha > 1.0f ? 1.0f : v.alpha)) : 0.0f;
+    if (!g_batComp) {
+        if (alpha <= 0.01f) return;   // nothing to spawn while it is hidden
+        if (GetTickCount64() < g_batSpawnTry) return;   // throttle retries (a failed Spawn logs once, not every frame)
+        g_batSpawnTry = GetTickCount64() + 500;
+        void* asset = BatteryMesh();
+        const uint32_t boneName = BoneNameIndex(mesh, att);
+        if (!asset || !boneName || !BatterySpawn(hero, comp, asset, boneName)) return;
+    }
+    if (!g_batEntry || g_batEntryComp != g_batComp) {
+        g_batEntry = BatteryEntry(comp);
+        g_batEntryComp = g_batComp;
+        if (!g_batEntry && GetTickCount64() > g_batAttachTry) {
+            g_batAttachTry = GetTickCount64() + 1000;
+            if (BatteryAttach(comp)) {
+                g_batEntry = BatteryEntry(comp);
+                g_batEntryComp = g_batComp;
+                OLProxyLog("[OLVR][BATTERY] the spare cell was re-attached to the left thigh");
+            } else {
+                OLProxyLog("[OLVR][BATTERY] the spare cell is not in Miles's attachment list yet - retrying the attach");
+            }
+        }
+    }
+    if (!g_batEntry) return;
+    // Visibility is HiddenGame (scale is not applied by this engine for skeletal-mesh attachments, so a
+    // zero scale never hid the cell - it floated after release). Toggle it like the camcorder does; the
+    // FAttachment entry survives the reattach, so the hand placement keeps working.
+    const bool wantVisible = alpha > 0.01f && hipOk;
+    if (wantVisible != g_batVisible) {
+        OLUE3_SetHiddenGame(g_batComp, wantVisible ? 0 : 1);
+        g_batVisible = wantVisible;
+    }
+    if (!wantVisible) return;
+    static bool s_shownLog = false;
+    if (!s_shownLog) {
+        s_shownLog = true;   // one comprehensive line in OutlastVR_Log.txt, no DevBridge needed
+        char nm[96] = "?"; if (g_batMeshAsset) BP_ObjName(g_batMeshAsset, nm, sizeof(nm));
+        unsigned leOff = 0; void* le = nullptr;
+        if (SP_FindPropAny("PrimitiveComponent", "LightEnvironment", &leOff, nullptr) && leOff < 0x300)
+            le = ProbeReadPtr((char*)g_batComp + leOff);
+        char l[300];
+        sprintf_s(l, "[OLVR][BATTERY] shown: mesh=%s(%p) comp=%p entry=%p lightEnv=%p", nm, g_batMeshAsset, g_batComp, (void*)g_batEntry, le);
+        OLProxyLog(l);
+    }
+    // In the left hand: the left hand auxiliary bone, with the small placement correction.
+    VIk3 handT = hipT; QIk4 handQ = hipQ;
+    if (g_lAux >= 0 && g_lAux < space.n) {
+        const IkAtom& A = space.d[g_lAux];
+        handT = IVAdd(A.t, IQRotate(A.q, { g_batHeldOff[0], g_batHeldOff[1], g_batHeldOff[2] }));
+        handQ = IQMul(A.q, IQEulerDeg(g_batHeldRot));
+    }
+    const float b = v.blend < 0.0f ? 0.0f : (v.blend > 1.0f ? 1.0f : v.blend);
+    const VIk3 T = IVAdd(hipT, IVScale(IVSub(handT, hipT), b));
+    const QIk4 Q = IQBlend(hipQ, handQ, b);
+    const IkAtom& B = space.d[att];
+    const QIk4 inv = IQConj(B.q);
+    const float bs = fabsf(B.scale) > 1e-4f ? B.scale : 1.0f;
+    const VIk3 rl = IVScale(IQRotate(inv, IVSub(T, B.t)), 1.0f / bs);
+    int32_t rr[3]; IQToRotator(IQMul(inv, Q), rr);
+    __try {
+        g_batEntry->loc[0] = rl.x; g_batEntry->loc[1] = rl.y; g_batEntry->loc[2] = rl.z;
+        g_batEntry->rot[0] = rr[0]; g_batEntry->rot[1] = rr[1]; g_batEntry->rot[2] = rr[2];
+        const float sc = alpha * g_batScale;
+        g_batEntry->scale[0] = sc; g_batEntry->scale[1] = sc; g_batEntry->scale[2] = sc;
+        g_batEntryComp = g_batEntry->comp;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { g_batEntry = nullptr; }
+    static ULONGLONG s_heldLog = 0;
+    if (g_batVisible && GetTickCount64() - s_heldLog > 2000) {
+        s_heldLog = GetTickCount64();
+        float ext[3] = { 0,0,0 }, world[3] = { 0,0,0 };
+        BP_Read((char*)g_batComp + 0x98, ext, 12);          // Bounds.BoxExtent (mesh size)
+        BP_Read((char*)g_batComp + 0xF0, world, 12);        // LocalToWorld translation
+        uint32_t hg = 0; BP_Read((char*)g_batComp + kPrimHiddenWordOff, &hg, 4);
+        char l[320];
+        sprintf_s(l, "[OLVR][BATTERY] held: loc(%.1f %.1f %.1f) rot(%d %d %d) scale(%.2f) boxExt(%.1f %.1f %.1f) world(%.1f %.1f %.1f) hidden=0x%X",
+                  rl.x, rl.y, rl.z, rr[0], rr[1], rr[2], alpha * g_batScale, ext[0], ext[1], ext[2], world[0], world[1], world[2], hg);
+        OLProxyLog(l);
+    }
+}
+// [BATTERY] Start OLHero's own reload animation by playing it on his FullBodyAnimSlot (the slot the
+// game's own full-body animations go through). This is the ANIMATION only: the reload command/function
+// is not called and no Y is pressed, so the battery swap stays ours. `PlayCustomAnim` returns the
+// animation's length.
+extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime) {
+    static bool s_tried = false, s_ok = false;
+    static unsigned s_nameOff = 0, s_inactiveOff = 0, s_slotOff = 0;
+    static void* s_play = nullptr;
+    static int s_animOff = -1, s_rateOff = -1, s_blendInOff = -1, s_blendOutOff = -1;
+    static int s_loopOff = -1, s_overOff = -1, s_startOff = -1, s_endOff = -1, s_retOff = -1;
+    if (!s_tried) {
+        s_tried = true;
+        BP_RefreshObjects();
+        // FullBodyAnimSlot is declared on OLPawn, not OLHero: the property resolver does not walk the
+        // superclass chain, so it must be asked for by the class that declares it.
+        s_ok = OLUE3_FindProp("OLHero", "AnimNameReloadBatteries", &s_nameOff, nullptr) != 0 &&
+               OLUE3_FindProp("OLPawn", "FullBodyAnimSlot", &s_slotOff, nullptr) != 0;
+        OLUE3_FindProp("OLHero", "AnimNameReloadBatteriesInactive", &s_inactiveOff, nullptr);   // optional
+        s_play = LS_FindFunction("AnimNodeSlot", "PlayCustomAnim");
+        if (s_play) {
+            s_animOff = LS_ParamOff(s_play, "AnimName"); s_rateOff = LS_ParamOff(s_play, "Rate");
+            s_blendInOff = LS_ParamOff(s_play, "BlendInTime"); s_blendOutOff = LS_ParamOff(s_play, "BlendOutTime");
+            s_loopOff = LS_ParamOff(s_play, "bLooping"); s_overOff = LS_ParamOff(s_play, "bOverride");
+            s_startOff = LS_ParamOff(s_play, "StartTime"); s_endOff = LS_ParamOff(s_play, "EndTime");
+            s_retOff = LS_ParamOff(s_play, "ReturnValue");
+        }
+        char l[240];
+        sprintf_s(l, "[OLVR][BATTERY] reload animation: active+0x%X inactive+0x%X slot+0x%X PlayCustomAnim=%s (AnimName@%d ReturnValue@%d)",
+                  s_nameOff, s_inactiveOff, s_slotOff, s_play ? "found" : "MISSING", s_animOff, s_retOff);
+        OLProxyLog(l);
+    }
+    if (!s_ok || !s_play || !s_slotOff) return 0.0f;
+    void* hero = OLUE3_Hero();
+    if (!hero) { OLProxyLog("[OLVR][BATTERY] no Miles for the reload animation"); return 0.0f; }
+    const unsigned nameOff = (inactive && s_inactiveOff) ? s_inactiveOff : s_nameOff;
+    uint32_t anim = 0;
+    if (!nameOff || !BP_Read((char*)hero + nameOff, &anim, 4) || !anim) {
+        OLProxyLog("[OLVR][BATTERY] the reload animation name is empty");
+        return 0.0f;
+    }
+    void* slot = ProbeReadPtr((char*)hero + s_slotOff);
+    if (!slot) { OLProxyLog("[OLVR][BATTERY] OLHero.FullBodyAnimSlot is empty"); return 0.0f; }
+    char an[64] = "?";
+    BP_Name(anim, an, sizeof(an));
+    alignas(16) char p[0x40] = {};
+    *(uint32_t*)(p + (s_animOff >= 0 ? s_animOff : 0)) = anim;
+    if (s_rateOff >= 0) *(float*)(p + s_rateOff) = 1.0f;
+    if (s_blendInOff >= 0) *(float*)(p + s_blendInOff) = 0.55f;
+    if (s_blendOutOff >= 0) *(float*)(p + s_blendOutOff) = 0.35f;
+    if (s_loopOff >= 0) *(int*)(p + s_loopOff) = 0;
+    if (s_overOff >= 0) *(int*)(p + s_overOff) = 1;
+    if (s_startOff >= 0) *(float*)(p + s_startOff) = startTime > 0.0f ? startTime : 0.0f;
+    if (s_endOff >= 0) *(float*)(p + s_endOff) = 0.0f;
+    if (!LS_Call(slot, s_play, p)) { OLProxyLog("[OLVR][BATTERY] PlayCustomAnim failed"); return 0.0f; }
+    float dur = s_retOff >= 0 ? *(float*)(p + s_retOff) : 0.0f;
+    if (!(dur > 0.05f)) dur = 1.30f;
+    // PlayCustomAnim returns the full sequence length; from a non-zero StartTime only the tail plays.
+    const float remaining = dur - (startTime > 0.0f ? startTime : 0.0f);
+    char l[220];
+    sprintf_s(l, "[OLVR][BATTERY] playing '%s' through the full-body slot (%.2f s, from %.2f s) - the mod does not press Y", an, remaining > 0.05f ? remaining : dur, startTime);
+    OLProxyLog(l);
+    return remaining > 0.05f ? remaining : dur;
+}
+
 // [ANCHOR] (Test40) World points <-> Miles's component space, through the component's LocalToWorld
 // (UPrimitiveComponent: rows X Y Z T at +0xC0; the door hinge reads the same matrix's T at +0xF0).
 static bool CompMatrix(void* comp, float m[16]) {
@@ -4096,6 +4550,7 @@ static bool PoseApplyVisible(void* comp) {
         }
         g_poseRamp[0] = g_poseRamp[1] = 0.0f;
         CamRestore();   // [HOLSTER] the game's own camcorder state while the arms are blocked
+        BatteryRestore();   // [BATTERY] nothing of ours may stay on screen
         return false;
     }
     OLXR_FrameLatch();   // [FRAMETAG] the arms use the same frozen head pose as this frame's camera
@@ -4139,6 +4594,10 @@ static bool PoseApplyVisible(void* comp) {
         const float camHold = (OLInteract_CamVisual(&camVis) && camVis.mode == 1) ? camVis.blend : 0.0f;
         GripBones(mesh);
         GripUseBake();
+        // [BATTERY] While the game's own reload animation plays, both arms belong to it: no IK, no
+        // finger grip, no controller pose. The camcorder and the spare cell are still placed below.
+        const bool batReload = OLInteract_ReloadNative() != 0;
+        if (batReload) pad.handValid = 0;
         // [INTERACT] (Test37) The camcorder held up to your eye: Miles's right arm plays the game's own
         // camcorder pose. Following the controller there put his sleeve right across the lens.
         // (Beta 1.1) [CAMTUCK] But that pose holds a camcorder that is hidden at the eye, so in the headset's wide
@@ -4171,7 +4630,7 @@ static bool PoseApplyVisible(void* comp) {
 
         if (facePin || faceBusy) {   // [FACECAM] the game's own raise / lower arm animation plays
             pad.handValid &= ~2u;
-        } else if (camTuck) {   // [CAMTUCK] right hand low at the side, pointing down (recenter frame, metres)
+        } else if (camTuck && !batReload) {   // [CAMTUCK] right hand low at the side, pointing down (recenter frame, metres)
             pad.handPose[1] = { -0.7071f, 0.0f, 0.0f, 0.7071f, headRef[0] + 0.20f, headRef[1] - 0.64f, headRef[2] + 0.05f };
             pad.handValid |= 2u;
         }
@@ -4466,6 +4925,8 @@ static bool PoseApplyVisible(void* comp) {
             if (useFrameHands) { headRaw[0] = frameHands.headRaw[0]; headRaw[1] = frameHands.headRaw[1]; headRaw[2] = frameHands.headRaw[2]; }
             if (!g_armLeanFix) { headRaw[0] = headRef[0]; headRaw[1] = headRef[1]; headRaw[2] = headRef[2]; }
             CamPlace(comp, space, mesh, cam, cameraForward, cameraRight, headRef, headRaw, camGrip, camGripOk);
+            if (comp == g_camBodyComp)   // [BATTERY] only the visible body carries the spawned cell
+                BatteryPlace(comp, space, mesh, cam, cameraForward, cameraRight, headRef, headRaw);
         }
         if (!changed[0] && !changed[1]) return false;
         const long n=InterlockedIncrement(&g_poseApplied);

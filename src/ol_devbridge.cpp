@@ -37,6 +37,7 @@
 //   raw <hexaddr> [bytes]   log memory as qwords, naming any that point at objects
 //   hide <hexaddr> <0|1>    SetHiddenGame on a primitive component (runs on the game thread)
 //   camtune <0|1|2> a b c   [HOLSTER] handycam: 0 held rot (deg), 1 held offset (uu), 2 chest rot, 3 chest offset (up fwd right uu)
+//   battune <0|1|2|3> a b c  [BATTERY] spare cell: 0 hip offset (up fwd right uu), 1 hip rot, 2 hand offset, 3 hand rot
 //   vrbtn <A+B+X+Y+MENU+LS+RS> <ms>   scripted Quest controller buttons (through the mod's mapping)
 //   trig <L|R> <0..1>       scripted trigger
 //   bones                   Miles's skeleton: index, name, parent
@@ -101,6 +102,8 @@ extern "C" void OLUE3_DevObjGet(const char* args);
 extern "C" void OLUE3_DevRaw(const char* args);
 extern "C" void OLUE3_DevQueueHide(void* comp, int hidden);
 extern "C" void OLUE3_DevCamTune(int which, float a, float b, float c);
+extern "C" void OLUE3_DevBatteryTune(int which, float a, float b, float c);
+extern "C" void OLUE3_DevBatteryDiag();
 extern "C" void OLXR_DevButtons(unsigned mask, int ms);
 extern "C" void OLXR_DevTrigger(int hand, float v);
 extern "C" void OLUE3_DevBones();
@@ -470,6 +473,11 @@ extern "C" void OLDev_OnPresent(IDirect3DDevice9* dev, long presentCount) {
         } else if (!_stricmp(cmd, "camtune")) {
             int w = 0; float x = 0, y = 0, z = 0;
             if (sscanf_s(a, "%d %f %f %f", &w, &x, &y, &z) == 4 && w >= 0 && w <= 5) OLUE3_DevCamTune(w, x, y, z);
+        } else if (!_stricmp(cmd, "battune")) {
+            int w = 0; float x = 0, y = 0, z = 0;
+            if (sscanf_s(a, "%d %f %f %f", &w, &x, &y, &z) == 4 && w >= 0 && w <= 3) OLUE3_DevBatteryTune(w, x, y, z);
+        } else if (!_stricmp(cmd, "batdiag")) {
+            OLUE3_DevBatteryDiag();
         } else if (!_stricmp(cmd, "hide")) {
             unsigned long long addr = 0; int hv = 1;
             if (sscanf_s(a, "%llx %d", &addr, &hv) >= 1 && addr > 0x10000) OLUE3_DevQueueHide((void*)(uintptr_t)addr, hv);

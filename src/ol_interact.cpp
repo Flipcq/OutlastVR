@@ -12,10 +12,10 @@
 //           hand. Open your hand anywhere and it glides back to the hip.
 //           Without the holster ([Motion] CamcorderHolster=0) Test37's raise-to-eye gesture and
 //           the right-grip toggle are used instead.
-// RELOAD    (Test38, holster) With the camcorder in your right hand: the left hand pulls the old
-//           battery out of the back of it and drops it, takes a new one from the left hip and
-//           slides it in - the game's own reload runs (Y). Y still reloads at any time.
-//           Without the holster, Test37's hip-to-hand reload is used.
+// RELOAD    (Beta 1.1.8) The spare cell lives on your left hip. Squeeze the left grip there to take
+//           it; let go and it is back. With the camcorder in your right hand, bring the left hand to
+//           it: Miles plays the game's own reload ANIMATION (no Y press) and the mod swaps the cell in
+//           code when it ends. Y still reloads at any time (Test38's old hip-to-hand gesture is gone).
 // HOW-TO    (Test38) Labels and glows in the headset show what to do next. Each label stops after
 //           you have done that action 3 times ([Motion] Learned*); the glows stay.
 // MARKERS   Developer rings for every zone ([Motion] DevMarkers).
@@ -54,6 +54,11 @@ extern "C" int   OLUE3_DoorHinge(void* door, float out[3]);
 extern "C" int   OLUE3_GameplayActive();
 extern "C" int   OLUE3_InGameMenu();
 extern "C" int   OLUE3_HolsterVisual(float out[3]);   // where the holstered model is drawn
+extern "C" int   OLUE3_BatteryVisual(float out[3]);   // [BATTERY] where the spare battery is drawn on the left hip
+extern "C" int   OLUE3_CamModelVisual(float out[3]);  // where the camcorder model is drawn in the hand
+extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime); // [BATTERY] play OLHero's reload animation, return its remaining length
+extern "C" void  OLUE3_DevBatteryTune(int which, float a, float b, float c);   // [BATTERY] live tuning
+extern "C" void  OLUE3_GetBatteryTune(float off[3], float rot[3]);
 extern "C" int   OLUE3_HeroMoveState(int* lm, int* sm);                 // (Test40) LocomotionMode, SpecialMove
 extern "C" int   OLUE3_DoorSetRatioAndTarget(void* door, float r);      // (Test40) 0xCC46A0
 extern "C" int   OLUE3_CameraBoneWorld(float out[3]);                   // (Test40) for the anchor check
@@ -74,6 +79,7 @@ extern "C" void  OLSound_PostByName(const char* name, uint64_t obj);  // [DOOR] 
 extern "C" void  OLSound_StopByName(const char* name, uint64_t obj);  // [DOOR] stop it early (the closing latch)
 extern "C" void  OLSound_SetRTPCByName(const char* name, float v);     // [DOOR] choose the slow/calm door sound
 extern "C" void  OLProxy_SetNvRequested(int on);                        // (Test43) [HANDNV] d3d9_proxy's night-vision state
+extern "C" void  OLProxy_SetHandleY(int on);                            // [RELOAD] the mod handles Y at the face
 extern "C" int   OLUE3_SceneScripted();                                  // (Test44) [ROOMWALK]
 extern "C" void  OLUE3_ObjScanStep();                                    // (Test45) [OBJSCAN]
 extern "C" void  OLUE3_SetCamAdjust(const float rot[3], const float off[3]);   // (Test45) [CAMADJUST]
@@ -93,8 +99,9 @@ enum { ON_DOORS, ON_RAISE, ON_VIEWFINDER, ON_MARKERS, ON_PROMPTS, ON_HOLSTER, ON
 // (Test46) the live screen is ON again: it shows the camcorder lens's own picture now ([LIVESCREEN] ol_ue3 +
 // [LENSCAM] ol_xr), a second camera that runs only while the camcorder is in your hand facing you.
 // (Test46c) the user: "remove the live screen for now" - off by default and out of the menus again.
-static const int kOnDefault[ON_COUNT] = { 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0 };
-static volatile long g_on[ON_COUNT] = { 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0 };
+// (Beta 1.1.8) guide markers/rings/glows and how-to/Quest hint labels are OFF by default (a clean view).
+static const int kOnDefault[ON_COUNT] = { 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0 };
+static volatile long g_on[ON_COUNT] = { 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0 };
 static const wchar_t* kKeys[ON_COUNT] = { L"DoorGrab", L"CamcorderRaiseGesture",
                                           L"CamcorderViewfinder", L"DevMarkers", L"QuestPrompts",
                                           L"CamcorderHolster", L"HowToHints", L"ClimbWithHands",
@@ -133,6 +140,33 @@ extern "C" void OLInteract_SetCamAdjust(const float rot[3], const float off[3]) 
         g_camAdjOff[i] = off[i] < -30.0f ? -30.0f : (off[i] > 30.0f ? 30.0f : off[i]);
     }
     OLUE3_SetCamAdjust(g_camAdjRot, g_camAdjOff);
+}
+// [BATTERY] (Beta 1.1.8) the spare cell's in-hand placement, tuned live from the menu.
+static const float kBatDefaultOff[3] = { 9.0f, -1.0f, -1.0f };  // forward, right, up (uu)
+static const float kBatDefaultRot[3] = { 90.0f, -33.0f, 0.0f }; // roll, pitch, yaw (deg)
+static float g_batAdjOff[3] = { 9.0f, -1.0f, -1.0f };
+static float g_batAdjRot[3] = { 90.0f, -33.0f, 0.0f };
+static const wchar_t* kBatAdjKeys[6] = { L"BatteryForward", L"BatteryRight", L"BatteryUp", L"BatteryRoll", L"BatteryPitch", L"BatteryYaw" };
+extern "C" void OLInteract_GetBatteryAdjust(float off[3], float rot[3]) {
+    for (int i = 0; i < 3; ++i) { off[i] = g_batAdjOff[i]; rot[i] = g_batAdjRot[i]; }
+}
+extern "C" void OLInteract_SetBatteryAdjust(const float off[3], const float rot[3]) {
+    for (int i = 0; i < 3; ++i) {
+        g_batAdjOff[i] = off[i] < -30.0f ? -30.0f : (off[i] > 30.0f ? 30.0f : off[i]);
+        g_batAdjRot[i] = rot[i] < -180.0f ? -180.0f : (rot[i] > 180.0f ? 180.0f : rot[i]);
+    }
+    OLUE3_DevBatteryTune(2, g_batAdjOff[0], g_batAdjOff[1], g_batAdjOff[2]);
+    OLUE3_DevBatteryTune(3, g_batAdjRot[0], g_batAdjRot[1], g_batAdjRot[2]);
+}
+extern "C" void OLInteract_ResetBatteryAdjust() {
+    OLInteract_SetBatteryAdjust(kBatDefaultOff, kBatDefaultRot);
+}
+// [BATTERY] where the reload animation starts (seconds in), so the "grab a new cell from the hip"
+// part can be skipped and the animation begins at the insertion. Tunable live from the menu.
+static float g_reloadStart = 1.0f;
+extern "C" float OLInteract_GetReloadStart() { return g_reloadStart; }
+extern "C" void  OLInteract_SetReloadStart(float s) {
+    g_reloadStart = s < 0.0f ? 0.0f : (s > 2.5f ? 2.5f : s);
 }
 // How close (m) the right controller has to come to the eye zone to raise the camcorder. The grip
 // pose sits in the handle, so a controller held against the headset is ~5 cm from the zone and one
@@ -192,6 +226,17 @@ void OLInteract_Init() {
         for (int i = 0; i < 6; ++i) { GetPrivateProfileStringW(L"Motion", kCamAdjKeys[i], L"0", v, 32, ini); (i < 3 ? r[i] : o[i - 3]) = (float)_wtof(v); }
         OLInteract_SetCamAdjust(r, o);
     }
+    {   // [BATTERY] the spare cell's in-hand placement
+        float off[3], rot[3];
+        GetPrivateProfileStringW(L"Motion", kBatAdjKeys[0], L"9", v, 32, ini); off[0] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kBatAdjKeys[1], L"-1", v, 32, ini); off[1] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kBatAdjKeys[2], L"-1", v, 32, ini); off[2] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kBatAdjKeys[3], L"90", v, 32, ini); rot[0] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kBatAdjKeys[4], L"-33", v, 32, ini); rot[1] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kBatAdjKeys[5], L"0", v, 32, ini); rot[2] = (float)_wtof(v);
+        OLInteract_SetBatteryAdjust(off, rot);
+        GetPrivateProfileStringW(L"Motion", L"ReloadAnimStart", L"1.0", v, 32, ini); g_reloadStart = (float)_wtof(v);
+    }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
     ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) viewfinder=%ld howTo=%ld "
          "devMarkers=%ld questPrompts=%ld climbWithHands=%ld climbMode=%ld camHold=%ld liveScreen=%ld coverMouth=%ld roomscaleWalk=%ld | learned take=%d raise=%d eject=%d insert=%d door=%d climb=%d breath=%d",
@@ -207,6 +252,8 @@ void OLInteract_Save(const wchar_t* ini) {
     WritePrivateProfileStringW(L"Render", L"CamcorderHud", g_camHud ? L"1" : L"0", ini);   // (Beta 1.1)
     WritePrivateProfileStringW(L"Motion", L"CamcorderControl", g_camButton ? L"1" : L"0", ini);   // (Test49)
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
+    for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
+    swprintf_s(b, L"%.2f", g_reloadStart); WritePrivateProfileStringW(L"Motion", L"ReloadAnimStart", b, ini);
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
 }
 static void Learn(int what) {
@@ -328,10 +375,18 @@ static bool WrF(void* base, unsigned off, float v) {
     __try { *(volatile float*)((char*)base + off) = v; return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+static bool WrI(void* base, unsigned off, int v) {
+    if (!base || !off) return false;
+    __try { *(volatile int*)((char*)base + off) = v; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 
 // ---- shared per-frame state ------------------------------------------------------------------------
 static ULONGLONG s_tickMs = 0;              // last tick; the pad merge stops acting when this goes stale
 static int   s_camUp = -1;                  // the game's CamcorderState (1 = raised)
+static int   s_camRaw = -1;                 // the same, unnormalised (4/5 = the game is already reloading)
+// [RELOAD] the game's own reload (Y) is playing: CCS_ReloadingActive / CCS_ReloadingInactive.
+static bool GameReloading() { return s_camRaw == 4 || s_camRaw == 5; }
 static bool  s_camStarted = false;          // the first gameplay tick forced the camcorder down
 static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
@@ -519,6 +574,8 @@ static void CamRaise(ULONGLONG now, const OLXrPose& head, const OLXrFrameHands& 
 // (Beta 1.1.4) [FACECAM] Hold the right stick click for OLVR_CAM_HOLD_MS. Handled on the game
 // thread with the frame's pad, but the proxy withholds the game's night-vision press until release
 // and only sends it for a short click, so a held click never flips night vision as a side effect.
+// [BATTERY] true while the game's reload animation plays (defined with the battery state below).
+static bool BatReloading();
 static bool s_rsDown = false, s_rsLong = false, s_rsShort = false;
 static ULONGLONG s_rsDownAt = 0;
 static void CamHoldGesture(ULONGLONG now, const OLXrPad& p) {
@@ -586,7 +643,9 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
             RequestCamToggle(now, 120); s_camByGesture = false;
             ILog("[OLVR][HOLSTER] camcorder lowered - it is back on your hip");
         }
-    } else if (!s_gripDown[1] || !rOk) {
+    } else if ((!s_gripDown[1] || !rOk) && !BatReloading() && !GameReloading()) {
+        // During a reload animation (ours or the game's own) the camcorder stays in Miles's hand, so
+        // releasing the right grip mid-reload must not send it back to the hip.
         s_hState = H_HOLSTERED; s_blendSpeed = 1.0f / 0.28f; s_returnClick = true;
         if (s_camUp == 1 && s_camByGesture && now > s_camCooldown) { RequestCamToggle(now, 120); s_camByGesture = false; }
         OLXR_HapticPulse(1, 0.25f, 20);
@@ -603,9 +662,225 @@ static void Holster(ULONGLONG now, const OLXrFrameHands& fh) {
     }
 }
 
+// ---- [BATTERY] (Beta 1.1.8) the spare cell on the left hip ------------------------------------------
+// The battery is a small StaticMesh the mod spawns and hangs from Miles's left thigh bone, exactly
+// like the camcorder hangs from his right hand. It is hidden while holstered. Squeeze the left grip
+// at the left hip and it glides into your left hand. Bring that hand to the camcorder in your right
+// hand and the game's own reload animation plays on both arms - the mod does not press Y, so it also
+// works when the camcorder is not pinned to your face. When the animation ends the cell is swapped
+// in code (one spare used, a full battery set) and the held model fades back to the hip.
+enum { BAT_NONE = 0, BAT_HELD, BAT_FADE };
+static int   s_batState = BAT_NONE;
+static float s_batBlend = 0.0f;             // 0 on the hip .. 1 in the left hand
+static float s_batAlpha = 0.0f;             // 0 invisible .. 1 shown
+static float s_dBat = 9.0f;
+static bool  s_batInHip = false;
+static V3    s_batHip, s_batHipVis;
+static ULONGLONG s_batFadeAt = 0;
+static bool  s_batReloading = false;
+static bool  s_batPreview = false;          // the menu's "preview" plays the animation without swapping
+static ULONGLONG s_batReloadAt = 0;
+static float s_batReloadDur = 0.0f;
+static void* s_batHero = nullptr;
+static V3    s_camModel;
+static float s_dCamL = 9.0f;
+static ULONGLONG s_nearCamAt = 0;
+static bool  s_camNearArmed = true;
+static ULONGLONG s_batEmptyPulseAt = 0;    // second of the two quick "empty" buzzes
+static ULONGLONG s_batEmptyCooldown = 0;
+static bool BatReloading() { return s_batReloading; }
+// The hip reach is the camcorder's waist zone mirrored to the left side, so seated play and a hand
+// coming down or across to the hip both count.
+static const V3 kBatHipOff = { -0.20f, -0.60f, 0.0f };
 
+static void BatterySwap(ULONGLONG now) {
+    (void)now;
+    if (s_batPreview) {   // the menu preview: play the animation, do not touch the batteries
+        s_batPreview = false;
+        s_batReloading = false;
+        s_batState = BAT_NONE; s_batBlend = 0.0f; s_batAlpha = 0.0f;
+        s_nearCamAt = 0; s_camNearArmed = false;
+        ILog("[OLVR][BATTERY] reload preview finished");
+        return;
+    }
+    void* hero = OLUE3_Hero();
+    void* pc = OLUE3_PlayerController();
+    int n = 0;
+    if (Rd(pc, F.numBat, &n)) {
+        if (n > 0) --n;
+        WrI(pc, F.numBat, n);
+        s_numBat = n;
+    }
+    if (WrF(hero, F.energy, 1.0f)) s_energy = 1.0f;
+    s_batReloading = false;
+    s_batState = BAT_NONE; s_batBlend = 0.0f; s_batAlpha = 0.0f;
+    s_nearCamAt = 0; s_camNearArmed = false;   // the hand must leave the camcorder first
+    OLXR_HapticPulse(0, 0.65f, 45); OLXR_HapticPulse(1, 0.85f, 65);
+    ILog("[OLVR][BATTERY] reload animation finished - a fresh battery set is in (%d spare%s left)", s_numBat, s_numBat == 1 ? "" : "s");
+}
+static void BatteryStartReload(ULONGLONG now, float d) {
+    if (s_batReloading) return;
+    if (s_numBat <= 0) {
+        s_camNearArmed = false;
+        OLXR_HapticPulse(0, 0.9f, 30);
+        ILog("[OLVR][BATTERY] no spare batteries - the camcorder keeps the one it has");
+        return;
+    }
+    const float dur = OLUE3_BeginBatteryReload(s_camRaw == 1 ? 0 : 1, g_reloadStart);   // lowered = the "inactive" reload anim
+    if (!(dur > 0.0f)) {
+        s_camNearArmed = false;
+        ILog("[OLVR][BATTERY] the game's reload animation could not be started - Y still reloads");
+        return;
+    }
+    s_batReloading = true;
+    s_batReloadAt = now;
+    s_batReloadDur = dur + 0.05f;   // the frame after the last one, not on top of the final pose
+    s_batHero = OLUE3_Hero();
+    s_nearCamAt = 0;
+    if (s_batState == BAT_HELD) { s_batState = BAT_FADE; s_batFadeAt = now; }
+    OLXR_HapticPulse(0, 0.55f, 40); OLXR_HapticPulse(1, 0.35f, 30);
+    ILog("[OLVR][BATTERY] left hand at the camcorder (%.2f m): the game's reload animation plays (%.2fs)", d, dur);
+}
+// [RELOAD] (Beta 1.1.8) Y with the camcorder in hand. At the face the game's own reload keeps the
+// camera raised (you look through it), so the mod suppresses that Y, lowers the camcorder first and
+// then runs the visible (inactive) reload. Lowered, the game gets Y; if it does not start within a
+// moment, the mod runs the same animation + swap.
+static ULONGLONG s_yReloadAt = 0, s_yLowerAt = 0;
+static bool s_yDown = false, s_yWaitLower = false;
+static void YReload(ULONGLONG now, const OLXrPad& p) {
+    const bool yDown = (p.buttons & OLXR_BTN_Y) != 0;
+    const bool yEdge = yDown && !s_yDown;
+    s_yDown = yDown;
+    if (yEdge && !s_batReloading && !GameReloading() && (s_hState == H_IN_HAND || s_camUp == 1) && !s_gripDown[0]) {
+        if (s_numBat <= 0) {                 // nothing to swap: no lower, one short buzz
+            OLXR_HapticPulse(1, 0.7f, 30);
+            ILog("[OLVR][RELOAD] Y pressed but there are no spare batteries - the camcorder stays as it is");
+            return;
+        }
+        if (s_camUp == 1) {                 // at the face: lower it so the animation is visible
+            RequestCamToggle(now, 300);
+            s_yLowerAt = now; s_yWaitLower = true;
+            ILog("[OLVR][RELOAD] Y at the face - lowering the camcorder for a visible reload");
+        } else {
+            s_yReloadAt = now;
+        }
+    }
+    if (s_yWaitLower) {
+        if (now - s_yLowerAt > 1800 || (!s_batReloading && s_camRaw == 0)) {   // fully lowered, then reload
+            s_yWaitLower = false;
+            if (!s_batReloading) BatteryStartReload(now, 0.0f);
+        }
+    }
+    if (!s_yReloadAt) return;
+    if (GameReloading()) { s_yReloadAt = 0; return; }   // the game's own Y reload started - use it
+    if (now - s_yReloadAt > 250) {
+        s_yReloadAt = 0;
+        if (!s_batReloading) BatteryStartReload(now, 0.0f);
+    }
+}
+// [BATTERY] queued from the menu (the button is gone, but the request path stays harmless).
+static volatile long s_batPreviewReq = 0;
+extern "C" void OLInteract_PreviewReload() {
+    if (s_batReloading) return;
+    InterlockedExchange(&s_batPreviewReq, 1);
+}
+static void Battery(ULONGLONG now, float dt, const OLXrFrameHands& fh, const OLXrPad& p) {
+    s_batHip = OnBody(kBatHipOff.x, kBatHipOff.y, kBatHipOff.z);
+    float hv[3];
+    s_batHipVis = OLUE3_BatteryVisual(hv) ? V3{ hv[0], hv[1], hv[2] } : s_batHip;
+    const bool lOk = (fh.valid & 1u) != 0, rOk = (fh.valid & 2u) != 0;
+    const V3 L = P3(fh.hand[0]), R = P3(fh.hand[1]);
+    s_moving = sqrtf(p.moveX * p.moveX + p.moveY * p.moveY) > 0.35f;
+    const float dReal = lOk ? Len(Sub(L, s_batHip)) : 9.0f;
+    const float dVis = lOk ? Len(Sub(L, s_batHipVis)) : 9.0f;
+    s_dBat = dReal < dVis ? dReal : dVis;
+    s_batInHip = lOk && (InWaistZone(L, s_batHip) || InWaistZone(L, s_batHipVis));
 
+    // The second of the two quick "empty" buzzes (the first fires on the squeeze itself).
+    if (s_batEmptyPulseAt && now >= s_batEmptyPulseAt) {
+        s_batEmptyPulseAt = 0;
+        OLXR_HapticPulse(0, 0.9f, 30);
+    }
 
+    // The game's animation is playing: both arms and the grips belong to it.
+    if (s_batReloading) {
+        if (s_batHero && s_batHero != OLUE3_Hero()) {
+            s_batReloading = false; s_batPreview = false; s_batState = BAT_NONE; s_batAlpha = 0.0f;
+            ILog("[OLVR][BATTERY] reload cancelled - Miles changed");
+        } else if (now - s_batReloadAt >= (ULONGLONG)(s_batReloadDur * 1000.0f)) {
+            BatterySwap(now);
+        }
+    }
+    if (s_batState == BAT_FADE) {
+        const float t = (float)(now - s_batFadeAt) * 0.001f;
+        const float k = t / 0.30f;                     // the held cell fades out and returns to the hip
+        s_batAlpha = k >= 1.0f ? 0.0f : 1.0f - k;
+        s_batBlend = k >= 1.0f ? 0.0f : 1.0f - k * k * (3.0f - 2.0f * k);
+        if (k >= 1.0f) { s_batState = BAT_NONE; s_batAlpha = 0.0f; s_batBlend = 0.0f; }
+    } else if (s_batState == BAT_HELD) {
+        s_batAlpha = 1.0f;
+        s_batBlend += dt * 6.0f;                        // ~0.17 s from the hip into the hand
+        if (s_batBlend > 1.0f) s_batBlend = 1.0f;
+    } else {
+        s_batBlend = 0.0f; s_batAlpha = 0.0f;
+    }
+
+    if (!HolsterOn() || s_camUp < 0) {
+        if (s_batState != BAT_NONE) ILog("[OLVR][BATTERY] holster off - the battery goes back to the hip");
+        s_batState = BAT_NONE; s_batBlend = 0.0f; s_batAlpha = 0.0f;
+        s_batReloading = false; s_batPreview = false;
+        return;
+    }
+
+    // Reload: with the camcorder held in the right hand, the left hand coming up to it starts the
+    // game's animation. No button, no ToggleCamcorder, no Y - the camera need not be at the face.
+    if (!s_batReloading) {
+        // A reload starts only while a cell is actually in the left hand; after one reload the hand is
+        // empty again, so the next reload needs another trip to the left hip.
+        const bool canReload = s_hState == H_IN_HAND && s_camRaw == 0 && s_camBlend > 0.90f && lOk &&
+                               s_batState == BAT_HELD;
+        if (canReload) {
+            float cp[3];
+            if (OLUE3_CamModelVisual(cp)) s_camModel = V3{ cp[0], cp[1], cp[2] };
+            else s_camModel = rOk ? R : Add(L, V3{ 0.0f, 0.0f, 0.15f });
+            s_dCamL = Len(Sub(L, s_camModel));
+            if (s_dCamL < 0.18f) {
+                if (!s_nearCamAt) s_nearCamAt = now;
+                else if (now - s_nearCamAt > 120 && s_camNearArmed) BatteryStartReload(now, s_dCamL);
+            } else {
+                s_nearCamAt = 0;
+                if (s_dCamL > 0.28f) s_camNearArmed = true;
+            }
+        } else {
+            s_nearCamAt = 0;
+            if (s_dCamL > 0.28f || s_hState != H_IN_HAND) s_camNearArmed = true;
+        }
+    }
+
+    if (s_batReloading) return;
+    if (s_batState == BAT_NONE) {
+        // Squeeze at the left hip. A hand that is sprinting (the stick pushed) or on a door is not
+        // reaching for the spare: leave those alone.
+        if (s_gripEdge[0] && s_batInHip && !s_moving && !s_nearDoorWide[0]) {
+            s_gripEdge[0] = false;
+            if (s_numBat > 0) {
+                s_batState = BAT_HELD; s_batBlend = 0.0f; s_batAlpha = 1.0f;
+                OLXR_HapticPulse(0, 0.55f, 35);
+                ILog("[OLVR][BATTERY] spare battery taken from the left hip (%d left, %.2f m)", s_numBat, s_dBat);
+            } else if (now >= s_batEmptyCooldown) {
+                s_batEmptyCooldown = now + 700;
+                s_batEmptyPulseAt = now + 170;
+                OLXR_HapticPulse(0, 0.9f, 30);   // first buzz; the second comes after s_batEmptyPulseAt
+                ILog("[OLVR][BATTERY] the left hip is EMPTY (no spare batteries)");
+            }
+        }
+    } else if (s_batState == BAT_HELD && (!s_gripDown[0] || !lOk)) {
+        // Let go: no visible cell in mid-air; it is back on the hip.
+        s_batState = BAT_NONE; s_batBlend = 0.0f; s_batAlpha = 0.0f;
+        OLXR_HapticPulse(0, 0.25f, 20);
+        ILog("[OLVR][BATTERY] battery let go - back on the left hip");
+    }
+}
 
 // ---- doors (Test40: [DOORPHYS] a hinged body with weight) --------------------------------------------
 // Test39 wrote TargetOpenRatio and let OLDoor's tick chase it at a constant CurrentSpeed: a robot swing
@@ -629,6 +904,7 @@ static V3 s_handW[2]; static bool s_handOk[2] = { false, false };   // this tick
 struct Grab { void* d; float lastR; float yaw; };   // (Beta 1.1) yaw: the body's facing when it took hold
 static Grab s_grab[2] = {};
 static ULONGLONG s_lockedFlashUntil = 0; static void* s_lockedDoor = nullptr;
+static ULONGLONG s_lockedPulseAt[2] = { 0, 0 };   // the second of the two quick "locked" buzzes
 static const float kGrabUU = 26.0f, kSlipUU = 64.0f, kContactUU = 7.0f;  // the hand must be at the handle
 static const float kDoorWideUU = 80.0f;   // near enough that the right grip belongs to the door, not the camcorder
 // (Beta 1.1) [DOORLETGO] ... the handle is also let go once the body has turned away, the knob is out of reach, or behind Miles.
@@ -745,6 +1021,11 @@ static bool ClimbHolding(int h);   // [CLIMB] below: a hand that holds an edge i
 static float BodyYaw();             // (Beta 1.1) [DOORLETGO] below
 static bool CamInRightHand();
 static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OLXrFrameHands& fh) {
+    // [LOCKED] the second of the two quick buzzes when a locked door is squeezed.
+    for (int h = 0; h < 2; ++h) if (s_lockedPulseAt[h] && now >= s_lockedPulseAt[h]) {
+        s_lockedPulseAt[h] = 0;
+        OLXR_HapticPulse(h, 0.9f, 90);
+    }
     s_doorAnchorOn[0] = s_doorAnchorOn[1] = false;
     if (!g_on[ON_DOORS]) {
         s_grab[0].d = s_grab[1].d = nullptr; s_nearN = 0; s_nearKnob[0] = s_nearKnob[1] = false;
@@ -872,6 +1153,7 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OL
         if (nd.locked) {
             s_lockedFlashUntil = now + 900; s_lockedDoor = nd.d;
             OLXR_HapticPulse(h, 0.9f, 90);
+            s_lockedPulseAt[h] = now + 170;   // second quick buzz, one after the other
             ILog("[OLVR][INTERACT] door knob grabbed by the %s hand - LOCKED", h ? "right" : "left");
             continue;
         }
@@ -2072,6 +2354,9 @@ static void Markers(ULONGLONG now, const OLXrFrameHands& fh) {
             if (HolsterOn()) {
                 const int hc = s_hState == H_IN_HAND ? OLMK_GREEN : (s_inHolster ? OLMK_YELLOW : OLMK_CYAN);
                 add(s_holster, 0.06f, hc, 0.0f); add(s_holsterVis, 0.04f, hc, 0.0f);
+                // [BATTERY] the spare cell's left hip (and the held cell, while it is on the hip)
+                const int bc = s_batState != BAT_NONE ? OLMK_GREEN : (s_batInHip ? OLMK_YELLOW : OLMK_CYAN);
+                add(s_batHip, 0.05f, bc, 0.0f); add(s_batHipVis, 0.035f, bc, 0.0f);
             }
         }
     }
@@ -2168,6 +2453,7 @@ static void RoomWalkTick(ULONGLONG now) {
 extern "C" void OLInteract_Tick() {
     const ULONGLONG now = GetTickCount64();
     if (!OLUE3_GameplayActive() || !Resolve()) {
+        OLProxy_SetHandleY(0);   // [RELOAD] no gameplay: let the game see Y again
         // (Test43) a hand-carried climb rides out a moment of this (a hitch, a blink): the pad merge lets
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
         if (s_pc) { static ULONGLONG s_offLog = 0; if (now - s_offLog > 2000) { s_offLog = now; ILog("[OLVR][PHYSCLIMB] gameplay check off for a moment while climbing - holding on"); } }
@@ -2180,7 +2466,8 @@ extern "C" void OLInteract_Tick() {
     OLUE3_ObjScanStep();                  // (Test45) [OBJSCAN] doors, ledges, ladders: a slice a frame
     void* hero = OLUE3_Hero(); void* pc = OLUE3_PlayerController();
     unsigned char cs = 0; float z = 0.0f, en = 1.0f; int nb = 0;
-    s_camUp = Rd(hero, F.camState, &cs) ? (cs == 1 ? 1 : 0) : -1;
+    s_camRaw = Rd(hero, F.camState, &cs) ? (int)cs : -1;
+    s_camUp = s_camRaw >= 0 ? (s_camRaw == 1 ? 1 : 0) : -1;
     // (V1) the game can begin with the camcorder already at his face (CamcorderState == 1), which
     // snaps the right hand to a camcorder position on the very first gameplay frame. Never begin
     // gameplay with it at his face: force it down on the first tick so the hand is free.
@@ -2261,6 +2548,19 @@ extern "C" void OLInteract_Tick() {
     CamHoldGesture(now, p);      // (Beta 1.1.4) [FACECAM] a held right stick click: raise / pin / lower
     Holster(now, fh);           // first: a squeeze at the hip is the camcorder's, not a door's
     CamRaise(now, head, fh);
+    OLProxy_SetHandleY(s_camUp == 1 ? 1 : 0);   // [RELOAD] at the face the mod owns Y (lower, then reload)
+    YReload(now, p);            // [RELOAD] Y reloads the camcorder even while it is merely held
+    // [BATTERY] a queued menu "Preview": start the animation on the game thread (never the render thread).
+    if (InterlockedExchange(&s_batPreviewReq, 0) && !s_batReloading) {
+        const float dur = OLUE3_BeginBatteryReload(1, g_reloadStart);
+        if (dur > 0.05f) {
+            s_batReloading = true; s_batPreview = true;
+            s_batReloadAt = now; s_batReloadDur = dur + 0.05f;
+            s_batHero = OLUE3_Hero();
+            ILog("[OLVR][BATTERY] previewing the reload animation from %.2fs (%.2fs left)", g_reloadStart, dur);
+        }
+    }
+    Battery(now, dt, fh, p);    // [BATTERY] left hip, left hand, and the reload animation
     Climb(now, dt, fh, handW, handOk);   // (Test40) a squeeze on a climbable edge holds the edge
     RoomWalkTick(now);                    // (Test44) after Climb: it knows whether the hands are climbing
     Doors(now, dt, handW, handOk, fh);
@@ -2284,15 +2584,19 @@ extern "C" void OLInteract_Tick() {
     }
     {   // [DOORGRIP] the hand closes round the handle in ~0.12 s and opens in ~0.18 s
         for (int h = 0; h < 2; ++h) {
-            const float target = (s_grab[h].d || (s_hold[h] && (s_cl == CL_IDLE || s_cl == CL_PULLING))) ? 1.0f : 0.0f;
+            const float target = (s_grab[h].d || (s_hold[h] && (s_cl == CL_IDLE || s_cl == CL_PULLING)) ||
+                                  (h == 0 && s_batState != BAT_NONE)) ? 1.0f : 0.0f;
             const float rate = target > s_gripW[h] ? 8.0f : 5.5f;
-            s_gripW[h] += (target > s_gripW[h] ? 1.0f : -1.0f) * rate * dt;
+            // Settle exactly at the target (the old +/- step overshot and oscillated around 1.0,
+            // which made a held hand tremble).
+            const float dir = target > s_gripW[h] ? 1.0f : (target < s_gripW[h] ? -1.0f : 0.0f);
+            s_gripW[h] += dir * rate * dt;
             if (s_gripW[h] < 0.0f) s_gripW[h] = 0.0f; if (s_gripW[h] > 1.0f) s_gripW[h] = 1.0f;
         }
     }
     // A grip that is on a knob is not sprint/camcorder.
-    s_blockGrip[0] = s_grab[0].d || s_nearKnob[0];
-    s_blockGrip[1] = HolsterOn() || s_grab[1].d || s_nearKnob[1] || (!g_camButton && s_nearDoorWide[1]);
+    s_blockGrip[0] = s_grab[0].d || s_nearKnob[0] || s_batState != BAT_NONE || s_batReloading;
+    s_blockGrip[1] = HolsterOn() || s_grab[1].d || s_nearKnob[1] || (!g_camButton && s_nearDoorWide[1]) || s_batReloading;
     // (Test40) [CLIMB] a grip holding an edge, a ledge or a rung is not sprint / the camcorder
     for (int h = 0; h < 2; ++h) if (g_on[ON_CLIMB] && (s_hold[h] || s_cl == CL_HANG || s_cl == CL_LADDER || s_cl == CL_CLIMBING)) s_blockGrip[h] = true;
     Markers(now, fh);
@@ -2337,7 +2641,9 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
     const bool fresh = s_tickMs && now - s_tickMs <= 250;
     for (int h = 0; h < 2; ++h) {
         if (g[h] < 0.35f) { s_sticky[h] = false; s_gameHas[h] = false; }
-        const bool owns = s_grab[h].d || (h == 1 && s_hState == H_IN_HAND) || (g_on[ON_CLIMB] && s_hold[h]);
+        const bool owns = s_grab[h].d || (h == 1 && s_hState == H_IN_HAND) ||
+            (h == 0 && (s_batState != BAT_NONE || s_batReloading)) ||
+            (s_batReloading && h == 1) || (g_on[ON_CLIMB] && s_hold[h]);
         if (fresh && (owns || (s_blockGrip[h] && !s_gameHas[h]))) s_sticky[h] = true;
         if (!s_sticky[h] && g[h] > 0.60f) s_gameHas[h] = true;
     }
@@ -2393,7 +2699,9 @@ extern "C" int OLInteract_FaceCamPinned() {
 }
 extern "C" int OLInteract_FaceCamBusy() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
-    return (s_faceLock || s_facePending || s_faceLowering) ? 1 : 0;
+    // The game's own lower animation drives the right arm only for a face lower (R3) or a Y reload at
+    // the face - never for physically taking the camcorder off the face, which stays on the controller.
+    return (s_faceLock || s_facePending || s_faceLowering || s_yWaitLower) ? 1 : 0;
 }
 // [ANCHOR] (Test40) the world point a hand holds (an edge, a handle, the panel it pushes) and how much
 // (eased 0..1); ol_ue3's arm solve reaches there instead of the controller. Game thread.
@@ -2437,6 +2745,16 @@ extern "C" int OLInteract_CamVisual(OLCamVisual* v) {
     memset(v, 0, sizeof(*v));
     // a hitch (or a snapshot) of up to a second keeps it where it is; menus and cutscenes stop the tick
     if (!HolsterOn() || !s_tickMs || GetTickCount64() - s_tickMs > 1000 || s_camUp < 0) return 0;
+    // During a reload (ours or the game's) or the game's lowering, the camcorder stays in Miles's
+    // animated hand - never the hip or the eye.
+    if (s_batReloading || GameReloading() || s_yWaitLower) {
+        v->mode = 1;
+        v->blend = 1.0f;
+        const V3 rel = Sub(s_holster, s_headT);
+        v->holsterRel[0] = rel.x; v->holsterRel[1] = rel.y; v->holsterRel[2] = rel.z;
+        v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
+        return 1;
+    }
     // While the game is raising / lowering the camcorder with its own arm animation, show the model
     // at the eye zone so Miles's animation is visible WITH the camera in it (not hidden, not stuck
     // on the chest while the controller hand is hidden).
@@ -2467,4 +2785,24 @@ extern "C" int OLInteract_CamVisual(OLCamVisual* v) {
     v->holsterRel[0] = rel.x; v->holsterRel[1] = rel.y; v->holsterRel[2] = rel.z;
     v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
     return 1;
+}
+// [BATTERY] (Beta 1.1.8) Where the spare cell should be drawn this frame: hidden on the hip, in the
+// left hand, or fading back while the game's reload animation plays.
+extern "C" int OLInteract_BatteryVisual(OLBatteryVisual* v) {
+    if (!v) return 0;
+    memset(v, 0, sizeof(*v));
+    if (!HolsterOn() || !s_tickMs || GetTickCount64() - s_tickMs > 1000 || s_camUp < 0) return 0;
+    if (s_batState == BAT_NONE && !s_batReloading) return 0;
+    v->mode = 1;
+    v->blend = s_batBlend;
+    v->alpha = s_batAlpha;
+    const V3 rel = Sub(s_batHip, s_headT);
+    v->hipRel[0] = rel.x; v->hipRel[1] = rel.y; v->hipRel[2] = rel.z;
+    v->torsoFwd[0] = s_torsoF.x; v->torsoFwd[1] = s_torsoF.z;
+    return 1;
+}
+// [BATTERY] The game's reload animation is playing: do not solve the arms from the controllers.
+extern "C" int OLInteract_ReloadNative() {
+    if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
+    return (s_batReloading || GameReloading()) ? 1 : 0;
 }

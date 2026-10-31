@@ -258,9 +258,10 @@ int main() {
     const float boxDegPanel = 2.0f * std::atan(0.5f*(float(OLCamHud::FocusWidth)*pt)/OLCamHud::PanelDistance) * 57.29578f;
     const float boxDegFocus = 2.0f * std::atan(0.5f*fq.width/OLCamHud::FocusDistance) * 57.29578f;
     assert(std::fabs(boxDegPanel - boxDegFocus) < 1e-3f);
-    // ...and it asks for roughly half the display's convergence: ~0.9 deg, well inside any room's own.
+    // ...and it asks for well under the display's convergence (FocusDistance = 8 m: ~0.45 deg), so a
+    // deep box is comfortable to look at while the readouts stay on their own nearer plane.
     const float focusConvDeg = 2.0f * std::atan(kHalfIpd / OLCamHud::FocusDistance) * 57.29578f;
-    assert(focusConvDeg > 0.6f && focusConvDeg < 1.2f);
+    assert(focusConvDeg > 0.3f && focusConvDeg < 1.2f);
     assert(focusConvDeg < convDeg);
     assert(OLCamHud::FocusQuadFor(0.0f).width == 0.0f);          // no panel width: no quad, no NaN
 }

@@ -696,6 +696,23 @@ static void BuildUI() {
       if (ImGui::SmallButton("Show them again")) OLInteract_ResetHints();
       Help("Every how-to label shows again until you have done that action 3 more times."); }
 
+    // [BATTERY] (Beta 1.1.8) the spare cell's in-hand placement, tuned live
+    Section("BATTERY RELOAD");
+    { float off[3], rot[3]; OLInteract_GetBatteryAdjust(off, rot);
+      bool ch = false;
+      ch |= ImGui::SliderFloat("Battery forward", &off[0], -20.0f, 20.0f, "%.0f");
+      ch |= ImGui::SliderFloat("Battery right",   &off[1], -20.0f, 20.0f, "%.0f");
+      ch |= ImGui::SliderFloat("Battery up",      &off[2], -20.0f, 20.0f, "%.0f");
+      ch |= ImGui::SliderFloat("Battery roll",    &rot[0], -180.0f, 180.0f, "%.0f deg");
+      ch |= ImGui::SliderFloat("Battery pitch",   &rot[1], -180.0f, 180.0f, "%.0f deg");
+      ch |= ImGui::SliderFloat("Battery yaw",     &rot[2], -180.0f, 180.0f, "%.0f deg");
+      if (ch) OLInteract_SetBatteryAdjust(off, rot);
+      if (ImGui::Button("Reset the battery's position")) OLInteract_ResetBatteryAdjust();
+      Help(
+          "Where the spare battery sits in your left hand. Adjust it while you hold the\n"
+          "battery - it moves live as you drag the sliders, so you can find the right\n"
+          "spot without taking the headset off. It is saved to outlastvr.ini."); }
+
     // [INTERACT] (Test37)
     Section("DOORS");
     { bool b = OLInteract_Get(0) != 0;

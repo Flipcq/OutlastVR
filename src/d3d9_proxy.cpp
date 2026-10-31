@@ -1827,9 +1827,11 @@ static bool  g_camcorderUp = false;
 static bool  g_camGripDown = false;
 static volatile long g_menuChordLatch = 0;   // [TOUCHMENU] Menu held since the chord fired
 static bool  g_nvRequested = false;
+static bool  g_yHandled = false;             // [RELOAD] the mod handles Y (lower the camcorder, then reload)
 extern "C" int OLProxy_NightVisionActive() { return (g_camcorderUp && g_nvRequested) ? 1 : 0; }
 // (Test43) [HANDNV] ol_interact keeps this in step with the game's own CamcorderMode at your eye
 extern "C" void OLProxy_SetNvRequested(int on) { g_nvRequested = on != 0; }
+extern "C" void OLProxy_SetHandleY(int on) { g_yHandled = on != 0; }
 
 // [MOUSEUSE] The requested gameplay layout: B = left mouse, X = crouch.
 // Menu and left-grip bindings retain the physical button names. 0 restores
@@ -1960,7 +1962,7 @@ static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
                 if (buttons & OLXR_BTN_X) b |= 0x4000;   // menus/legacy: X
             }
         }
-        if (buttons & OLXR_BTN_Y) b |= 0x8000;           // Y  = OLA_Reload (camcorder battery)
+        if ((buttons & OLXR_BTN_Y) && !g_yHandled) b |= 0x8000;   // Y  = OLA_Reload (camcorder battery)
     }
     // START = pause menu. Left grip + Menu is the mod menu instead ([TOUCHMENU]). (Test39) Start is
     // sent when Menu is RELEASED, and only if the left grip never joined the press: squeezing the
@@ -2076,7 +2078,16 @@ static DWORD WINAPI Hook_XiGetState(DWORD idx, OLXiState* st) {
         }
     }
     OLXrPad p;
-    if (OLXR_MotionControlsReady() && OLMenu_Visible()) {
+    // [TOUCHMENU] ...and for a moment after it closes: the button that activated a menu row (A on the
+    // controller, to click Preview or a checkbox) would otherwise reach the game still held and read
+    // as a fresh press (a jump).
+    static bool s_wasMenuVisible = false;
+    static ULONGLONG s_menuClosedAt = 0;
+    const bool menuVisibleNow = OLMenu_Visible() != 0;
+    if (s_wasMenuVisible && !menuVisibleNow) s_menuClosedAt = GetTickCount64();
+    s_wasMenuVisible = menuVisibleNow;
+    const bool menuLatch = menuVisibleNow || (s_menuClosedAt && GetTickCount64() - s_menuClosedAt < 300);
+    if (OLXR_MotionControlsReady() && menuLatch) {
         // [TOUCHMENU] The sticks and buttons are navigating the mod menu. Hand the game a neutral
         // connected pad (a real pad's own state passes through untouched) so nothing walks,
         // jumps or pauses underneath it, and the slot never reads as unplugged.
