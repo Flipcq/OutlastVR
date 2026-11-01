@@ -422,7 +422,6 @@ static int   s_camUp = -1;                  // the game's CamcorderState (1 = ra
 static int   s_camRaw = -1;                 // the same, unnormalised (4/5 = the game is already reloading)
 // [RELOAD] the game's own reload (Y) is playing: CCS_ReloadingActive / CCS_ReloadingInactive.
 static bool GameReloading() { return s_camRaw == 4 || s_camRaw == 5; }
-static bool  s_camStarted = false;          // the first gameplay tick forced the camcorder down
 static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
 static volatile ULONGLONG s_vfMs = 0;
@@ -2624,18 +2623,14 @@ extern "C" void OLInteract_Tick() {
     s_camUp = s_camRaw >= 0 ? (s_camRaw == 1 ? 1 : 0) : -1;
     // (V1) the game can begin with the camcorder already at his face (CamcorderState == 1), which
     // snaps the right hand to a camcorder position on the very first gameplay frame. Never begin
-    // gameplay with it at his face: force it down on the first tick so the hand is free.
-    // (Beta 1.1.9) Instead of poking memory directly (F.camState may not be resolved yet, and the
-    // game can overwrite it the same frame), we press the game's OWN toggle (RB = OLA_ToggleCamcorder,
-    // the same pulse the raise/lower gestures use) and clear our local mirror so the rest of this
-    // tick treats the camcorder as down. The game processes the toggle on its own frame, so by the
-    // next tick CamcorderState already reads 0.
-    if (!s_camStarted && s_camUp == 1) {
-        RequestCamToggle(now, 150);
+    // gameplay with it at his face: on the first tick only, treat the camera as down locally so the
+    // right hand is not snapped to it. The game itself is left untouched - it may keep the camera at
+    // his face from the next frame on, that is fine.
+    static bool s_camFirstTick = true;
+    if (s_camFirstTick && s_camUp == 1) {
+        s_camFirstTick = false;
         s_camUp = 0;
-        s_camStarted = true; s_camStartTries = 0;
-        s_faceLock = false; s_faceLowering = false; s_facePending = false;
-        ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - pressed the game's own toggle");
+        ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - first frame treated as down");
     }
     // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
     // a lower (ours, the game's, a reload, a cutscene) releases it.
