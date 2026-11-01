@@ -2392,6 +2392,9 @@ static void LoadSavedSettings() {
         WriteI(L"Menu", L"Introduced", 1, ini);
         Log("[OLVR][MENU] first run on this install: the settings menu will open once by itself");
     }
+    // [GAMMA] Outlast's brightness calibration at startup: the mod finishes it with the game's own
+    // Accept button instead of asking the player to set a gamma the headset never uses.
+    OLUE3_SetSkipGammaCalibration(GetPrivateProfileIntW(L"Menu", L"SkipGammaCalibration", 1, ini) ? 1 : 0);
     Log("[OLVR][SETTINGS] loaded: IPD half=%.2fuu conv=%.2f (this build: -3..3, 8%%/unit) "
         "smooth=%.2f gamma=%.2f hud=%ld%%(%ld%%,%ld%%)",
         OLUE3_GetHalfEye(), OLXR_GetConvergence(), OLXR_GetSmoothing(), OLXR_GetGamma(),
@@ -2437,6 +2440,11 @@ extern "C" void OLProxy_InstallPadProbe() {
 }
 
 extern "C" int  OLUE3_GetFilmGrain();   // (Test47) [GRAIN]
+extern "C" int  OLUE3_GetSkipGammaCalibration();
+extern "C" void OLUE3_SetSkipGammaCalibration(int v);
+// [GAMMA] Outlast's brightness calibration at startup: the mod finishes it with the game's own
+// Accept button instead of asking the player to set a gamma the headset never uses.
+// See GammaSkipTick in ol_ue3.cpp; the in-game menu is "Skip the brightness calibration".
 extern "C" int OLProxy_SaveSettings() {
     wchar_t ini[MAX_PATH]; if (!IniPath(ini, MAX_PATH)) return 0;
     WriteF(L"Stage3", L"HalfEyeUU",     OLUE3_GetHalfEye(),       ini);
@@ -2476,6 +2484,7 @@ extern "C" int OLProxy_SaveSettings() {
     WriteI(L"Input",  L"LookToUse",     OLUE3_GetLookUse(),       ini);
     WriteI(L"Render", L"WideFov",       OLUE3_GetWideFov(),       ini);
     WriteI(L"Render", L"FilmGrain",     OLUE3_GetFilmGrain(),     ini);   // (Test47) [GRAIN]
+    WriteI(L"Menu",   L"SkipGammaCalibration", OLUE3_GetSkipGammaCalibration(), ini);   // [GAMMA]
     WriteI(L"XR",     L"Upscaler",      OLXR_GetUpscaler(),       ini);
     WriteF(L"XR",     L"Sharpness",     OLXR_GetSharpness(),      ini);
     WriteF(L"Render", L"RenderScale",   OLUE3_GetRenderScale(),   ini);

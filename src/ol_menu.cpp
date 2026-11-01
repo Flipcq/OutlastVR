@@ -57,6 +57,8 @@ extern "C" float OLXR_GetScreenBelow();   extern "C" void OLXR_SetScreenBelow(fl
 extern "C" float OLXR_GetGamma();         extern "C" void OLXR_SetGamma(float v);
 extern "C" void  OLXR_ResetGamma();
 extern "C" int   OLXR_GammaRampApplied();
+// [GAMMA] Skip the startup brightness calibration - the mod presses the game's own Accept for you.
+extern "C" int   OLUE3_GetSkipGammaCalibration();   extern "C" void OLUE3_SetSkipGammaCalibration(int v);
 extern "C" void  OLXR_GetEyeInfo(int* w, int* h, float* fovX, float* fovY);
 extern "C" int   OLProxy_GetUiMirror();   extern "C" void OLProxy_SetUiMirror(int v);
 extern "C" void  OLProxy_GetHudFit(float* scale, float* offX, float* offY);
@@ -857,6 +859,17 @@ static void BuildUI() {
       else if (ImGui::SmallButton("Change button")) OLProxy_StartBindCapture(2);
       Help(
           "Two quick taps, so it cannot happen by accident while you are running."); }
+
+    // [GAMMA] Skip Outlast's startup brightness calibration - the mod presses the game's own Accept
+    // for you, so you never have to adjust gamma before the main menu.
+    Section("BRIGHTNESS");
+    { bool b = OLUE3_GetSkipGammaCalibration() != 0;
+      if (ImGui::Checkbox("Skip the brightness calibration", &b)) OLUE3_SetSkipGammaCalibration(b ? 1 : 0);
+      Help(
+          "Outlast asks you to set the brightness before it shows the main menu. In a headset\n"
+          "that screen adjusts the monitor and changes nothing you can see, so the mod presses\n"
+          "its Accept for you - the game's own button - and keeps the gamma it already had.\n"
+          "Off: the screen is yours again at the next start."); }
 
     // The key that opens THIS menu. Worth rebinding for anyone on a keyboard without an INSERT
     // key, which is most compact and laptop boards.

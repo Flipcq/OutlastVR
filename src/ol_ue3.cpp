@@ -1993,6 +1993,7 @@ static unsigned g_ssWorldInfo = 0, g_ssPauser = 0, g_ssCine = 0, g_ssCineMask = 
 static unsigned g_ssMyHud = 0, g_ssHudFlags = 0, g_ssGammaMask = 0, g_ssSplashMask = 0,
                 g_ssMenuMgr = 0, g_ssMovieOpen = 0, g_ssMovieOpenMask = 0, g_ssViewStack = 0,
                 g_ssMenuType = 0;
+static unsigned g_ssGammaView = 0;   // OLUIFrontEnd::GammaScreenView
 static void*    g_ssHudClass = nullptr;
 // The UClass object called <name> (an object of class "Class"; other objects share the name).
 // UObject::Class sits right after UObject::Name.
@@ -2009,6 +2010,30 @@ static void* BP_FindClassObj(const char* name) {
 }
 static int      g_ssState = 0, g_ssTries = 0;     // 0 untried, 1 resolved (some), -1 gave up
 static ULONGLONG g_ssNextTry = 0;
+
+// ---- [GAMMA] the startup brightness calibration, finished by the GAME itself -------------------------
+// Outlast asks you to set the brightness at every start ("adjust until you can barely see the logo") and
+// that screen programs the MONITOR's gamma ramp, which the headset never sees - there is nothing in it a
+// VR player can fix. It is a screen to click through before the menu.
+//
+// Rather than clearing the HUD flag - which would leave the Scaleform screen sitting there, waiting for a
+// button press that never comes - the mod calls the screen's OWN accept handler: OnAccept, the script
+// function its Accept button calls. The game then closes the screen, keeps the gamma it already had and
+// stops asking. Names come from the Outlast SDK this project already reads for other fields
+// (OLGame_classes.hpp: OLHUD, OLUIFrontEnd.GammaScreenView, OLUIFrontEnd_GammaScreen.OnAccept), and each
+// step fails on its own: no view, an unexpected class or a missing function merely leaves the screen to
+// the player, which is exactly what happened before this existed.
+// [Menu] SkipGammaCalibration=0 turns it off.
+//
+// NO FIXED DELAY: the screen is answered as soon as it is available. GammaSkipTick is called every frame
+// while bGammaCalibrationOpen is up, retries quickly on the following frames while the front end loads its
+// view, and gives up after several tries so it never blocks the player forever.
+static volatile long g_skipGamma = 1;           // [Menu] SkipGammaCalibration
+static void* volatile g_ssGammaFe = nullptr;    // the front end that is showing the screen (game thread)
+static volatile long  g_ssGammaUp = 0;          // 1 = the HUD says the calibration is open this frame
+extern "C" int  OLUE3_GetSkipGammaCalibration() { return (int)g_skipGamma; }
+extern "C" void OLUE3_SetSkipGammaCalibration(int v) { InterlockedExchange(&g_skipGamma, v ? 1 : 0); }
+static void GammaSkipTick();                     // defined with the script callers (below LS_Call)
 
 // A class's Children list holds FUNCTIONS as well as properties, and UE3 has functions called
 // IgnoreMoveInput/IgnoreLookInput next to the byte variables bIgnoreMoveInput/bIgnoreLookInput -
@@ -2047,6 +2072,8 @@ static void SceneStateResolve() {
     }
     if (!g_ssViewStack && SP_FindPropAny("OLUIFrontEnd", "ViewStack", &o, nullptr) && SS_Plausible(o)) g_ssViewStack = o;
     if (!g_ssMenuType && SP_FindPropAny("OLUIFrontEnd", "MenuType", &o, nullptr) && SS_Plausible(o)) g_ssMenuType = o;
+    // [GAMMA] the brightness calibration screen itself, so the mod can finish it instead of the player.
+    if (!g_ssGammaView && SP_FindPropAny("OLUIFrontEnd", "GammaScreenView", &o, nullptr) && SS_Plausible(o)) g_ssGammaView = o;
     ++g_ssTries;
     const bool all = g_ssWorldInfo && g_ssPauser && g_ssCine && g_ssIgnoreMove && g_ssIgnoreLook &&
                      g_ssMyHud && g_ssHudClass && g_ssHudFlags && g_ssMenuMgr && g_ssMovieOpen && g_ssViewStack;
@@ -2427,11 +2454,24 @@ static void SceneStateRead(void* pc) {
             g_sSpecialMove = *(const uint8_t*)(hero + kHeroSpecialMoveOff);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) { hh = -1; mm = -1; g_sSpecialMove = -1; }
+    // [GAMMA] closed until proven open: a HUD we cannot read must never leave a stale "calibration is
+    // up" behind, because the tick below would then keep calling into the game.
+    g_ssGammaUp = 0; g_ssGammaFe = nullptr;
     __try {
         // Only an actual OLHUD: its field offsets mean nothing on any other HUD class.
         const char* hud = (refl && g_ssMyHud) ? *(const char* const*)(p + g_ssMyHud) : nullptr;
         if (hud && g_ssHudClass && *(void* const*)(hud + g_bpUNameOff + 8) == g_ssHudClass) {
             menu = 0;
+            // [GAMMA] is the brightness calibration the one holding the menu up? Hand its front end to
+            // GammaSkipTick, which runs outside this guard (the script call has its own).
+            const bool gam = g_ssHudFlags && g_ssGammaMask &&
+                             (*(const uint32_t*)(hud + g_ssHudFlags) & g_ssGammaMask) != 0;
+            g_ssGammaUp = gam ? 1 : 0;
+            g_ssGammaFe = gam ? (void*)(g_ssMenuMgr ? *(const char* const*)(hud + g_ssMenuMgr) : nullptr) : nullptr;
+            if (g_ssGammaUp && !g_ssGammaFe) {
+                static bool s_warned = false;
+                if (!s_warned) { s_warned = true; OLProxyLog("[OLVR][GAMMA] calibration open but front end not found yet"); }
+            }
             if (g_ssHudFlags && (*(const uint32_t*)(hud + g_ssHudFlags) & (g_ssGammaMask | g_ssSplashMask))) menu = 1;
             const char* fe = g_ssMenuMgr ? *(const char* const*)(hud + g_ssMenuMgr) : nullptr;
             if (fe) {
@@ -2443,6 +2483,12 @@ static void SceneStateRead(void* pc) {
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) { menu = -1; views = -1; mtype = -1; }
+    // [GAMMA] The calibration screen is finished here, on the game thread, one call to the game's own
+    // OnAccept. Outside the guard above: the script call has its own, and MSVC does not nest __try.
+    // No fixed delay: retries every frame while the flag is up, pacing itself internally.
+    if (g_skipGamma && g_ssGammaUp) {
+        __try { GammaSkipTick(); } __except (EXCEPTION_EXECUTE_HANDLER) { OLProxyLog("[OLVR][GAMMA] skip EXCEPTION"); }
+    }
     static long s_views = -2, s_mtype = -2, s_sm = -2;
     const bool smChanged = g_sSpecialMove != s_sm; s_sm = g_sSpecialMove;
     const bool changed = smChanged || paused != g_sPaused || cine != g_sCinematic || im != g_sIgnoreMove ||
@@ -5382,6 +5428,62 @@ static bool LS_Call(void* obj, void* fn, void* parms) {
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) { if (nat) *nat = was; return false; }
+}
+
+// ---- [GAMMA] the startup brightness calibration, finished by the game's own code ---------------------
+// Called from SceneStateRead on the game thread whenever OLHUD.bGammaCalibrationOpen is up. The screen is
+// OLUIFrontEnd_GammaScreen (or its _Console variant); OnAccept is the function its Accept button calls, so
+// this is the same path a player takes - the game closes the screen, keeps its gamma and stops asking.
+//
+// NO FIXED DELAY: this is called every frame while the flag is up. The first frames can see the flag before
+// the front end has loaded its view, so we retry on the following frames until the screen closes or we give
+// up after several tries. This is what removes the noticeable pause the player used to sit through.
+static bool GammaScreenClass(const char* nm) {
+    return nm && (!strcmp(nm, "OLUIFrontEnd_GammaScreen") || !strcmp(nm, "OLUIFrontEnd_GammaScreen_Console"));
+}
+static void GammaSkipTick() {
+    static ULONGLONG s_nextTry = 0;
+    static long s_tries = 0, s_logged = 0;
+    if (!g_skipGamma || !g_ssGammaUp) { s_tries = 0; s_logged = 0; return; }
+    const ULONGLONG now = GetTickCount64();
+    if (now < s_nextTry || s_tries >= 10) return;
+    s_nextTry = now + 250;   // retry quickly, 4 times per second
+    ++s_tries;
+    void* fe = g_ssGammaFe;
+    void* gv = (fe && g_ssGammaView) ? ProbeReadPtr((char*)fe + g_ssGammaView) : nullptr;
+    char cls[96] = "?";
+    if (gv) BP_ObjName(LS_ClassOf(gv), cls, sizeof(cls));
+    if (!GammaScreenClass(cls)) {
+        if (!s_logged) {   // once per appearance: a miss here leaves the screen to the player, as before
+            s_logged = 1;
+            char l[240];
+            sprintf_s(l, "[OLVR][GAMMA] calibration open but no gamma screen found (front end %p, view %p, class '%.40s')"
+                         " - left to the player", fe, gv, cls);
+            OLProxyLog(l);
+        }
+        return;
+    }
+    static bool s_listed = false;
+    if (!s_listed) { s_listed = true; BP_RefreshObjects(); }   // the UFunction lives in the object list
+    void* fn = LS_FindFunction(cls, "OnAccept");
+    if (!fn) {
+        if (!s_logged) {
+            s_logged = 1;
+            char l[240];
+            sprintf_s(l, "[OLVR][GAMMA] %s has no OnAccept in this build - left to the player", cls);
+            OLProxyLog(l);
+        }
+        return;
+    }
+    alignas(16) char parm[0x40] = {};                          // OnAccept takes no parameters
+    const bool ok = LS_Call(gv, fn, parm);
+    if (!s_logged || s_logged < 2) {
+        ++s_logged;
+        char l[240];
+        sprintf_s(l, "[OLVR][GAMMA] brightness calibration finished with the game's own %s.OnAccept (%s) -"
+                     " no need to set the brightness", cls, ok ? "called" : "call FAILED");
+        OLProxyLog(l);
+    }
 }
 // [CAMHUD] Field/function names from the Outlast SDK, resolved against the running build:
 // https://github.com/CppBunny/Outlast_SDK/blob/master/SDK_HEADERS/OLGame_classes.hpp
