@@ -196,11 +196,51 @@ static AkGameObjectID SoundPortalObj(AkGameObjectID obj) {
 extern "C" void OLSound_PostByName(const char* name, AkGameObjectID obj) {
     if (!s_idsOk || !g_post || !g_getIdA || !name) return;
     AkUniqueID id = g_getIdA(name);
-    if (!id) return;
+    if (!id) {
+        // [DOOR] A name this build does not carry used to fail completely silently: the door simply had
+        // no sound and nothing in the log said why. Say it, once per name.
+        static const char* s_missing[8] = { nullptr }; static int s_missingN = 0;
+        bool seen = false;
+        for (int i = 0; i < s_missingN; ++i) if (s_missing[i] && !strcmp(s_missing[i], name)) { seen = true; break; }
+        if (!seen && s_missingN < 8) {
+            s_missing[s_missingN++] = name;
+            SLog("[OLVR][DOOR] the Wwise event '%s' is NOT in this build - that door sound cannot play", name);
+        }
+        return;
+    }
     const AkGameObjectID o = SoundPortalObj(obj);
     if (!o) { SLog("[OLVR][DOOR] no Wwise game object yet for door sound %s", name); return; }
     g_post(id, o, 0, nullptr, nullptr, 0, nullptr, 0);
     SLog("[OLVR][DOOR] posted door sound %s on obj %u", name, (unsigned)o);
+}
+// [DOOR] Post the first of these names this build actually carries, and log which one it was.
+// The door movement events have had more than one name while this feature was built
+// ("EV_Push_Wood_Door" / "EV_Opening_Wood_Door"), so a build where one of them is gone would go
+// silent with no explanation. This resolves the candidates once and remembers the winner.
+extern "C" int OLSound_PostFirstOf(const char* const* names, int n, AkGameObjectID obj) {
+    if (!s_idsOk || !g_post || !g_getIdA || !names || n <= 0) return 0;
+    static bool s_warned[8] = { false };
+    for (int i = 0; i < n; ++i) {
+        if (!names[i]) continue;
+        const AkUniqueID id = g_getIdA(names[i]);
+        if (!id) continue;
+        if (i > 0 && !s_warned[i]) {
+            s_warned[i] = true;
+            SLog("[OLVR][DOOR] '%s' is not in this build - using '%s' instead", names[0], names[i]);
+        }
+        const AkGameObjectID o = SoundPortalObj(obj);
+        if (!o) { SLog("[OLVR][DOOR] no Wwise game object yet for door sound %s", names[i]); return 0; }
+        g_post(id, o, 0, nullptr, nullptr, 0, nullptr, 0);
+        SLog("[OLVR][DOOR] posted door sound %s on obj %u", names[i], (unsigned)o);
+        return 1;
+    }
+    static bool s_none = false;
+    if (!s_none) {
+        s_none = true;
+        SLog("[OLVR][DOOR] none of the %d candidate events for this door sound is in this build"
+             " (%s first) - the doors stay silent", n, names[0] ? names[0] : "?");
+    }
+    return 0;
 }
 // [DOOR] stop that event on the same object, with a short fade: the closing event ends with a harsh
 // latch, so only its movement start is kept.

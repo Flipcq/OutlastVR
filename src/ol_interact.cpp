@@ -62,6 +62,8 @@ extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime); // [BA
 extern "C" void  OLUE3_DevBatteryTune(int which, float a, float b, float c);   // [BATTERY] live tuning
 extern "C" void  OLUE3_GetBatteryTune(float off[3], float rot[3]);
 extern "C" void  OLUE3_DevDocumentTune(int which, float a, float b, float c);  // [DOCUMENT] live tuning
+extern "C" void  OLUE3_GetDocumentWrist(float r[3]);                            // [DOCUMENT] left wrist turn while holding it
+extern "C" void  OLUE3_SetDocumentWrist(const float r[3]);                      // [DOCUMENT] left wrist turn while holding it
 extern "C" int   OLUE3_HeroMoveState(int* lm, int* sm);                 // (Test40) LocomotionMode, SpecialMove
 extern "C" int   OLUE3_DoorSetRatioAndTarget(void* door, float r);      // (Test40) 0xCC46A0
 extern "C" int   OLUE3_CameraBoneWorld(float out[3]);                   // (Test40) for the anchor check
@@ -79,6 +81,7 @@ extern "C" void  OLSound_Hush(int on);
 extern "C" void  OLSound_Gasp();
 extern "C" void  OLSound_Report();
 extern "C" void  OLSound_PostByName(const char* name, uint64_t obj);  // [DOOR] post a Wwise door sound by name
+extern "C" int   OLSound_PostFirstOf(const char* const* names, int n, uint64_t obj);   // [DOOR] first name this build has
 extern "C" void  OLSound_StopByName(const char* name, uint64_t obj);  // [DOOR] stop it early (the closing latch)
 extern "C" void  OLSound_SetRTPCByName(const char* name, float v);     // [DOOR] choose the slow/calm door sound
 extern "C" void  OLProxy_SetNvRequested(int on);                        // (Test43) [HANDNV] d3d9_proxy's night-vision state
@@ -170,6 +173,8 @@ static const float kDocDefaultRot[3] = { 122.0f, -28.0f, -32.0f }; // roll, pitc
 static float g_docAdjOff[3] = { 18.0f, -5.0f, 2.0f };
 static float g_docAdjRot[3] = { 122.0f, -28.0f, -32.0f };
 static const wchar_t* kDocAdjKeys[6] = { L"DocumentForward", L"DocumentRight", L"DocumentUp", L"DocumentRoll", L"DocumentPitch", L"DocumentYaw" };
+// [DOCUMENT] the left wrist turn while holding the document (roll, pitch, yaw, deg).
+static const wchar_t* kDocWristKeys[3] = { L"DocWristRoll", L"DocWristPitch", L"DocWristYaw" };
 extern "C" void OLInteract_GetDocumentAdjust(float off[3], float rot[3]) {
     for (int i = 0; i < 3; ++i) { off[i] = g_docAdjOff[i]; rot[i] = g_docAdjRot[i]; }
 }
@@ -270,6 +275,13 @@ void OLInteract_Init() {
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
         OLInteract_SetDocumentAdjust(off, rot);
     }
+    {   // [DOCUMENT] the left wrist turn while holding the document
+        float wr[3];
+        GetPrivateProfileStringW(L"Motion", kDocWristKeys[0], L"-26", v, 32, ini); wr[0] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocWristKeys[1], L"8", v, 32, ini); wr[1] = (float)_wtof(v);
+        GetPrivateProfileStringW(L"Motion", kDocWristKeys[2], L"-12", v, 32, ini); wr[2] = (float)_wtof(v);
+        OLUE3_SetDocumentWrist(wr);
+    }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
     ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) viewfinder=%ld howTo=%ld "
          "devMarkers=%ld questPrompts=%ld climbWithHands=%ld climbMode=%ld camHold=%ld liveScreen=%ld coverMouth=%ld roomscaleWalk=%ld | learned take=%d raise=%d eject=%d insert=%d door=%d climb=%d breath=%d",
@@ -287,6 +299,11 @@ void OLInteract_Save(const wchar_t* ini) {
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_docAdjOff[i] : g_docAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kDocAdjKeys[i], b, ini); }
+    {   // [DOCUMENT] the left wrist turn while holding the document
+        float wr[3];
+        OLUE3_GetDocumentWrist(wr);
+        for (int i = 0; i < 3; ++i) { swprintf_s(b, L"%.0f", wr[i]); WritePrivateProfileStringW(L"Motion", kDocWristKeys[i], b, ini); }
+    }
     swprintf_s(b, L"%.2f", g_reloadStart); WritePrivateProfileStringW(L"Motion", L"ReloadAnimStart", b, ini);
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
 }
@@ -422,6 +439,7 @@ static int   s_camRaw = -1;                 // the same, unnormalised (4/5 = the
 // [RELOAD] the game's own reload (Y) is playing: CCS_ReloadingActive / CCS_ReloadingInactive.
 static bool GameReloading() { return s_camRaw == 4 || s_camRaw == 5; }
 static bool  s_camStarted = false;          // the first gameplay tick forced the camcorder down
+static int   s_camStartTries = 0;           // retries if the direct write could not land yet
 static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
 static volatile ULONGLONG s_vfMs = 0;
@@ -1088,6 +1106,18 @@ static const char* DoorSoundName(unsigned char mat) {
     static const char* const kMatSnd[3] = { "EV_Opening_Wood_Door", "EV_Opening_Metal_Door", "EV_Opening_Security_Door" };
     return kMatSnd[mat <= 2 ? mat : 0];
 }
+// [DOOR] The door movement event names per material, best first. The door work used more than one
+// name for the same event ("EV_Push_Wood_Door" / "EV_Opening_Wood_Door"), and a name this build does
+// not carry used to fail silently - a door with no sound and nothing in the log. The sound layer
+// posts the first of these that exists and says which one it used (OLSound_PostFirstOf in
+// ol_sound.cpp), so the doors have their sound whether this build names the event one way or the other.
+static const char* const kSndWood[2]     = { "EV_Opening_Wood_Door", "EV_Push_Wood_Door" };
+static const char* const kSndMetal[2]    = { "EV_Opening_Metal_Door", "EV_Opening_Wood_Door" };
+static const char* const kSndSecurity[2] = { "EV_Opening_Security_Door", "EV_Opening_Metal_Door" };
+static const char* const* DoorSoundCandidates(unsigned char mat, int* n) {
+    *n = 2;
+    return mat == 2 ? kSndSecurity : (mat == 1 ? kSndMetal : kSndWood);
+}
 // [DOOREVENT] (Test43) What the game's own door code does as a door opens and closes (OLGame.exe):
 //  open  (AOLDoor 0xD4A770, the door's "open" for X, AI and scripts): if DoorState is 0 (shut) it fires
 //        TriggerEvent(0), sets DoorState 1, and fires TriggerEvent(1).
@@ -1537,7 +1567,13 @@ static void Doors(ULONGLONG now, float dt, V3 handW[2], bool handOk[2], const OL
                 const bool moved = fabsf(sndRatio - s->sndFrom) > 0.15f;
                 if ((wantOpen || wantClose) && moved && now >= s->sndBlockUntil) {
                     const int mi = (nd.mat <= 2) ? nd.mat : 0;
-                    OLSound_PostByName(DoorSoundName((unsigned char)mi), 0);
+                    int cn = 0;
+                    const char* const* cand = DoorSoundCandidates((unsigned char)mi, &cn);
+                    if (OLSound_Ready()) OLSound_PostFirstOf(cand, cn, 0);
+                    else {   // [DOOR] the Wwise hooks are what make any of this audible: say so, once
+                        static bool s_noSnd = false;
+                        if (!s_noSnd) { s_noSnd = true; ILog("[OLVR][DOOR] the door movement sound cannot play - the Wwise hooks are not ready (see [OLVR][SOUND] in the log)"); }
+                    }
                     s->sndMat = (unsigned char)mi;
                     s->sndBlockUntil = now + kSndBlockMs;
                     s->sndFrom = sndRatio;
@@ -2606,11 +2642,23 @@ extern "C" void OLInteract_Tick() {
     // (V1) the game can begin with the camcorder already at his face (CamcorderState == 1), which
     // snaps the right hand to a camcorder position on the very first gameplay frame. Never begin
     // gameplay with it at his face: force it down on the first tick so the hand is free.
-    if (!s_camStarted) {
-        s_camStarted = true;
-        if (s_camUp == 1) {
+    // (Beta 1.1.9) This writes the value straight into the game's own CamcorderState memory
+    // (OLHero + F.camState) instead of asking the game to lower it - the game's toggle command
+    // has a frame of delay, during which the hand is still snapped to the camcorder. Writing
+    // directly takes effect on this same frame, so the next read of CamcorderState already sees 0.
+    if (!s_camStarted && s_camUp == 1) {
+        if (hero && F.camState && WrB(hero, F.camState, 0)) {
             s_camUp = 0;
-            ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - forcing it down");
+            s_camStarted = true; s_camStartTries = 0;
+            ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - wrote CamcorderState to 0 directly");
+        } else if (++s_camStartTries < 3) {
+            // Could not write yet (hero/offset not ready). Keep the local mirror down so the hand
+            // is not snapped this frame; retry next tick.
+            s_camUp = 0;
+            ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - could not write yet, retrying (%d)", s_camStartTries);
+        } else {
+            s_camStarted = true; s_camStartTries = 0;
+            ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - write gave up, mirror cleared");
         }
     }
     // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
