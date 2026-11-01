@@ -2347,6 +2347,12 @@ static void WriteI(const wchar_t* sec, const wchar_t* key, long val, const wchar
     wchar_t v[32]; swprintf_s(v, L"%ld", val); WritePrivateProfileStringW(sec, key, v, ini);
 }
 
+// [GAMMA] Outlast's brightness calibration at startup: the mod finishes it with the game's own
+// Accept button instead of asking the player to set a gamma the headset never uses.
+// See GammaSkipTick in ol_ue3.cpp; the in-game menu is "Skip the brightness calibration".
+extern "C" int  OLUE3_GetSkipGammaCalibration();
+extern "C" void OLUE3_SetSkipGammaCalibration(int v);
+
 // The tunables no other loader already covers. Called after OLUE3_Init so its defaults cannot
 // overwrite a saved value. A key that is absent leaves the built-in default alone.
 static void LoadSavedSettings() {
@@ -2440,11 +2446,6 @@ extern "C" void OLProxy_InstallPadProbe() {
 }
 
 extern "C" int  OLUE3_GetFilmGrain();   // (Test47) [GRAIN]
-extern "C" int  OLUE3_GetSkipGammaCalibration();
-extern "C" void OLUE3_SetSkipGammaCalibration(int v);
-// [GAMMA] Outlast's brightness calibration at startup: the mod finishes it with the game's own
-// Accept button instead of asking the player to set a gamma the headset never uses.
-// See GammaSkipTick in ol_ue3.cpp; the in-game menu is "Skip the brightness calibration".
 extern "C" int OLProxy_SaveSettings() {
     wchar_t ini[MAX_PATH]; if (!IniPath(ini, MAX_PATH)) return 0;
     WriteF(L"Stage3", L"HalfEyeUU",     OLUE3_GetHalfEye(),       ini);
