@@ -4574,12 +4574,9 @@ static float g_docShoulderOff[3] = { 2.0f, 5.0f, -3.0f };   // up, forward, righ
 static float g_docShoulderRot[3] = { 0.0f, 0.0f, 0.0f };
 static float g_docHeldOff[3] = { 18.0f, -5.0f, 2.0f };       // in the left hand's bone frame (uu): forward, right, up
 static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, yaw (deg)
-// [DOCUMENT] (Beta 1.1.9) Left wrist turn while holding the document, on top of the controller's own
-// pose (roll, pitch, yaw, deg, in the hand's frame). With the wrist left neutral the hand reads as
-// gripping empty air at a strange angle against the turned paper; this turns it into something closer
-// to a hand actually holding a sheet. Tuned live from the menu and saved to [Motion]
-// DocWristRoll/Pitch/Yaw.
-static float g_docWristRot[3] = { -26.0f, 8.0f, -12.0f };
+// [DOCUMENT] (Beta 1.1.9) Left wrist roll while holding the document: -15 deg turns the palm inward
+// toward the document for a natural reading pose instead of the neutral controller grip.
+static const float kDocWristRoll = -15.0f;
 extern "C" int OLUE3_DocumentVisual(float out[3]) {
     if (!g_docShoulderMs || GetTickCount64() - g_docShoulderMs > 300) return 0;
     out[0] = g_docShoulderTrack[0]; out[1] = g_docShoulderTrack[1]; out[2] = g_docShoulderTrack[2];
@@ -4592,18 +4589,12 @@ extern "C" int OLUE3_DocumentHandVisual(float out[3]) {
 }
 extern "C" void OLUE3_DevDocumentTune(int which, float a, float b, float c) {
     float* t = which == 0 ? g_docShoulderOff : (which == 1 ? g_docShoulderRot :
-              (which == 2 ? g_docHeldOff : (which == 3 ? g_docHeldRot : g_docWristRot)));
+              (which == 2 ? g_docHeldOff : g_docHeldRot));
     t[0] = a; t[1] = b; t[2] = c;
     char l[180];
     sprintf_s(l, "[OLVR][DOCUMENT] tune %s = (%.2f %.2f %.2f)",
-        which == 0 ? "shoulderOff (up fwd right)" : (which == 1 ? "shoulderRot" : (which == 2 ? "heldOff" :
-        (which == 3 ? "heldRot" : "wristRot"))), a, b, c);
+        which == 0 ? "shoulderOff (up fwd right)" : (which == 1 ? "shoulderRot" : (which == 2 ? "heldOff" : "heldRot")), a, b, c);
     OLProxyLog(l);
-}
-// [DOCUMENT] the wrist turn, for the menu (it lives here, beside the arm solve that applies it).
-extern "C" void OLUE3_GetDocumentWrist(float r[3]) { for (int i = 0; i < 3; ++i) r[i] = g_docWristRot[i]; }
-extern "C" void OLUE3_SetDocumentWrist(const float r[3]) {
-    for (int i = 0; i < 3; ++i) g_docWristRot[i] = r[i] < -90.0f ? -90.0f : (r[i] > 90.0f ? 90.0f : r[i]);
 }
 static void* DocumentMesh() {
     if (g_docMeshAsset) return g_docMeshAsset;
@@ -5257,11 +5248,11 @@ static bool PoseApplyVisible(void* comp) {
             }
             s_doorLockPrev[hand] = doorLock;
             // [DOCUMENT] a slight, natural turn of the left wrist while it holds the document, so the
-            // hand does not sit in the neutral controller pose against the turned paper. The turn itself
-            // is g_docWristRot (roll/pitch/yaw, tunable live in the menu); applied before the arm's own
-            // rotation so the wrist turns toward the document and the arm settles into a natural hold.
+            // hand does not sit in the neutral controller pose against the turned paper. A fixed -15 deg
+            // roll turns the palm inward toward the document for a natural reading pose.
             if (hand == 0 && OLInteract_DocumentHeld()) {
-                wristTarget = IQMul(IQEulerDeg(g_docWristRot), wristTarget);
+                static const float kDocWrist[3] = { kDocWristRoll, 0.0f, 0.0f };  // roll, pitch, yaw (deg)
+                wristTarget = IQMul(IQEulerDeg(kDocWrist), wristTarget);
             }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;

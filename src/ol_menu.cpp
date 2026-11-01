@@ -47,9 +47,6 @@ extern "C" int   OLUE3_GetEyeSwap();      extern "C" void OLUE3_SetEyeSwap(int v
 extern "C" int   OLUE3_GetCineFov();      extern "C" void OLUE3_SetCineFov(int v);
 extern "C" int   OLUE3_CineFovState();
 extern "C" int   OLUE3_GetNvLight();      extern "C" void OLUE3_SetNvLight(int v);
-// [DOCUMENT] the left wrist turn while holding the document (roll, pitch, yaw, deg).
-extern "C" void OLUE3_GetDocumentWrist(float r[3]);
-extern "C" void OLUE3_SetDocumentWrist(const float r[3]);
 extern "C" float OLXR_GetConvergence();   extern "C" void OLXR_SetConvergence(float v);
 extern "C" int   OLXR_GetStereoModel();   extern "C" void OLXR_SetStereoModel(int v);
 extern "C" float OLXR_GetSmoothing();     extern "C" void OLXR_SetSmoothing(float v);
@@ -729,12 +726,6 @@ static void BuildUI() {
       ch |= ImGui::SliderFloat("Document pitch",   &rot[1], -180.0f, 180.0f, "%.0f deg");
       ch |= ImGui::SliderFloat("Document yaw",     &rot[2], -180.0f, 180.0f, "%.0f deg");
       if (ch) OLInteract_SetDocumentAdjust(off, rot);
-      { float wr[3]; OLUE3_GetDocumentWrist(wr);
-        bool chw = false;
-        chw |= ImGui::SliderFloat("Document wrist roll",  &wr[0], -90.0f, 90.0f, "%.0f deg");
-        chw |= ImGui::SliderFloat("Document wrist pitch", &wr[1], -90.0f, 90.0f, "%.0f deg");
-        chw |= ImGui::SliderFloat("Document wrist yaw",   &wr[2], -90.0f, 90.0f, "%.0f deg");
-        if (chw) OLUE3_SetDocumentWrist(wr); }
       if (ImGui::Button("Reset the document's position")) OLInteract_ResetDocumentAdjust();
       Help(
           "Where the confidential document sits in your left hand. Grab it from your left\n"
