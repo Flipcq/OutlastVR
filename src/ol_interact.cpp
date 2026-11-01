@@ -2611,7 +2611,6 @@ extern "C" void OLInteract_Tick() {
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
         if (s_pc) { static ULONGLONG s_offLog = 0; if (now - s_offLog > 2000) { s_offLog = now; ILog("[OLVR][PHYSCLIMB] gameplay check off for a moment while climbing - holding on"); } }
         else s_tickMs = 0;
-        s_camStarted = false;   // re-evaluate the "not at face at start" rule next time gameplay begins
         CamcorderHudTick(false);
         s_rwOk = false; OLXR_RoomWalkAllow(0);
         OLXR_SetMarkers(nullptr, 0); return;
