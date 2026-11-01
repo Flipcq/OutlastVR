@@ -4972,14 +4972,13 @@ static bool PoseApplyVisible(void* comp) {
         GripUseBake();
         // [BATTERY] While the game's own reload animation plays, both arms belong to it: no IK, no
         // finger grip, no controller pose. The camcorder and the spare cell are still placed below.
-        // (Beta 1.1.9) The hand-off used to be eased: the mask was cleared only once the ease had run
-        // its 0.45 s, so one hand could keep following the controller while the other animated - in
-        // the headset that read as "only the left hand lowers when I bring the battery to the camera".
-        // Both hands are now handed over together for the whole animation; the montage's own 0.55 s
-        // blend-in (PlayCustomAnim's BlendInTime) is what makes it smooth.
+        // (Beta 1.1.9) Both hands are handed over together for the whole animation. While the eased
+        // weight (reloadIk) fades from 1 to 0 over ~0.45 s the hands stay under IK control so they
+        // lower together smoothly instead of snapping away; only once reloadIk reaches 0 do they
+        // belong fully to the montage (its own 0.55 s BlendInTime keeps it smooth).
         const bool batReload = OLInteract_ReloadNative() != 0;
         const float reloadIk = batReload ? OLInteract_ReloadBlend() : 1.0f;   // eased IK weight (0..1)
-        if (batReload) pad.handValid &= ~3u;   // both hands to the animation, together
+        if (batReload && reloadIk <= 0.0f) pad.handValid &= ~3u;   // both hands to the animation, together
         // [INTERACT] (Test37) The camcorder held up to your eye: Miles's right arm plays the game's own
         // camcorder pose. Following the controller there put his sleeve right across the lens.
         // (Beta 1.1) [CAMTUCK] But that pose holds a camcorder that is hidden at the eye, so in the headset's wide
@@ -5259,10 +5258,10 @@ static bool PoseApplyVisible(void* comp) {
             s_doorLockPrev[hand] = doorLock;
             // [DOCUMENT] a slight, natural turn of the left wrist while it holds the document, so the
             // hand does not sit in the neutral controller pose against the turned paper. The turn itself
-            // is g_docWristRot (roll/pitch/yaw, tunable live in the menu); it is applied on the hand's
-            // own frame, so it stays a wrist twist whatever way you hold the paper.
+            // is g_docWristRot (roll/pitch/yaw, tunable live in the menu); applied before the arm's own
+            // rotation so the wrist turns toward the document and the arm settles into a natural hold.
             if (hand == 0 && OLInteract_DocumentHeld()) {
-                wristTarget = IQMul(wristTarget, IQEulerDeg(g_docWristRot));
+                wristTarget = IQMul(IQEulerDeg(g_docWristRot), wristTarget);
             }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
