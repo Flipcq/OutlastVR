@@ -5383,15 +5383,12 @@ static bool PoseApplyVisible(void* comp) {
                         if (IVLen(axis) < 0.15f) axis = IVCross(f, up);              // arm pointing at the shoulder
                         if (IVLen(axis) > 0.05f) {
                             axis = IVNorm(axis);
-                            float ang = -g_docWristTwist * 0.0174532925f;            // the slider sets the lift
+                            // The slider's sign picks the direction, and the default (-45) turns the palm
+                            // FORWARD, toward the camera: the first build swung it backwards, over the
+                            // shoulder, which is what the user saw as "a mao muito girada para tras".
+                            float ang = g_docWristTwist * 0.0174532925f;
                             if (ang > 1.5708f) ang = 1.5708f;
                             if (ang < -1.5708f) ang = -1.5708f;
-                            // Swing the paper TOWARD the body whichever side the arm is on: nothing here knows
-                            // which way the mesh's axes run, so pick the sign that moves the paper's bone closer
-                            // to the shoulder.
-                            const VIk3 dPaper = IVSub(space.d[aux].t, wrist);
-                            if (IVDot(IVSub(IQRotate(IQAxis(axis, ang), dPaper), dPaper), toBody) < 0.0f)
-                                ang = -ang;
                             PoseRollChain(space, mesh, ha0, wrist, IQAxis(axis, ang));   // hand + fingers
                             static ULONGLONG s_wristLog = 0;
                             if (!s_wristLog || GetTickCount64() - s_wristLog > 3000) {

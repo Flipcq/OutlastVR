@@ -720,9 +720,8 @@ static void BuildUI() {
           "Where the confidential document sits in your left hand. Grab it from your left\n"
           "shoulder and keep holding it, then drag the sliders - it moves live so you can\n"
           "find the right spot without taking the headset off. The paper is gripped RIGIDLY:\n"
-          "whatever your hand does, the paper does the same. Wrist lift bends the wrist only,\n"
-          "swinging the hand and the paper up and a little toward you (the sign is ignored,\n"
-          "the number is how many degrees). Saved to outlastvr.ini."); }
+          "whatever your hand does, the paper does the same. Wrist lift bends the wrist only;\n"
+          "negative turns the palm toward you, positive the other way. Saved to outlastvr.ini."); }
 
     // [INTERACT] (Test37)
     Section("DOORS");

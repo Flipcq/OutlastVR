@@ -225,10 +225,8 @@ static std::vector<ID3D11Texture2D*> g_blackImgs;
 static bool g_blackTried = false;
 static bool g_blackAllowed = true;         // [XR] BlackSceneLayer=0 stands the placeholder down
 // [THEATER] the menu/loading screen is a flat panel in a black void (see the [THEATER] block).
-static volatile float g_cinemaDistanceM = 2.9f;   // (Beta 1.1.9) further than the first 2.2 m: the menu
-                                                  // now reads as a screen across the room, not a wall in
-                                                  // your face
-static volatile float g_cinemaWidthDeg = 66.0f;    // ...and narrower (82 -> 76 -> 66)
+static volatile float g_cinemaDistanceM = 3.2f;   // (Beta 1.1.9) a screen ACROSS THE ROOM (2.2 -> 2.9 -> 3.2 m)
+static volatile float g_cinemaWidthDeg = 56.0f;    // ...and clearly smaller each time (82 -> 76 -> 66 -> 56)
 static volatile long  g_cinemaHeadLocked = 1;
 static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
 static long           g_thCurved = 1;           // [Cinema] Curved: cylinder screen when supported
@@ -1479,12 +1477,34 @@ static bool Init(UINT w, UINT h) {
                 XLOG("[OLVR][BODY6DOF] anchor=%ld side=%.3f forward=%.3f backward=%.3f up=%.3f down=%.3f handCam=%ld",
                      g_bodyAnchor, g_bodySideM, g_bodyForwardM, g_bodyBackwardM,
                      g_bodyUpM, g_bodyDownM, g_handCamOn);
-                g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 1, ini) ? 1 : 0;
-                g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
-                g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
-                { wchar_t v[32];
-                  GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"2.9", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
-                  GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"66.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v); }
+                // [CINEMA] The shipped look of the menu screen changed twice in 1.1.9 (a wall in your face,
+                // then 76 deg, now a screen across the room). An ini written by an older build still carries
+                // the old WidthDeg/DistanceM and silently overrode the new defaults - which is why asking
+                // for a smaller screen three times changed nothing on screen. "Preset < 2" means "written
+                // before this look": rewrite the section once, then never touch it again, so a hand-tuned
+                // ini keeps its tuning.
+                const int cinemaPreset = (int)GetPrivateProfileIntW(L"Cinema", L"Preset", 0, ini);
+                if (cinemaPreset < 2) {
+                    g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1;
+                    g_cinemaDistanceM = 3.2f; g_cinemaWidthDeg = 56.0f;
+                    if (ini) {
+                        WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
+                        WritePrivateProfileStringW(L"Cinema", L"Curved", L"1", ini);
+                        WritePrivateProfileStringW(L"Cinema", L"HeadLocked", L"1", ini);
+                        WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
+                        WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
+                        WritePrivateProfileStringW(L"Cinema", L"Preset", L"2", ini);
+                        XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
+                             g_cinemaDistanceM, g_cinemaWidthDeg);
+                    }
+                } else {
+                    g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 1, ini) ? 1 : 0;
+                    g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
+                    g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
+                    wchar_t v[32];
+                    GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
+                    GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v);
+                }
                 if (g_cinemaDistanceM < 1.6f) g_cinemaDistanceM = 1.6f;
                 if (g_cinemaDistanceM > 4.0f) g_cinemaDistanceM = 4.0f;
                 if (g_cinemaWidthDeg < 40.0f) g_cinemaWidthDeg = 40.0f;
@@ -3893,9 +3913,10 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
 }
 
 // ---- [THEATER] the menu / loading presentation, rebuilt for VR (Test34) --------------------------
-// The menu, logos and loading screens play on a big flat screen in a pitch-black void, with a soft
-// halo of the PICTURE'S OWN EDGE COLOURS hugging the screen, so the picture melts into the black in
-// its own colours rather than in a grey wash. The screen follows the head.
+// The menu, logos and loading screens play on a flat screen in a pitch-black void, with a soft halo
+// drawn from a ONE-TIME 8x8 capture of the menu (see CaptureHaloPalette), so the picture melts into
+// the black in its own colours - a still palette, not the live picture smeared outwards. The screen
+// follows the head.
 //  - ANCHOR: built in front of where you face when it appears, upright (yaw only).
 //  - FOLLOW: with [Cinema] HeadLocked=1 (the default) the anchor eases toward the head - it keeps a
 //    0.55 s lag and ignores ~1 deg / 1.5 cm of head noise, so the screen sits still instead of being
@@ -3913,15 +3934,23 @@ static ID3D11RenderTargetView* g_envRtv = nullptr;
 static ID3D11VertexShader* g_envVS = nullptr;
 static ID3D11PixelShader* g_envPS = nullptr;
 static ID3D11Buffer* g_envCB = nullptr;
-static ID3D11SamplerState* g_envSamp = nullptr;   // samples the menu picture for its edge colour
+static ID3D11SamplerState* g_envSamp = nullptr;   // samples the captured menu palette
 static bool g_envTried = false, g_envReady = false;
+// [HALO] The menu's colours are captured ONCE per appearance into an 8x8 texture. Sampling the live
+// picture every frame made the halo move with the menu (and repeated the picture's border outwards in
+// straight streaks); an 8x8 still of it is a soft palette that stays put.
+static const UINT kHaloW = 8, kHaloH = 8;
+static ID3D11Texture2D* g_haloTex = nullptr;
+static ID3D11ShaderResourceView* g_haloSrv = nullptr;
+static bool  g_haloValid = false;
+static DWORD g_haloWantAt = 0;                    // when the theater (re)appeared, + a short settle
 static XrVector3f g_thHead = { 0, 0, 0 };   // the viewpoint the theater is built around (LOCAL)
 static float g_thYaw = 0.0f;                 // facing, radians, same convention as the screen anchor
 static DWORD g_thLastMs = 0, g_thAwaySince = 0;
 static bool  g_thFollowing = false;
 
 static const char* kEnvHlsl =
-"cbuffer EnvCB : register(b0) { float4 tanB; float4 eyeQ; float4 eyeP; float4 scrC; float4 scrB; float4 picR; };\n"
+"cbuffer EnvCB : register(b0) { float4 tanB; float4 eyeQ; float4 eyeP; float4 scrC; float4 scrB; };\n"
 "Texture2D pic : register(t0);\n"
 "SamplerState picSmp : register(s0);\n"
 "struct VOut { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
@@ -3945,34 +3974,27 @@ static const char* kEnvHlsl =
 "      float3 q = eyeP.xyz + d * t - scrC.xyz;\n"
 "      float dx = max(abs(dot(q, rgt)) - scrC.w, 0.0);\n"
 "      float dy = max(abs(q.y) - scrB.z, 0.0);\n"
-"      // The halo is the picture's own palette, but SOFT: a small grid of taps around the\n"
-"      // nearest edge point averages the border region instead of repeating one column of the\n"
-"      // picture outwards - a single clamped tap smeared the edge content into straight streaks.\n"
-"      float2 e = float2(clamp(0.5 + dot(q, rgt) / max(2.0 * scrC.w, 0.001), 0.05, 0.95),\n"
-"                        clamp(0.5 - q.y / max(2.0 * scrB.z, 0.001), 0.05, 0.95));\n"
-"      float2 eu = lerp(picR.xy, picR.zw, e);\n"
-"      float2 sp = (picR.zw - picR.xy) * 0.05;\n"
-"      float3 edge = pic.SampleLevel(picSmp, eu, 0).rgb\n"
-"                  + pic.SampleLevel(picSmp, eu + float2( sp.x,  sp.y), 0).rgb\n"
-"                  + pic.SampleLevel(picSmp, eu + float2(-sp.x,  sp.y), 0).rgb\n"
-"                  + pic.SampleLevel(picSmp, eu + float2( sp.x, -sp.y), 0).rgb\n"
-"                  + pic.SampleLevel(picSmp, eu + float2(-sp.x, -sp.y), 0).rgb;\n"
-"      edge *= 0.2;\n"
-"      // The falloff's level sets are rectangles, which is what read as straight lines. Warp the\n"
-"      // distance with two octaves of value noise and modulate the result with a third: the halo\n"
-"      // becomes a soft brushed texture, and the noise doubles as dither against 8-bit banding.\n"
+"      // The halo comes from an 8x8 CAPTURE of the menu, taken once when the menu appears: a\n"
+"      // still, soft palette. Sampling the live picture every frame made the halo shift with the\n"
+"      // menu, and a single clamped tap repeated its border outwards in straight streaks.\n"
+"      float2 e = float2(clamp(0.5 + dot(q, rgt) / max(2.0 * scrC.w, 0.001), 0.0, 1.0),\n"
+"                        clamp(0.5 - q.y / max(2.0 * scrB.z, 0.001), 0.0, 1.0));\n"
+"      float3 edge = pic.SampleLevel(picSmp, e, 0).rgb;\n"
+"      // The falloff of a rectangular panel has rectangular level sets - straight lines in 8 bits.\n"
+"      // Two octaves of value noise warp the distance (the constant keeps the halo glued to the\n"
+"      // panel), and a third modulates the result: brushed texture, and dither against banding.\n"
 "      float nz = VN(i.uv * 70.0) - 0.5;\n"
 "      float nf = VN(i.uv * 260.0) - 0.5;\n"
-"      float wob = nz * 0.012 + nf * 0.005 - 0.0085;   // keeps the halo touching the panel\n"
+"      float wob = nz * 0.012 + nf * 0.005 - 0.0085;\n"
 "      dx = max(dx + wob, 0.0);\n"
 "      dy = max(dy + wob, 0.0);\n"
-"      // The picture is stored sRGB-encoded and this target is *_SRGB, so hand the hardware the\n"
-"      // linear value: at the screen's edge the halo then equals the picture's own colour.\n"
+"      // The capture is an *_SRGB texture, so the sampler already handed us LINEAR values (this target\n"
+"      // is *_SRGB too and encodes on write): no gamma juggling here.\n"
 "      float sx = max(0.0118 * scrC.w * scrC.w, 0.0001);\n"
 "      float sy = max(0.0118 * scrB.z * scrB.z, 0.0001);\n"
-"      float3 lin = pow(max(edge, (float3)0.0), (float3)2.2) * exp(-(dx * dx / sx + dy * dy / sy));\n"
+"      float3 lin = max(edge, (float3)0.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
 "      float dg = VN(i.uv * 512.0) - 0.5;\n"
-"      col += max(lin * (1.0 + dg * 0.18), 0.0);\n"
+"      col += max(lin * (1.0 + dg * 0.18) + dg * 0.0009, 0.0);\n"
 "    }\n"
 "  }\n"
 "  float n = frac(sin(dot(i.p.xy, float2(12.9898, 78.233))) * 43758.5453);\n"
@@ -4065,13 +4087,20 @@ static bool EnsureEnvironment() {
               SUCCEEDED(g_d3d11->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &g_envPS));
     vsb->Release(); psb->Release();
     if (!ok) return false;
-    D3D11_BUFFER_DESC bd = {}; bd.ByteWidth = 96; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_BUFFER_DESC bd = {}; bd.ByteWidth = 80; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     if (FAILED(g_d3d11->CreateBuffer(&bd, nullptr, &g_envCB))) return false;
     D3D11_SAMPLER_DESC sd = {};
     sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
     if (FAILED(g_d3d11->CreateSamplerState(&sd, &g_envSamp))) return false;
+    {   // [HALO] the 8x8 still of the menu the halo is drawn from (see CaptureHaloPalette)
+        D3D11_TEXTURE2D_DESC hd = {}; hd.Width = kHaloW; hd.Height = kHaloH; hd.MipLevels = 1; hd.ArraySize = 1;
+        hd.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; hd.SampleDesc.Count = 1;
+        hd.Usage = D3D11_USAGE_DEFAULT; hd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(g_d3d11->CreateTexture2D(&hd, nullptr, &g_haloTex)) || !g_haloTex ||
+            FAILED(g_d3d11->CreateShaderResourceView(g_haloTex, nullptr, &g_haloSrv))) return false;
+    }
     D3D11_TEXTURE2D_DESC td = {}; td.Width = kEnvW; td.Height = kEnvH; td.MipLevels = 1; td.ArraySize = 1;
     td.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -4105,32 +4134,37 @@ struct TheaterLayers {
     XrCompositionLayerCylinderKHR cyl[2];
 };
 
-static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh,
-                              ID3D11Texture2D* pic, const float picU0[2], const float picU1[2]) {
+// [HALO] Take the 8x8 still of the menu the edge gradient is drawn from. Called once when the theater
+// appears (and again the next time it appears): the palette then stays put instead of chasing the
+// menu frame by frame, and it cannot repeat the picture's border outwards in straight streaks.
+static bool CaptureHaloPalette(ID3D11Texture2D* src) {
+    if (!src || !g_haloTex || g_w < 2 || g_h < 2 || !ShaderBlitReady()) return false;
+    if (!GammaDraw(src, g_w, g_h, 0.0f, g_w, g_h, 0.0f, (float)g_w, g_haloTex, kHaloW, kHaloH)) return false;
+    static bool s_logged = false;
+    if (!s_logged) {
+        s_logged = true;
+        XLOG("[OLVR][THEATER] menu palette captured (%ux%u) once for the edge gradient", kHaloW, kHaloH);
+    }
+    return true;
+}
+
+static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh) {
     if (!g_thEnv || !g_rtEyeFovValid || !EnsureEnvironment()) return false;
-    // The picture the screen is showing, sampled by the room shader for its edge colour (the halo
-    // melts the picture into the black in the picture's own colours). Made per call: the upload
-    // texture is rebuilt whenever the backbuffer changes, so caching by pointer is a trap.
-    ID3D11ShaderResourceView* picSrv = nullptr;
-    if (pic) g_d3d11->CreateShaderResourceView(pic, nullptr, &picSrv);
+    ID3D11ShaderResourceView* pal = g_haloSrv;   // the captured still; null means a black halo
     for (int e = 0; e < 2; ++e) {
         uint32_t idx = 0;
         XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
-        if (!XrSucceeded(g_fn.acquireSwapchainImage(g_envSc[e], &ai, &idx))) {
-            if (picSrv) picSrv->Release();
-            return false;
-        }
+        if (!XrSucceeded(g_fn.acquireSwapchainImage(g_envSc[e], &ai, &idx))) return false;
         XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
         g_fn.waitSwapchainImage(g_envSc[e], &wi);
         const XrPosef& ep = g_rtEyePose[e];
         const XrFovf& fv = g_rtEyeFov[e];
-        const float cb[24] = {
+        const float cb[20] = {
             tanf(fv.angleLeft), tanf(fv.angleRight), tanf(fv.angleUp), tanf(fv.angleDown),
             ep.orientation.x, ep.orientation.y, ep.orientation.z, ep.orientation.w,
             ep.position.x, ep.position.y, ep.position.z, g_presentFade,
             center.x, center.y, center.z, hw,
-            right.x, right.z, hh, g_thHead.y - 1.30f,
-            picU0[e], 0.0f, picU1[e], 1.0f };   // [HALO] the picture's uv window for this eye
+            right.x, right.z, hh, g_thHead.y - 1.30f };
         g_ctx->UpdateSubresource(g_envCB, 0, nullptr, cb, 0, 0);
         D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)kEnvW, (float)kEnvH, 0.0f, 1.0f };
         const float blendFactor[4] = { 0, 0, 0, 0 };
@@ -4139,7 +4173,7 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
         g_ctx->VSSetShader(g_envVS, nullptr, 0);
         g_ctx->PSSetShader(g_envPS, nullptr, 0);
         g_ctx->PSSetConstantBuffers(0, 1, &g_envCB);
-        g_ctx->PSSetShaderResources(0, 1, &picSrv);
+        g_ctx->PSSetShaderResources(0, 1, &pal);
         g_ctx->PSSetSamplers(0, 1, &g_envSamp);
         g_ctx->OMSetBlendState(nullptr, blendFactor, 0xffffffff);
         g_ctx->OMSetDepthStencilState(g_blitDepth, 0);
@@ -4147,8 +4181,8 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
         g_ctx->RSSetState(g_blitRaster);
         g_ctx->RSSetViewports(1, &vp);
         g_ctx->Draw(3, 0);
-        ID3D11ShaderResourceView* nopic = nullptr;
-        g_ctx->PSSetShaderResources(0, 1, &nopic);   // never leave the picture bound
+        ID3D11ShaderResourceView* nopal = nullptr;
+        g_ctx->PSSetShaderResources(0, 1, &nopal);   // never leave the palette bound
         ID3D11RenderTargetView* nulrt = nullptr;
         g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
         if (idx < g_envImgs[e].size()) g_ctx->CopyResource(g_envImgs[e][idx], g_envTmp);
@@ -4165,7 +4199,6 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
     t.env = {};
     t.env.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VALUE;
     t.env.layerFlags = 0; t.env.space = g_localSpace; t.env.viewCount = 2; t.env.views = t.envPv;
-    if (picSrv) picSrv->Release();
     return true;
 }
 
@@ -4175,7 +4208,15 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
 static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader** layers, int n,
                             bool stereo, const XrSwapchain sc[2], XrRect2Di rect, float aspect,
                             bool* sceneLayer) {
+    // [HALO] A new appearance of the theater (it was off long enough for the fade) takes a fresh 8x8
+    // still of the menu a moment after it shows - never the black of the fade-in.
+    const DWORD nowMs = GetTickCount();
+    if (!g_thLastMs || (nowMs - g_thLastMs) > 400u) { g_haloValid = false; g_haloWantAt = nowMs + 120u; }
     TheaterTick();
+    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0) {
+        if (CaptureHaloPalette(g_uploadTex)) g_haloValid = true;
+        else g_haloWantAt = nowMs + 200u;   // no picture yet, or the blit shader is not ready
+    }
     const float D = g_cinemaDistanceM;
     const float up = -0.06f;   // centre a touch below eye level
     const float hfy = (g_rtFovY > 0.2f) ? g_rtFovY : 1.75f;
@@ -4191,11 +4232,7 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
     const XrVector3f fwdOff = QRotate(yq, { 0.0f, up, -D });
     const XrVector3f center = { g_thHead.x + fwdOff.x, g_thHead.y + fwdOff.y, g_thHead.z + fwdOff.z };
 
-    // [HALO] The halo is drawn from the picture's own edge colour. In the stereo presentation each
-    // eye shows its own half of the frame; the flat one shows the whole thing.
-    const float picU0[2] = { 0.0f, stereo ? 0.5f : 0.0f };
-    const float picU1[2] = { stereo ? 0.5f : 1.0f, 1.0f };
-    if (RenderEnvironment(t, center, right, qw * 0.5f, halfH, g_uploadTex, picU0, picU1)) {
+    if (RenderEnvironment(t, center, right, qw * 0.5f, halfH)) {
         layers[n++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&t.env);
         *sceneLayer = true;
     }
