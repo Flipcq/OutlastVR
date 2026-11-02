@@ -4575,14 +4575,16 @@ static float g_docShoulderOff[3] = { 2.0f, 5.0f, -3.0f };   // up, forward, righ
 static float g_docShoulderRot[3] = { 0.0f, 0.0f, 0.0f };
 static float g_docHeldOff[3] = { 18.0f, -5.0f, 2.0f };       // in the left hand's bone frame (uu): forward, right, up
 static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, yaw (deg)
-// [DOCUMENT] (Beta 1.1.9) Left wrist roll while holding the document, in degrees. It is applied
-// ABOUT THE WRIST->PAPER LINE (see the arm solve below), so the hand turns around the sheet while
-// the sheet itself stays exactly where it was placed - the paper never drifts farther away. Tuned
-// live from the menu and saved to [Motion] DocumentWristRoll.
-static float g_docWristRoll = -15.0f;
-extern "C" float OLUE3_GetDocumentWristRoll() { return g_docWristRoll; }
-extern "C" void OLUE3_SetDocumentWristRoll(float deg) {
-    g_docWristRoll = deg < -180.0f ? -180.0f : (deg > 180.0f ? 180.0f : deg);
+// [DOCUMENT] (Beta 1.1.9) Left wrist turn while holding the document (roll, pitch, yaw, deg). It is
+// applied to the hand in body space; DocumentPlace undoes it for the paper itself, so the hand turns
+// freely and the sheet stays exactly at the placement tuned in the menu (it never drifts away).
+// Tuned live from the menu and saved to [Motion] DocumentWristRoll/Pitch/Yaw.
+static float g_docWristRot[3] = { -15.0f, 0.0f, 0.0f };
+static QIk4  s_docWristQ = { 0.0f, 0.0f, 0.0f, 1.0f };   // this frame's wrist turn (body space)
+static bool  s_docWristValid = false;
+extern "C" void OLUE3_GetDocumentWrist(float r[3]) { for (int i = 0; i < 3; ++i) r[i] = g_docWristRot[i]; }
+extern "C" void OLUE3_SetDocumentWrist(const float r[3]) {
+    for (int i = 0; i < 3; ++i) g_docWristRot[i] = r[i] < -180.0f ? -180.0f : (r[i] > 180.0f ? 180.0f : r[i]);
 }
 extern "C" int OLUE3_DocumentVisual(float out[3]) {
     if (!g_docShoulderMs || GetTickCount64() - g_docShoulderMs > 300) return 0;
@@ -4835,9 +4837,18 @@ static void DocumentPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam
     // follows the hand (rotates with it) like the spare battery, so it can be turned by hand.
     VIk3 handT = shoulderT; QIk4 handQ = shoulderQ;
     if (g_lAux >= 0 && g_lAux < space.n) {
-        const IkAtom& A = space.d[g_lAux];
-        handT = IVAdd(A.t, IQRotate(A.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
-        handQ = IQMul(A.q, IQEulerDeg(g_docHeldRot));
+        IkAtom Ab = space.d[g_lAux];
+        if (s_docWristValid) {   // undo the wrist turn for the sheet only (see PoseApplyVisible)
+            const int lHand = g_poseBone[0][2];
+            if (lHand >= 0 && lHand < space.n) {
+                const QIk4 inv = IQConj(s_docWristQ);
+                const VIk3 W = space.d[lHand].t;
+                Ab.t = IVAdd(W, IQRotate(inv, IVSub(Ab.t, W)));
+                Ab.q = IQMul(inv, Ab.q);
+            }
+        }
+        handT = IVAdd(Ab.t, IQRotate(Ab.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
+        handQ = IQMul(Ab.q, IQEulerDeg(g_docHeldRot));
     }
     {   // where the held document actually is, for ol_interact's "look at it" check (its centre, not the hand)
         const VIk3 dh = IVSub(handT, cam);
@@ -4910,6 +4921,20 @@ extern "C" int OLUE3_CameraBoneWorld(float out[3]) {
     return 1;
 }
 
+// (V1) Read the game's CamcorderState right now (1 = at his face). The arm solver must not freeze
+// Miles's reference pose while it is up, and waiting for the gameplay tick's cached value was one
+// frame too late (the skeleton update in the first frame runs before that tick).
+static int CamcorderUpNow() {
+    static unsigned off = 0; static ULONGLONG tryAt = 0;
+    if (!off && GetTickCount64() >= tryAt) {
+        tryAt = GetTickCount64() + 1000;
+        OLUE3_FindProp("OLHero", "CamcorderState", &off, nullptr);
+    }
+    void* hero = OLUE3_Hero();
+    if (!hero || !off) return -1;
+    __try { return *(volatile unsigned char*)((char*)hero + off) == 1 ? 1 : 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
 static bool PoseApplyVisible(void* comp) {
     const bool screen=OLXR_ScreenActive()!=0;
     const bool controls=OLXR_MotionControlsReady()!=0;
@@ -5019,7 +5044,7 @@ static bool PoseApplyVisible(void* comp) {
             // would be the camcorder pose and the VR right arm would stay wrong (mirrored back)
             // for the rest of the session. -1 (not sampled yet) also waits, so the very first
             // frame cannot capture it before the startup guard in ol_interact has lowered it.
-            if (OLInteract_CamUpKnown() != 0) return false;
+            if (CamcorderUpNow() != 0 || OLInteract_CamUpKnown() != 0) return false;
             if (!PoseCaptureReference(space,mesh)) return false;
             g_poseRecenterSeen=OLXR_RecenterGeneration();
         }
@@ -5066,6 +5091,7 @@ static bool PoseApplyVisible(void* comp) {
             OLProxyLog("[OLVR][VISIBLEIK] Outlast 1 absolute grip-to-wrist axes calibrated from Miles reference pose");
         }
         const QIk4 liveBodyBasis=PoseUprightHand(cameraForward);
+        s_docWristValid = false;
         bool changed[2] = { false,false };
         for (int hand=0; hand<2; ++hand) {
             if (!(pad.handValid & (1u << hand))) { g_poseRamp[hand] = 0.0f; continue; }
@@ -5260,17 +5286,13 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
-            // [DOCUMENT] a natural turn of the left wrist while it holds the document. It is a roll
-            // about the wrist->paper line: the hand (and the palm) turns around the sheet, so the
-            // document keeps the placement tuned in the menu and does not swing farther away.
-            if (hand == 0 && OLInteract_DocumentHeld() && g_lAux >= 0 && g_lAux < space.n) {
-                const IkAtom& A = space.d[g_lAux];
-                const VIk3 paper = IVAdd(A.t, IQRotate(A.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
-                VIk3 axis = IVSub(paper, space.d[ha].t);
-                if (IVLen(axis) > 0.01f) {
-                    axis = IVNorm(axis);
-                    wristTarget = IQMul(IQAxis(axis, g_docWristRoll * 0.0174532925f), wristTarget);
-                }
+            // [DOCUMENT] a natural turn of the left wrist while it holds the document. The turn is
+            // applied to the hand here; DocumentPlace removes it again for the paper, so the hand
+            // can be turned to a comfortable angle while the sheet stays at its tuned placement.
+            if (hand == 0 && OLInteract_DocumentHeld()) {
+                const QIk4 q = IQEulerDeg(g_docWristRot);
+                wristTarget = IQMul(q, wristTarget);
+                s_docWristQ = q; s_docWristValid = true;
             }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
