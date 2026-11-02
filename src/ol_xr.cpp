@@ -76,6 +76,7 @@ static UINT g_srcEyeW = 0, g_srcEyeH = 0;
 static UINT g_eyeW = 0, g_eyeH = 0;
 static UINT g_runtimeEyeW = 0, g_runtimeEyeH = 0;
 extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH);   // [HIRES] ol_ue3.cpp
+extern "C" int OLUE3_HasHero();   // [HALO] 1 = a level with a body is running
 static bool g_nativeEyeResolution = true;
 static float g_upscaleSharpness = 0.35f;
 static bool  g_nvSharp = true;     // [NVSHARP] [Render] NightVisionSharp: the flip screen's night vision has no blur
@@ -3989,8 +3990,6 @@ static XrVector3f g_thHead = { 0, 0, 0 };   // the viewpoint the theater is buil
 static float g_thYaw = 0.0f;                 // facing, radians, same convention as the screen anchor
 static DWORD g_thLastMs = 0, g_thAwaySince = 0;
 static bool  g_thFollowing = false;
-
-extern "C" int OLUE3_HasHero();   // [HALO] 1 = a level with a body is running
 
 static const char* kEnvHlsl =
 "cbuffer EnvCB : register(b0) { float4 tanB; float4 eyeQ; float4 eyeP; float4 scrC; float4 scrB; };\n"
