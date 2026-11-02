@@ -3934,12 +3934,36 @@ static ID3D11PixelShader* g_envPS = nullptr;
 static ID3D11Buffer* g_envCB = nullptr;
 static ID3D11SamplerState* g_envSamp = nullptr;   // samples the captured menu palette
 static bool g_envTried = false, g_envReady = false;
-// [HALO] The menu's colours are captured ONCE per appearance into an 8x8 texture. Sampling the live
+// [HALO] The menu's colours are captured ONCE per appearance into a 16x16 texture. Sampling the live
 // picture every frame made the halo move with the menu (and repeated the picture's border outwards in
-// straight streaks); an 8x8 still of it is a soft palette that stays put.
+// straight streaks); a small still of it is a soft palette that stays put.
 static const UINT kHaloW = 16, kHaloH = 16;
 static ID3D11Texture2D* g_haloTex = nullptr;
 static ID3D11ShaderResourceView* g_haloSrv = nullptr;
+static ID3D11RenderTargetView* g_haloRtv = nullptr;
+static ID3D11VertexShader* g_haloVS = nullptr;
+static ID3D11PixelShader* g_haloPS = nullptr;
+// The still is made by AVERAGING, not by sampling one texel: a 4x4 grid of taps per output pixel.
+// (The first attempt reused GammaDraw, whose downscale path is a single bilinear tap - it picked one
+// random pixel of a dark menu, which is why the halo had no colour at all.)
+static const char* kHaloHlsl =
+"struct VOut { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
+"VOut vs(uint id : SV_VertexID) {\n"
+"  float2 t = float2((id << 1) & 2, id & 2);\n"
+"  VOut o; o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = t; return o; }\n"
+"Texture2D srcT : register(t0);\n"
+"SamplerState s0 : register(s0);\n"
+"float4 ps(VOut i) : SV_Target {\n"
+"  float3 sum = float3(0.0, 0.0, 0.0);\n"
+"  [unroll] for (int y = 0; y < 4; ++y)\n"
+"    [unroll] for (int x = 0; x < 4; ++x) {\n"
+"      float2 o = (float2((float)x, (float)y) + 0.5) * 0.25 - 0.5;\n"
+"      sum += srcT.SampleLevel(s0, saturate(i.uv + o / float2(16.0, 16.0)), 0).rgb;\n"
+"    }\n"
+"  // The frame is sRGB-encoded and this target is *_SRGB: hand over linear, the hardware re-encodes.\n"
+"  return float4(pow(sum * (1.0 / 16.0), (float3)2.2), 1.0); }\n"
+;
+
 static bool  g_haloValid = false;
 static DWORD g_haloWantAt = 0;                    // when the theater (re)appeared, + a short settle
 static XrVector3f g_thHead = { 0, 0, 0 };   // the viewpoint the theater is built around (LOCAL)
@@ -3972,7 +3996,7 @@ static const char* kEnvHlsl =
 "      float3 q = eyeP.xyz + d * t - scrC.xyz;\n"
 "      float dx = max(abs(dot(q, rgt)) - scrC.w, 0.0);\n"
 "      float dy = max(abs(q.y) - scrB.z, 0.0);\n"
-"      // The halo comes from an 8x8 CAPTURE of the menu, taken once when the menu appears: a\n"
+"      // The halo comes from a 16x16 CAPTURE of the menu, taken once when the menu appears: a\n"
 "      // still, soft palette. Sampling the live picture every frame made the halo shift with the\n"
 "      // menu, and a single clamped tap repeated its border outwards in straight streaks.\n"
 "      float2 e = float2(clamp(0.5 + dot(q, rgt) / max(2.0 * scrC.w, 0.001), 0.0, 1.0),\n"
@@ -4092,12 +4116,25 @@ static bool EnsureEnvironment() {
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
     if (FAILED(g_d3d11->CreateSamplerState(&sd, &g_envSamp))) return false;
-    {   // [HALO] the 8x8 still of the menu the halo is drawn from (see CaptureHaloPalette)
+    {   // [HALO] the 16x16 still of the menu the halo is drawn from (see CaptureHaloPalette)
         D3D11_TEXTURE2D_DESC hd = {}; hd.Width = kHaloW; hd.Height = kHaloH; hd.MipLevels = 1; hd.ArraySize = 1;
         hd.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; hd.SampleDesc.Count = 1;
-        hd.Usage = D3D11_USAGE_DEFAULT; hd.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        hd.Usage = D3D11_USAGE_DEFAULT; hd.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
         if (FAILED(g_d3d11->CreateTexture2D(&hd, nullptr, &g_haloTex)) || !g_haloTex ||
-            FAILED(g_d3d11->CreateShaderResourceView(g_haloTex, nullptr, &g_haloSrv))) return false;
+            FAILED(g_d3d11->CreateShaderResourceView(g_haloTex, nullptr, &g_haloSrv)) ||
+            FAILED(g_d3d11->CreateRenderTargetView(g_haloTex, nullptr, &g_haloRtv))) return false;
+        ID3DBlob* hv = nullptr; ID3DBlob* hp = nullptr; ID3DBlob* he = nullptr;
+        if (FAILED(compile(kHaloHlsl, strlen(kHaloHlsl), nullptr, nullptr, nullptr, "vs", "vs_4_0", 0, 0, &hv, &he)) ||
+            FAILED(compile(kHaloHlsl, strlen(kHaloHlsl), nullptr, nullptr, nullptr, "ps", "ps_4_0", 0, 0, &hp, &he))) {
+            XLOG("[OLVR][THEATER] palette shader FAILED%s%s - no edge gradient", he ? ": " : "",
+                 he ? (const char*)he->GetBufferPointer() : "");
+            if (hv) hv->Release(); if (hp) hp->Release(); if (he) he->Release();
+            return false;
+        }
+        const bool haloOk = SUCCEEDED(g_d3d11->CreateVertexShader(hv->GetBufferPointer(), hv->GetBufferSize(), nullptr, &g_haloVS)) &&
+                            SUCCEEDED(g_d3d11->CreatePixelShader(hp->GetBufferPointer(), hp->GetBufferSize(), nullptr, &g_haloPS));
+        hv->Release(); hp->Release();
+        if (!haloOk) return false;
     }
     D3D11_TEXTURE2D_DESC td = {}; td.Width = kEnvW; td.Height = kEnvH; td.MipLevels = 1; td.ArraySize = 1;
     td.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; td.SampleDesc.Count = 1;
@@ -4132,15 +4169,36 @@ struct TheaterLayers {
     XrCompositionLayerCylinderKHR cyl[2];
 };
 
-// [HALO] Take the 8x8 still of the menu the edge gradient is drawn from. Called once when the theater
-// appears (and again the next time it appears): the palette then stays put instead of chasing the
-// menu frame by frame, and it cannot repeat the picture's border outwards in straight streaks.
+// [HALO] Take the 16x16 still of the menu the edge gradient is drawn from, by AVERAGING it down (a
+// 4x4 grid of taps per output pixel). Called once when the theater appears: the palette then stays put
+// instead of chasing the menu frame by frame, and it cannot repeat the picture's border outwards.
 static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
-    if (!src || !g_haloTex || g_w < 2 || g_h < 2 || !ShaderBlitReady()) return false;
-    if (!GammaDraw(src, g_w, g_h, 0.0f, g_w, g_h, 0.0f, (float)g_w, g_haloTex, kHaloW, kHaloH)) return false;
-    // Read the still back once. GammaDraw darkens by the presentation fade and the menu may simply be
-    // black this early, and a black palette means a black halo - so the caller keeps retrying until
-    // the capture actually carries colour.
+    if (!src || !g_haloTex || !g_haloRtv || !g_haloVS || !g_haloPS || g_w < 2 || g_h < 2) return false;
+    ID3D11ShaderResourceView* pv = nullptr;
+    if (FAILED(g_d3d11->CreateShaderResourceView(src, nullptr, &pv)) || !pv) return false;
+    {
+        D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)kHaloW, (float)kHaloH, 0.0f, 1.0f };
+        const float bf[4] = { 0, 0, 0, 0 };
+        g_ctx->IASetInputLayout(nullptr);
+        g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_ctx->VSSetShader(g_haloVS, nullptr, 0);
+        g_ctx->PSSetShader(g_haloPS, nullptr, 0);
+        g_ctx->PSSetShaderResources(0, 1, &pv);
+        g_ctx->PSSetSamplers(0, 1, &g_envSamp);
+        g_ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
+        g_ctx->OMSetDepthStencilState(g_blitDepth, 0);
+        g_ctx->OMSetRenderTargets(1, &g_haloRtv, nullptr);
+        g_ctx->RSSetState(g_blitRaster);
+        g_ctx->RSSetViewports(1, &vp);
+        g_ctx->Draw(3, 0);
+        ID3D11ShaderResourceView* nulsrv = nullptr;
+        ID3D11RenderTargetView* nulrt = nullptr;
+        g_ctx->PSSetShaderResources(0, 1, &nulsrv);
+        g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
+    }
+    pv->Release();
+    // Read the still back once: the menu may still be black at this point (a loading screen), and a
+    // black palette means a black halo - so the caller keeps retrying until it carries colour.
     D3D11_TEXTURE2D_DESC sd = {};
     sd.Width = kHaloW; sd.Height = kHaloH; sd.MipLevels = 1; sd.ArraySize = 1;
     sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; sd.SampleDesc.Count = 1;
@@ -4233,11 +4291,9 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
         g_haloValid = false; g_haloWantAt = nowMs + 300u; s_haloTries = 0;
     }
     TheaterTick();
-    // The capture goes through the blit shader, which darkens by the presentation fade: taking it
-    // during the fade-in gave a black palette and therefore a black halo. Wait for the fade to end,
-    // and keep retrying while the menu itself is still black (loading screens do that).
-    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0 &&
-        g_presentFade > 0.98f && g_uploadTex) {
+    // Kept retrying while the menu is still black: a loading screen has nothing to copy yet, and a
+    // black palette means a black halo.
+    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0 && g_uploadTex) {
         float avg = 0.0f;
         const bool taken = CaptureHaloPalette(g_uploadTex, &avg);
         ++s_haloTries;
