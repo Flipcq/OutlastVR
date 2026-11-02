@@ -5297,15 +5297,11 @@ static bool PoseApplyVisible(void* comp) {
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
             if (hand == 0 && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
-                // bend the wrist UP around the wrist joint: the hand and the paper held in it turn
-                // up together with the forearm, instead of the flat neutral grip it has without it
-                VIk3 hf = IQRotate(space.d[ha].q, { 1.0f, 0.0f, 0.0f });
-                const VIk3 up = { 0.0f, 0.0f, 1.0f };
-                VIk3 axis = IVCross(hf, up);
-                if (IVLen(axis) > 1e-4f) {
-                    const QIk4 q = IQAxis(IVNorm(axis), g_docWristTwist * 0.0174532925f);
-                    PoseTransformTree(space,mesh,ha,q);
-                }
+                // roll the forearm about its own long axis, and the hand and the paper with it: the
+                // inside of the forearm turns toward the camera, as when reading a document
+                const VIk3 axis = IVSub(space.d[ha].t, space.d[fo].t);
+                if (IVLen(axis) > 0.1f)
+                    PoseTransformTree(space,mesh,fo,IQAxis(IVNorm(axis), g_docWristTwist * 0.0174532925f));
             }
         }
         // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip.

@@ -84,7 +84,6 @@ extern "C" void  OLSound_PostByName(const char* name, uint64_t obj);  // [DOOR] 
 extern "C" int   OLSound_PostFirstOf(const char* const* names, int n, uint64_t obj);   // [DOOR] first name this build has
 extern "C" void  OLSound_StopByName(const char* name, uint64_t obj);  // [DOOR] stop it early (the closing latch)
 extern "C" void  OLSound_SetRTPCByName(const char* name, float v);     // [DOOR] choose the slow/calm door sound
-extern "C" void  OLSound_SuppressCamStartup(int ms);                    // [CAMSTART] drop the camcorder take/put + NV switch one-shots
 extern "C" void  OLProxy_SetNvRequested(int on);                        // (Test43) [HANDNV] d3d9_proxy's night-vision state
 extern "C" void  OLProxy_SetHandleY(int on);                            // [RELOAD] the mod handles Y at the face
 extern "C" int   OLUE3_SceneScripted();                                  // (Test44) [ROOMWALK]
@@ -2655,12 +2654,10 @@ extern "C" void OLInteract_Tick() {
         s_camGuardHero = hero; s_camStarted = false; s_camGuardTicks = 0; s_camStartLogged = false;
         s_camDownSince = 0; s_camStartToggleAt = 0;
     }
-    if (!s_camStarted) OLSound_SuppressCamStartup(1000);   // [CAMSTART] no startup camcorder sound
     if (!s_camStarted) {
         ++s_camGuardTicks;
         if (s_camUp == 1 && s_camGuardTicks <= kCamGuardTicks) {
             s_camDownSince = 0;
-            OLSound_SuppressCamStartup(2000);          // [CAMSTART] our lower must not be heard
             if (now > s_camStartToggleAt) {            // the game's own lower (RB = OLA_ToggleCamcorder)
                 s_camStartToggleAt = now + 900;
                 RequestCamToggle(now, 150);
@@ -2677,7 +2674,6 @@ extern "C" void OLInteract_Tick() {
         if (s_camByGesture || s_rsDown || s_hState == H_IN_HAND ||
             s_facePending || s_faceLowering) s_camStarted = true;      // the player is using it
     }
-    if (s_camStarted) OLSound_SuppressCamStartup(0);   // [CAMSTART] startup over: camcorder sounds play again
     // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
     // a lower (ours, the game's, a reload, a cutscene) releases it.
     if (s_facePending && s_camUp == 1) {

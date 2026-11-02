@@ -15,7 +15,6 @@
 #include <Windows.h>
 #include <cstdio>
 #include <cstring>
-#include <cwchar>
 #include <cstdint>
 #include <cstdarg>
 #include <cmath>
@@ -127,48 +126,7 @@ static void Track(AkUniqueID id, AkPlayingID pid, AkGameObjectID obj) {
     ReleaseSRWLockExclusive(&s_lock);
     if (pauseNow && g_exec) { g_exec(id, AK_Pause, obj, 0, kCurveLinear, pid); InterlockedIncrement(&s_hushPaused); }
 }
-// ---- [CAMSTART] startup camcorder guard: silence the game's own take/put and night-vision switch
-// without touching its state. Outlast raises the camcorder (with night vision) as its first playable
-// frame; the mod lowers it immediately, but the two one-shots would be heard. While the suppression
-// window is up, those events are dropped, and any that already started are stopped.
-static volatile ULONGLONG s_camSuppressUntil = 0;
-struct CamPlay { AkUniqueID id; AkPlayingID pid; AkGameObjectID obj; ULONGLONG ms; };
-static CamPlay s_camPlay[4]; static int s_camPlayN = 0; static SRWLOCK s_camLock = SRWLOCK_INIT;
-static bool CamSuppressed() { return s_camSuppressUntil && GetTickCount64() <= s_camSuppressUntil; }
-static bool CamNameA(const char* nm) {
-    return nm && (strncmp(nm, "CAM_", 4) == 0 || strcmp(nm, "LEATHER_Arm_Motion") == 0);
-}
-static bool CamNameW(const wchar_t* nm) {
-    return nm && (wcsncmp(nm, L"CAM_", 4) == 0 || wcscmp(nm, L"LEATHER_Arm_Motion") == 0);
-}
-static void CamTrack(AkUniqueID id, AkPlayingID pid, AkGameObjectID obj) {
-    if (!id || !pid) return;
-    AcquireSRWLockExclusive(&s_camLock);
-    if (s_camPlayN == 4) { memmove(s_camPlay, s_camPlay + 1, sizeof(CamPlay) * 3); --s_camPlayN; }
-    s_camPlay[s_camPlayN++] = { id, pid, obj, GetTickCount64() };
-    ReleaseSRWLockExclusive(&s_camLock);
-}
-extern "C" void OLSound_SuppressCamStartup(int ms) {
-    s_camSuppressUntil = GetTickCount64() + (ms > 0 ? ms : 0);
-    if (!g_exec) return;
-    AcquireSRWLockExclusive(&s_camLock);
-    const ULONGLONG now = GetTickCount64();
-    for (int i = 0; i < s_camPlayN; ++i)
-        if (s_camPlay[i].pid && now - s_camPlay[i].ms < 5000)
-            g_exec(s_camPlay[i].id, AK_Stop, s_camPlay[i].obj, 0, kCurveLinear, s_camPlay[i].pid);
-    s_camPlayN = 0;
-    ReleaseSRWLockExclusive(&s_camLock);
-}
 static AkPlayingID HookPostId(AkUniqueID id, AkGameObjectID obj, uint32_t fl, AkCallbackFunc cb, void* ck, uint32_t ne, void* ex, AkPlayingID pl) {
-    if (CamSuppressed()) {
-        static AkUniqueID camIds[5] = {}; static bool camIdsOk = false;
-        if (!camIdsOk && g_getIdA) {
-            camIds[0] = g_getIdA("CAM_Start_Using"); camIds[1] = g_getIdA("CAM_Stop_Using");
-            camIds[2] = g_getIdA("CAM_On_SwitchON_NV"); camIds[3] = g_getIdA("CAM_On_SwitchOFF_NV");
-            camIds[4] = g_getIdA("LEATHER_Arm_Motion"); camIdsOk = true;
-        }
-        for (int i = 0; i < 5; ++i) if (camIds[i] && camIds[i] == id) { if (obj) s_lastObj = obj; return 0; }
-    }
     const AkPlayingID r = o_PostId(id, obj, fl, cb, ck, ne, ex, pl);
     if (obj) s_lastObj = obj;
     Seen(id, nullptr, nullptr, obj);
@@ -176,13 +134,6 @@ static AkPlayingID HookPostId(AkUniqueID id, AkGameObjectID obj, uint32_t fl, Ak
     return r;
 }
 static AkPlayingID HookPostA(const char* nm, AkGameObjectID obj, uint32_t fl, AkCallbackFunc cb, void* ck, uint32_t ne, void* ex, AkPlayingID pl) {
-    if (CamNameA(nm)) {
-        if (CamSuppressed()) { if (obj) s_lastObj = obj; return 0; }
-        const AkPlayingID r = o_PostA(nm, obj, fl, cb, ck, ne, ex, pl);
-        if (obj) s_lastObj = obj;
-        if (g_getIdA) CamTrack(g_getIdA(nm), r, obj);
-        return r;
-    }
     const AkPlayingID r = o_PostA(nm, obj, fl, cb, ck, ne, ex, pl);
     if (obj) s_lastObj = obj;
     if (nm && g_getIdA) Seen(g_getIdA(nm), nm, nullptr, obj);
@@ -190,13 +141,6 @@ static AkPlayingID HookPostA(const char* nm, AkGameObjectID obj, uint32_t fl, Ak
     return r;
 }
 static AkPlayingID HookPostW(const wchar_t* nm, AkGameObjectID obj, uint32_t fl, AkCallbackFunc cb, void* ck, uint32_t ne, void* ex, AkPlayingID pl) {
-    if (CamNameW(nm)) {
-        if (CamSuppressed()) { if (obj) s_lastObj = obj; return 0; }
-        const AkPlayingID r = o_PostW(nm, obj, fl, cb, ck, ne, ex, pl);
-        if (obj) s_lastObj = obj;
-        if (g_getIdW) CamTrack(g_getIdW(nm), r, obj);
-        return r;
-    }
     const AkPlayingID r = o_PostW(nm, obj, fl, cb, ck, ne, ex, pl);
     if (obj) s_lastObj = obj;
     if (nm && g_getIdW) Seen(g_getIdW(nm), nullptr, nm, obj);
@@ -420,8 +364,4 @@ extern "C" void OLSound_Install() {
     const bool d4 = Hook("?SetState@SoundEngine@AK@@YA?AW4AKRESULT@@KK@Z", (void*)&HookSetState, &o_SetState);
     SLog("[OLVR][SOUND] Wwise hooked: PostEvent id/name/wide %d/%d/%d, listener %d, active %d, occlusion %d, state %d | %d breath events (stress breath id %u), gasp id %u",
          p1, p2, p3, d1, d2, d3, d4, kEvN, s_ev[0].id, s_gaspId);
-    // [CAMSTART] stay silent until the gameplay startup guard reports the camcorder settled. The
-    // game raises it (with night vision) on its first playable frames, before the first mod tick, so
-    // the mute has to be armed from install, not from the tick.
-    s_camSuppressUntil = GetTickCount64() + 600000;
 }
