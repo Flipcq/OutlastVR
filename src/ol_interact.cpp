@@ -189,7 +189,7 @@ extern "C" void OLInteract_ResetDocumentAdjust() {
 }
 // [DOCUMENT] (V1) the left wrist's lift while it holds the document (deg): the wrist bends upward
 // around the wrist joint, lifting the hand and the paper together out of the flat neutral grip.
-static const float kDocDefaultWristTwist = -20.0f;
+static const float kDocDefaultWristTwist = -45.0f;
 extern "C" float OLInteract_GetDocumentWrist() { return OLUE3_GetDocumentWristTwist(); }
 extern "C" void  OLInteract_SetDocumentWrist(float deg) { OLUE3_SetDocumentWristTwist(deg); }
 extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristTwist(kDocDefaultWristTwist); }
@@ -279,8 +279,8 @@ void OLInteract_Init() {
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[4], L"-28", v, 32, ini); rot[1] = (float)_wtof(v);
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
         OLInteract_SetDocumentAdjust(off, rot);
-        float wr = -20.0f;
-        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"-20", v, 32, ini); wr = (float)_wtof(v);
+        float wr = -45.0f;
+        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"-45", v, 32, ini); wr = (float)_wtof(v);
         OLInteract_SetDocumentWrist(wr);
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);

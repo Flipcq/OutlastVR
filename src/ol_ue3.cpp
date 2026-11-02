@@ -4588,7 +4588,7 @@ static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, ya
 // [DOCUMENT] (Beta 1.1.9) The left WRIST lift while holding the document, in degrees. It bends the
 // wrist upward around the wrist joint, so the hand and the paper in it turn up together (the neutral
 // grip it has without the document is flat). Tuned live from the menu, saved to [Motion] DocumentWristLift.
-static float g_docWristTwist = -20.0f;
+static float g_docWristTwist = -45.0f;
 extern "C" float OLUE3_GetDocumentWristTwist() { return g_docWristTwist; }
 extern "C" void OLUE3_SetDocumentWristTwist(float deg) {
     g_docWristTwist = deg < -180.0f ? -180.0f : (deg > 180.0f ? 180.0f : deg);

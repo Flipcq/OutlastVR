@@ -224,17 +224,11 @@ static XrSwapchain g_blackSc = 0;
 static std::vector<ID3D11Texture2D*> g_blackImgs;
 static bool g_blackTried = false;
 static bool g_blackAllowed = true;         // [XR] BlackSceneLayer=0 stands the placeholder down
-// Static branded backplate behind startup/menu content only. Gameplay never submits it.
-static const int32_t kBrandW = 1536, kBrandH = 1024;
-static XrSwapchain g_brandSc = 0;
-static std::vector<ID3D11Texture2D*> g_brandImgs;
-static bool g_brandTried = false;
-static bool g_brandReady = false;
-static volatile long  g_brandOn = 1;
-static volatile float g_cinemaDistanceM = 2.6f;
-static volatile float g_cinemaWidthDeg = 74.0f;
-static volatile long  g_cinemaHeadLocked = 0;
-static long           g_thEnv = 1;              // [Cinema] Environment: the dark theater room
+// [THEATER] the menu/loading screen is a flat panel in a black void (see the [THEATER] block).
+static volatile float g_cinemaDistanceM = 2.2f;
+static volatile float g_cinemaWidthDeg = 82.0f;
+static volatile long  g_cinemaHeadLocked = 1;
+static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
 static long           g_thCurved = 1;           // [Cinema] Curved: cylinder screen when supported
 static bool           g_cylinderExt = false;    // XR_KHR_composition_layer_cylinder enabled
 static bool g_perEyePose = false;          // resolved from g_perEyeMode once the runtime is known
@@ -1483,19 +1477,18 @@ static bool Init(UINT w, UINT h) {
                 XLOG("[OLVR][BODY6DOF] anchor=%ld side=%.3f forward=%.3f backward=%.3f up=%.3f down=%.3f handCam=%ld",
                      g_bodyAnchor, g_bodySideM, g_bodyForwardM, g_bodyBackwardM,
                      g_bodyUpM, g_bodyDownM, g_handCamOn);
-                g_brandOn = GetPrivateProfileIntW(L"Cinema", L"BrandedBackdrop", 1, ini) ? 1 : 0;
-                g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 0, ini) ? 1 : 0;
+                g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 1, ini) ? 1 : 0;
                 g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
                 g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
                 { wchar_t v[32];
-                  GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"2.6", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
-                  GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"62.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v); }
-                if (g_cinemaDistanceM < 1.8f) g_cinemaDistanceM = 1.8f;
+                  GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"2.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
+                  GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"82.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v); }
+                if (g_cinemaDistanceM < 1.6f) g_cinemaDistanceM = 1.6f;
                 if (g_cinemaDistanceM > 4.0f) g_cinemaDistanceM = 4.0f;
                 if (g_cinemaWidthDeg < 40.0f) g_cinemaWidthDeg = 40.0f;
-                if (g_cinemaWidthDeg > 85.0f) g_cinemaWidthDeg = 85.0f;
-                XLOG("[OLVR][CINEMA] branded=%ld headLocked=%ld distance=%.2fm width=%.1fdeg environment=%ld curved=%ld",
-                     g_brandOn, g_cinemaHeadLocked, g_cinemaDistanceM, g_cinemaWidthDeg, g_thEnv, g_thCurved);
+                if (g_cinemaWidthDeg > 88.0f) g_cinemaWidthDeg = 88.0f;
+                XLOG("[OLVR][CINEMA] headLocked=%ld distance=%.2fm width=%.1fdeg environment=%ld curved=%ld",
+                     g_cinemaHeadLocked, g_cinemaDistanceM, g_cinemaWidthDeg, g_thEnv, g_thCurved);
                 g_perEyeMode = (int)GetPrivateProfileIntW(L"XR", L"PerEyePose", (UINT)-1, ini);
                 g_declLocal = GetPrivateProfileIntW(L"XR", L"DeclareTruePose", 1, ini) != 0;   // [LINKPOSE]
                 g_fitMode    = (int)GetPrivateProfileIntW(L"XR", L"FitRuntimeFrustum", (UINT)-1, ini);
@@ -3290,143 +3283,6 @@ static bool EnsureBlackScene() {
     return true;
 }
 
-static bool LoadBrandLogo(std::vector<uint8_t>& pixels, UINT& width, UINT& height) {
-    wchar_t path[MAX_PATH] = {};
-    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return false;
-    wchar_t* slash = wcsrchr(path, L'\\');
-    if (!slash) return false;
-    wcscpy_s(slash + 1, MAX_PATH - (size_t)(slash + 1 - path), L"strikezone_logo.jpg");
-    const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(init) && init != RPC_E_CHANGED_MODE) return false;
-    IWICImagingFactory* factory = nullptr;
-    IWICBitmapDecoder* decoder = nullptr;
-    IWICBitmapFrameDecode* frame = nullptr;
-    IWICBitmapScaler* scaler = nullptr;
-    IWICFormatConverter* converter = nullptr;
-    bool ok = false;
-    const UINT target = 144;
-    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_PPV_ARGS(&factory))) && factory &&
-        SUCCEEDED(factory->CreateDecoderFromFilename(path, nullptr, GENERIC_READ,
-                                                     WICDecodeMetadataCacheOnLoad, &decoder)) && decoder &&
-        SUCCEEDED(decoder->GetFrame(0, &frame)) && frame &&
-        SUCCEEDED(factory->CreateBitmapScaler(&scaler)) && scaler &&
-        SUCCEEDED(scaler->Initialize(frame, target, target, WICBitmapInterpolationModeFant)) &&
-        SUCCEEDED(factory->CreateFormatConverter(&converter)) && converter &&
-        SUCCEEDED(converter->Initialize(scaler, GUID_WICPixelFormat32bppBGRA,
-                                        WICBitmapDitherTypeNone, nullptr, 0.0,
-                                        WICBitmapPaletteTypeCustom))) {
-        width = target; height = target; pixels.resize((size_t)target * target * 4);
-        ok = SUCCEEDED(converter->CopyPixels(nullptr, target * 4, (UINT)pixels.size(), pixels.data()));
-    }
-    if (converter) converter->Release();
-    if (scaler) scaler->Release();
-    if (frame) frame->Release();
-    if (decoder) decoder->Release();
-    if (factory) factory->Release();
-    if (!ok) XLOG("[OLVR][CINEMA] strikezone_logo.jpg could not be loaded");
-    return ok;
-}
-
-static bool BuildBrandPixels(std::vector<uint8_t>& pixels) {
-    pixels.resize((size_t)kBrandW * kBrandH * 4);
-    // Muted version of the supplied light blue. It keeps the same identity without becoming a
-    // bright field inside the headset. The footer is darker for comfortable contrast.
-    const uint8_t bgR = 58, bgG = 88, bgB = 112;
-    const uint8_t bandR = 20, bandG = 27, bandB = 34;   // [THEATER] also the plaque under the screen
-    const int footerTop = 830;
-    for (int y = 0; y < kBrandH; ++y) {
-        const bool band = y >= footerTop;
-        for (int x = 0; x < kBrandW; ++x) {
-            uint8_t* p = &pixels[((size_t)y * kBrandW + x) * 4];
-            const float nx = fabsf((2.0f * x / (float)(kBrandW - 1)) - 1.0f);
-            const float ny = fabsf((2.0f * y / (float)(kBrandH - 1)) - 1.0f);
-            const float dim = band ? 1.0f : (1.0f - 0.12f * (nx * nx + ny * ny) * 0.5f);
-            p[0] = (uint8_t)((band ? bandB : bgB) * dim);
-            p[1] = (uint8_t)((band ? bandG : bgG) * dim);
-            p[2] = (uint8_t)((band ? bandR : bgR) * dim);
-            p[3] = 255;
-        }
-    }
-
-    UINT lw = 0, lh = 0; std::vector<uint8_t> logo;
-    if (LoadBrandLogo(logo, lw, lh)) {
-        const int dx = 300, dy = footerTop + 24;
-        for (UINT y = 0; y < lh && dy + (int)y < kBrandH; ++y) {
-            for (UINT x = 0; x < lw && dx + (int)x < kBrandW; ++x) {
-                const uint8_t* s = &logo[((size_t)y * lw + x) * 4];
-                uint8_t* d = &pixels[((size_t)(dy + y) * kBrandW + dx + x) * 4];
-                d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 255;
-            }
-        }
-    }
-
-    BITMAPINFO bi = {}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = kBrandW; bi.bmiHeader.biHeight = -kBrandH;
-    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-    void* dibBits = nullptr;
-    HDC dc = CreateCompatibleDC(nullptr);
-    HBITMAP bmp = dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &dibBits, nullptr, 0) : nullptr;
-    if (dc && bmp && dibBits) {
-        memcpy(dibBits, pixels.data(), pixels.size());
-        HGDIOBJ oldBmp = SelectObject(dc, bmp);
-        HFONT font = CreateFontW(58, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                 OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-        HGDIOBJ oldFont = font ? SelectObject(dc, font) : nullptr;
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(240, 245, 248));
-        RECT textRect = { 480, footerTop + 42, 1450, kBrandH - 20 };
-        DrawTextW(dc, L"VR mod made by StrikeZoneVR", -1, &textRect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        if (oldFont) SelectObject(dc, oldFont);
-        if (font) DeleteObject(font);
-        SelectObject(dc, oldBmp);
-        memcpy(pixels.data(), dibBits, pixels.size());
-        DeleteObject(bmp); DeleteDC(dc);
-    } else {
-        if (bmp) DeleteObject(bmp);
-        if (dc) DeleteDC(dc);
-        XLOG("[OLVR][CINEMA] footer text creation failed");
-    }
-    return true;
-}
-
-static bool EnsureBrandScene() {
-    if (!g_brandOn) return false;
-    if (g_brandReady && g_brandSc) return true;
-    if (g_brandTried) return false;
-    g_brandTried = true;
-    XrSwapchainCreateInfo ci = {}; ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO_VALUE;
-    ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT_VALUE | XR_SWAPCHAIN_USAGE_SAMPLED_BIT_VALUE;
-    ci.format = (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-    ci.sampleCount = 1; ci.width = kBrandW; ci.height = kBrandH;
-    ci.faceCount = 1; ci.arraySize = 1; ci.mipCount = 1;
-    if (!XrSucceeded(g_fn.createSwapchain(g_session, &ci, &g_brandSc))) {
-        g_brandSc = 0; XLOG("[OLVR][CINEMA] branded backdrop swapchain creation failed"); return false;
-    }
-    uint32_t n = 0; g_fn.enumerateSwapchainImages(g_brandSc, 0, &n, nullptr);
-    std::vector<XrSwapchainImageD3D11KHR> imgs(n);
-    for (auto& im : imgs) { im.type = XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR_VALUE; im.next = nullptr; im.texture = nullptr; }
-    if (!XrSucceeded(g_fn.enumerateSwapchainImages(g_brandSc, n, &n,
-                        (XrSwapchainImageBaseHeader*)imgs.data()))) return false;
-    std::vector<uint8_t> pixels; BuildBrandPixels(pixels);
-    for (auto& im : imgs) {
-        g_brandImgs.push_back(im.texture);
-        g_ctx->UpdateSubresource(im.texture, 0, nullptr, pixels.data(), kBrandW * 4, 0);
-    }
-    uint32_t idx = 0;
-    XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
-    if (XrSucceeded(g_fn.acquireSwapchainImage(g_brandSc, &ai, &idx))) {
-        XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
-        g_fn.waitSwapchainImage(g_brandSc, &wi);
-        XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
-        g_fn.releaseSwapchainImage(g_brandSc, &ri);
-    }
-    g_brandReady = true;
-    XLOG("[OLVR][CINEMA] muted-blue StrikeZoneVR backdrop ready");
-    return true;
-}
-
 // ---- [MARKERS] (Test37) developer markers for the physical interactions ---------------------------
 // Rings drawn by the compositor on top of the game: where a door knob can be grabbed, the battery
 // pouch, the raise-to-eye zone, the battery in your hand. Positions arrive from the game thread
@@ -4035,17 +3891,17 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
 }
 
 // ---- [THEATER] the menu / loading presentation, rebuilt for VR (Test34) --------------------------
-// Before: a head-locked flat panel on a muted-blue card, glued to your face. Now: a world-locked,
-// gently curved screen in a dark room, with the credit plaque under it.
-//  - ANCHOR: built in front of where you face when it appears, upright (yaw only). It stays put
-//    in the room while you look around. Look away more than ~40 degrees for over a second and it
-//    glides back in front of you, so it can never be lost. A recenter re-anchors it at once.
+// The menu, logos and loading screens play on a big flat screen in a pitch-black void, with a soft
+// gradient hugging the screen's edge so the picture melts into the black. The screen follows the
+// head (head-locked), so it is always right in front of you.
+//  - ANCHOR: built in front of where you face when it appears, upright (yaw only).
+//  - FOLLOW: with [Cinema] HeadLocked=1 (the default) the anchor tracks the head every frame, so the
+//    screen stays centred in view. HeadLocked=0 keeps the world-locked glide-back behavior.
 //  - ROOM: a projection layer under everything, drawn per eye from the runtime's own eye poses,
-//    so it is true stereo and head-tracked: a near-black void, a floor lit by the screen, and a
-//    soft halo round the screen's edge. Cheap enough to redraw every compositor frame.
+//    so it is true stereo and head-tracked: pure black with a narrow halo at the screen's edge.
 //  - SCREEN: a cylinder layer when the runtime offers XR_KHR_composition_layer_cylinder, else a
 //    flat quad. The image keeps its true aspect; height is capped inside the headset's view.
-//  - [Cinema] HeadLocked=1, Environment=0 and Curved=0 each fall back to the old presentation.
+//  - [Cinema] Environment=0 and Curved=0 each fall back to the plain presentation.
 static const UINT kEnvW = 960, kEnvH = 1024;
 static XrSwapchain g_envSc[2] = { 0, 0 };
 static std::vector<ID3D11Texture2D*> g_envImgs[2];
@@ -4069,7 +3925,7 @@ static const char* kEnvHlsl =
 "float3 QRot(float4 q, float3 v) { float3 u = q.xyz; return v + 2.0 * cross(u, cross(u, v) + q.w * v); }\n"
 "float4 ps(VOut i) : SV_Target {\n"
 "  float3 d = normalize(QRot(eyeQ, float3(lerp(tanB.x, tanB.y, i.uv.x), lerp(tanB.z, tanB.w, i.uv.y), -1.0)));\n"
-"  float3 col = lerp(float3(0.0035, 0.0040, 0.0055), float3(0.014, 0.016, 0.021), exp(-abs(d.y) * 5.0));\n"
+"  float3 col = float3(0.0, 0.0, 0.0);\n"
 "  float3 rgt = float3(scrB.x, 0.0, scrB.y);\n"
 "  float3 nrm = float3(-scrB.y, 0.0, scrB.x);\n"
 "  float den = dot(d, nrm);\n"
@@ -4080,22 +3936,12 @@ static const char* kEnvHlsl =
 "      float dx = max(abs(dot(q, rgt)) - scrC.w, 0.0);\n"
 "      float dy = max(abs(q.y) - scrB.z, 0.0);\n"
 "      float r2 = dx * dx + dy * dy;\n"
-"      col += float3(0.30, 0.34, 0.42) * (exp(-r2 / 0.08) * 0.10 + exp(-r2 / 1.5) * 0.035);\n"
+"      // A narrow, soft gradient hugging the screen: everything else stays pure black.\n"
+"      col += float3(0.045, 0.050, 0.060) * exp(-r2 / 0.055);\n"
 "    }\n"
 "  }\n"
-"  if (d.y < -0.0005) {\n"
-"    float t = (scrB.w - eyeP.y) / d.y;\n"
-"    float3 p = eyeP.xyz + d * t;\n"
-"    float2 rel = p.xz - (scrC.xz + nrm.xz * 1.2);\n"
-"    float pool = exp(-dot(rel, rel) / 5.0);\n"
-"    float2 g = abs(frac(p.xz * 0.75) - 0.5);\n"
-"    float lw = 0.012 + 0.004 * t;\n"
-"    float grid = smoothstep(0.5 - lw, 0.5, max(g.x, g.y)) * exp(-t * 0.30);\n"
-"    float3 fl = float3(0.006, 0.007, 0.009) + float3(0.050, 0.058, 0.072) * pool + grid * 0.010;\n"
-"    col = lerp(col, fl, saturate(exp(-t * 0.06)));\n"
-"  }\n"
 "  float n = frac(sin(dot(i.p.xy, float2(12.9898, 78.233))) * 43758.5453);\n"
-"  col += (n - 0.5) * 0.0012;\n"
+"  col += (n - 0.5) * 0.0008;\n"
 "  return float4(max(col, 0.0) * eyeP.w, 1.0); }\n";
 
 static float HeadYawLocal() {
@@ -4104,11 +3950,19 @@ static float HeadYawLocal() {
 }
 static XrQuaternionf TheaterQ() { return { 0.0f, sinf(g_thYaw * 0.5f), 0.0f, cosf(g_thYaw * 0.5f) }; }
 
-// Once per frame while the theater is up. Anchors on first show (or after 1.5 s away), on
-// recenter, and glides back in front of you when you have looked well away for a while.
+// Once per frame while the theater is up. Head-locked: the anchor tracks the head every frame, so
+// the screen is always centred in view. Otherwise it anchors on first show (or after 1.5 s away),
+// on recenter, and glides back in front of you when you have looked well away for a while.
 static void TheaterTick() {
     const DWORD now = GetTickCount();
     const float dt = g_thLastMs ? (float)(now - g_thLastMs) * 0.001f : 0.0f;
+    if (g_cinemaHeadLocked) {
+        g_thYaw = HeadYawLocal();
+        g_thHead = g_lastLocalP;
+        g_thValid = 1;
+        g_thLastMs = now; g_thFollowing = false; g_thAwaySince = 0;
+        return;
+    }
     if (!g_thValid || (now - g_thLastMs) > 1500u) {
         g_thYaw = HeadYawLocal(); g_thHead = g_lastLocalP; g_thValid = 1;
         g_thFollowing = false; g_thAwaySince = 0;
@@ -4184,7 +4038,6 @@ static bool EnsureEnvironment() {
 struct TheaterLayers {
     XrCompositionLayerProjection env;
     XrCompositionLayerProjectionView envPv[2];
-    XrCompositionLayerQuad plaque;
     XrCompositionLayerQuad quad[2];
     XrCompositionLayerCylinderKHR cyl[2];
 };
@@ -4238,8 +4091,8 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
     return true;
 }
 
-// Appends room, plaque and screen to layers[] and returns the new count. stereo: sc[0]/sc[1] are
-// per-eye images (LEFT/RIGHT visibility); otherwise sc[0] is shown to both eyes. aspect is the
+// Appends the black room and the screen to layers[] and returns the new count. stereo: sc[0]/sc[1]
+// are per-eye images (LEFT/RIGHT visibility); otherwise sc[0] is shown to both eyes. aspect is the
 // image's TRUE width/height. *sceneLayer is set when a projection layer (the room) went out.
 static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader** layers, int n,
                             bool stereo, const XrSwapchain sc[2], XrRect2Di rect, float aspect,
@@ -4263,22 +4116,6 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
     if (RenderEnvironment(t, center, right, qw * 0.5f, halfH)) {
         layers[n++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&t.env);
         *sceneLayer = true;
-    }
-    if (EnsureBrandScene()) {
-        // The credit plaque: the backdrop's own footer strip (logo + "VR mod made by StrikeZoneVR").
-        const XrVector3f po = QRotate(yq, { 0.0f, up - halfH - 0.14f, -D + 0.02f });
-        t.plaque = {};
-        t.plaque.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
-        t.plaque.layerFlags = 0; t.plaque.space = g_localSpace;
-        t.plaque.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
-        t.plaque.subImage.swapchain = g_brandSc; t.plaque.subImage.imageArrayIndex = 0;
-        t.plaque.subImage.imageRect.offset = { 260, 830 };
-        t.plaque.subImage.imageRect.extent = { 1200, kBrandH - 830 };
-        t.plaque.pose.orientation = yq;
-        t.plaque.pose.position = { g_thHead.x + po.x, g_thHead.y + po.y, g_thHead.z + po.z };
-        t.plaque.size.width = 0.80f;
-        t.plaque.size.height = 0.80f * (float)(kBrandH - 830) / 1200.0f;
-        layers[n++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&t.plaque);
     }
     const int count = stereo ? 2 : 1;
     for (int e = 0; e < count; ++e) {
@@ -4912,12 +4749,11 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
     XrCompositionLayerProjection proj = {};
     XrCompositionLayerProjectionView pv[2] = {};
     XrCompositionLayerQuad quad = {};
-    XrCompositionLayerQuad brandQuad = {};
     XrCompositionLayerQuad eyeQuad[2] = {};      // cinema screen: one quad per eye
     bool sbsProjectionSubmitted = false;                     // [STEAMVRSCENE] see below
     XrCompositionLayerProjection blackProj = {};             // [STEAMVRSCENE] placeholder, see below
     XrCompositionLayerProjectionView blackPv[2] = {};
-    const XrCompositionLayerBaseHeader* layers[20];           // black placeholder + room + plaque + two eye screens + [MARKERS]
+    const XrCompositionLayerBaseHeader* layers[20];           // black placeholder + room + two eye screens + [MARKERS]
     XrCompositionLayerQuad mkQuad[kMaxMarkers] = {};          // [MARKERS] live until xrEndFrame
     XrCompositionLayerQuad fsQuad = {};                        // [FLIPSCREEN] (Test43) live until xrEndFrame
     bool vfShown = false;                                     // [VIEWFINDER] this frame went to the viewfinder
@@ -5072,7 +4908,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                 // (Test46) "Without the black bars is better - it feels weird with them": by default the
                 // zoomed picture fills each eye's whole view (the full picture, its own aspect, covering the
                 // lens); [Motion] ViewfinderFrame=1 is the framed 60 deg camcorder window with black around.
-                const bool vfFill = !OLInteract_Get(12) && g_rtEyeFovValid;
+                const bool vfFill = !OLInteract_Get(11) && g_rtEyeFovValid;
                 float qw = 2.0f * kVfDist * tanf(kVfDeg * 0.5f * 0.0174532925f);
                 // A camcorder's 4:3 landscape frame: the centre rows of the (taller) eye picture.
                 const int32_t cropH = vfFill ? (int32_t)g_eyeH : ((g_eyeH * 4 > g_eyeW * 3) ? (int32_t)(g_eyeW * 3 / 4) : (int32_t)g_eyeH);
@@ -5150,7 +4986,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                     }
                 } else if (g_screenOn) InterlockedExchange(&g_screenOn, 0);
 
-                if (g_screenOn && !g_cinemaHeadLocked && g_lastLocalValid && fy > 0.1f) {
+                if (g_screenOn && (g_lastLocalValid || g_cinemaHeadLocked) && fy > 0.1f) {
                     // [THEATER] The per-eye stereo images on the theater screen, at the eye image's
                     // true angular aspect (not forced 16:9, which stretched them).
                     const XrSwapchain scs[2] = { g_scL, g_scR };
@@ -5178,19 +5014,6 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                     float qw = wantW < maxW ? wantW : maxW, qh = qw * (9.0f / 16.0f);
                     if (qh > maxH) { qh = maxH; qw = qh * (16.0f / 9.0f); }
                     int layerBase = 0;
-                    if (EnsureBrandScene()) {
-                        brandQuad.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
-                        brandQuad.layerFlags = 0; brandQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
-                        brandQuad.subImage.swapchain = g_brandSc; brandQuad.subImage.imageArrayIndex = 0;
-                        brandQuad.subImage.imageRect.offset = { 0, 0 };
-                        brandQuad.subImage.imageRect.extent = { kBrandW, kBrandH };
-                        brandQuad.space = g_screenPoseValid ? g_localSpace : g_viewSpace;
-                        brandQuad.pose = g_screenPoseValid ? g_screenPose : IdentityPose();
-                        if (!g_screenPoseValid) brandQuad.pose.position.z = -kDist;
-                        brandQuad.size.width = qw + 0.30f;
-                        brandQuad.size.height = brandQuad.size.width * (float)kBrandH / (float)kBrandW;
-                        layers[layerBase++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&brandQuad);
-                    }
                     for (int e = 0; e < 2; ++e) {
                         eyeQuad[e].type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
                         eyeQuad[e].layerFlags = 0;
@@ -5384,8 +5207,9 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
             // and if that makes it taller than the headset, fit to the height instead. Whatever
             // black is left over is the difference between a 16:9 frame and a near-square lens,
             // and the only way to remove THAT is to render wider, not to distort the picture that exists.
-            if (!g_cinemaHeadLocked && g_lastLocalValid) {
-                // [THEATER] The main menu, logos and loading screens: world-locked screen in the room.
+            if (g_lastLocalValid || g_cinemaHeadLocked) {
+                // [THEATER] The main menu, logos and loading screens: big screen in the black void,
+                // following the head by default.
                 const XrSwapchain scs[2] = { g_swapchain, g_swapchain };
                 const XrRect2Di rect = { { 0, 0 }, { (int32_t)g_w, (int32_t)g_h } };
                 bool scene = false;
@@ -5407,20 +5231,8 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
             quad.subImage.imageRect.extent = { (int32_t)g_w, (int32_t)g_h };
             quad.pose = IdentityPose(); quad.pose.position.y = 0.16f; quad.pose.position.z = -kDist + 0.025f;
             quad.size.width = qw; quad.size.height = qh;
-            int layerBase = 0;
-            if (EnsureBrandScene()) {
-                brandQuad.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE; brandQuad.layerFlags = 0;
-                brandQuad.space = g_viewSpace; brandQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH_VALUE;
-                brandQuad.subImage.swapchain = g_brandSc; brandQuad.subImage.imageArrayIndex = 0;
-                brandQuad.subImage.imageRect.offset = { 0, 0 };
-                brandQuad.subImage.imageRect.extent = { kBrandW, kBrandH };
-                brandQuad.pose = IdentityPose(); brandQuad.pose.position.z = -kDist;
-                brandQuad.size.width = qw + 0.30f;
-                brandQuad.size.height = brandQuad.size.width * (float)kBrandH / (float)kBrandW;
-                layers[layerBase++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&brandQuad);
-            }
-            layers[layerBase] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
-            layerCount = layerBase + 1;
+            layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+            layerCount = 1;
             }
         }
     }
