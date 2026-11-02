@@ -78,8 +78,7 @@ static UINT g_runtimeEyeW = 0, g_runtimeEyeH = 0;
 extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH);   // [HIRES] ol_ue3.cpp
 static bool g_nativeEyeResolution = true;
 static float g_upscaleSharpness = 0.35f;
-static bool  g_nvSharp = true;     // [NVSHARP] [Render] NightVisionSharp: the flip screen's night vision is
-                                   // soft but TEXTURED (rotated taps + grain), not an axis-aligned blur
+static bool  g_nvSharp = true;     // [NVSHARP] [Render] NightVisionSharp: the flip screen's night vision has no blur
 // [UPSCALE] 1 = bicubic + contrast-adaptive sharpening (Test34 default), 0 = the Test28 bilinear +
 // unsharp path exactly. [XR] Upscaler; both values live-switchable from the menu.
 static volatile long g_upscaler = 1;
@@ -3703,25 +3702,17 @@ static const char* kFlipHlsl =
 "  float3 c;\n"
 "  if (tune.y > 0.5 && i.uv.x >= lim.x && i.uv.x <= lim.y && i.uv.y >= lim.z && i.uv.y <= lim.w) {\n"
 "    float2 suv = i.uv;\n"
+"    if (tune.w > 1.5) { uint tw, th; srcT.GetDimensions(tw, th); suv = (floor(i.uv * float2(tw, th)) + 0.5) / float2(tw, th); }\n"
 "    float3 s = srcT.SampleLevel(s0, suv, 0).rgb;\n"                    // gamma-space bytes
-"    if (tune.w > 1.5) {\n"                                                         // night vision: soft and TEXTURED
+"    if (tune.w > 1.5) {\n"                                                // night vision, sharp: unsharp mask, light grain
 "      uint tw, th; srcT.GetDimensions(tw, th);\n"
 "      float2 tx = 1.0 / float2(tw, th);\n"
 "      float3 c0 = NvBase(s);\n"
-"      // A fixed +X/-X/+Y/-Y kernel blurs along the screen axes: that is what read as\n"
-"      // straight lines. Here each pixel blurs along its own set of directions - a\n"
-"      // golden-angle ring, rotated by a hash of the pixel and with a varied radius - so\n"
-"      // the softness reads as brush / sensor texture instead.\n"
-"      float a0 = H(i.p.xy + tune.x * 37.0) * 6.2831853;\n"
-"      float3 sum = c0;\n"
-"      [unroll] for (int k = 0; k < 8; ++k) {\n"
-"        float a = a0 + (float)k * 2.39996;\n"
-"        float r = 1.1 + 1.4 * H(i.p.yx + float2((float)k * 7.0, tune.x * 11.0));\n"
-"        float2 o = float2(cos(a), sin(a)) * tx * r;\n"
-"        sum += NvBase(srcT.SampleLevel(s0, saturate(suv + o), 0).rgb);\n"
-"      }\n"
-"      float3 soft = sum / 9.0;\n"
-"      c = saturate(lerp(soft, c0, 0.55)) + (n - 0.5) * 0.10;\n"
+"      float3 avg = (NvBase(srcT.SampleLevel(s0, suv + float2(tx.x, 0), 0).rgb) +\n"
+"                    NvBase(srcT.SampleLevel(s0, suv - float2(tx.x, 0), 0).rgb) +\n"
+"                    NvBase(srcT.SampleLevel(s0, suv + float2(0, tx.y), 0).rgb) +\n"
+"                    NvBase(srcT.SampleLevel(s0, suv - float2(0, tx.y), 0).rgb)) * 0.25;\n"
+"      c = saturate(c0 + (c0 - avg) * 0.9) + (n - 0.5) * 0.06;\n"
 "    } else if (tune.w > 0.5) {\n"                                         // night vision: smoothed, as before
 "      c = NvBase(s) + (n - 0.5) * 0.13;\n"
 "    } else {\n"                                                           // colour, as a camcorder screen shows it
@@ -3732,7 +3723,7 @@ static const char* kFlipHlsl =
 "    c = (n * 0.55 + 0.05) * float3(0.80, 0.92, 0.80);\n"                // no picture: static
 "  }\n"
 "  float2 d = i.q - 0.5; c *= saturate(1.12 - dot(d, d) * 1.5);\n"       // vignette
-"  if (tune.w < 0.5) c *= 0.92 + 0.08 * sin(i.q.y * 288.0 * 3.14159);\n"            // scan lines: colour only
+"  c *= 0.92 + 0.08 * sin(i.q.y * 288.0 * 3.14159);\n"                    // scan lines
 "  if (frac(tune.x * 0.5) < 0.6 && length((i.q - float2(0.09, 0.12)) * float2(1.33, 1.0)) < 0.035) c = float3(1.0, 0.12, 0.08);\n"
 "  return float4(pow(saturate(c), 2.2), 1.0); }\n";                    // the target is sRGB
 static bool EnsureFlip() {
@@ -3858,8 +3849,7 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
     const float v0 = (tu - (ty + hh)) / (tu - td), v1 = (tu - (ty - hh)) / (tu - td);
     // the left eye is the left half of the uploaded frame
     const float t = (float)((GetTickCount64() % 100000ULL) * 0.001);
-    // tune.w: 0 colour, 1 night vision smoothed, 2 night vision soft+TEXTURED (rotated jittered taps
-    // and grain, no texel snap, no axis-aligned blur - see kFlipHlsl)
+    // tune.w: 0 colour, 1 night vision with the lens picture smoothed, 2 night vision sharp (texels, no blur)
     float cb[12] = { u0 * 0.5f, v0, (u1 - u0) * 0.5f, v1 - v0,  0.0f, 0.5f, 0.0f, 1.0f,  t, onImage ? 1.0f : 0.0f, fs.nv ? 9.0f : 1.0f, fs.nv ? (g_nvSharp ? 2.0f : 1.0f) : 0.0f };
     ID3D11ShaderResourceView* srv = LensSrv();                         // [LENSCAM] the lens itself, whole
     const bool lens = srv != nullptr;
@@ -3939,6 +3929,10 @@ static const char* kEnvHlsl =
 "  float2 t = float2((id << 1) & 2, id & 2);\n"
 "  VOut o; o.p = float4(t * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = t; return o; }\n"
 "float3 QRot(float4 q, float3 v) { float3 u = q.xyz; return v + 2.0 * cross(u, cross(u, v) + q.w * v); }\n"
+"float H2(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }\n"
+"float VN(float2 p) {\n"
+"  float2 i = floor(p); float2 f = frac(p); f = f * f * (3.0 - 2.0 * f);\n"
+"  return lerp(lerp(H2(i), H2(i + float2(1, 0)), f.x), lerp(H2(i + float2(0, 1)), H2(i + float2(1, 1)), f.x), f.y); }\n"
 "float4 ps(VOut i) : SV_Target {\n"
 "  float3 d = normalize(QRot(eyeQ, float3(lerp(tanB.x, tanB.y, i.uv.x), lerp(tanB.z, tanB.w, i.uv.y), -1.0)));\n"
 "  float3 col = float3(0.0, 0.0, 0.0);\n"
@@ -3951,18 +3945,34 @@ static const char* kEnvHlsl =
 "      float3 q = eyeP.xyz + d * t - scrC.xyz;\n"
 "      float dx = max(abs(dot(q, rgt)) - scrC.w, 0.0);\n"
 "      float dy = max(abs(q.y) - scrB.z, 0.0);\n"
-"      // The halo takes the colour of the picture's own EDGE - the pixel nearest this point on\n"
-"      // the screen - so the picture melts into the black with its own colours, not a grey wash.\n"
-"      float2 e = float2(clamp(0.5 + dot(q, rgt) / max(2.0 * scrC.w, 0.001), 0.03, 0.97),\n"
-"                        clamp(0.5 - q.y / max(2.0 * scrB.z, 0.001), 0.03, 0.97));\n"
-"      float3 edge = pic.SampleLevel(picSmp, lerp(picR.xy, picR.zw, e), 0.0).rgb;\n"
+"      // The halo is the picture's own palette, but SOFT: a small grid of taps around the\n"
+"      // nearest edge point averages the border region instead of repeating one column of the\n"
+"      // picture outwards - a single clamped tap smeared the edge content into straight streaks.\n"
+"      float2 e = float2(clamp(0.5 + dot(q, rgt) / max(2.0 * scrC.w, 0.001), 0.05, 0.95),\n"
+"                        clamp(0.5 - q.y / max(2.0 * scrB.z, 0.001), 0.05, 0.95));\n"
+"      float2 eu = lerp(picR.xy, picR.zw, e);\n"
+"      float2 sp = (picR.zw - picR.xy) * 0.05;\n"
+"      float3 edge = pic.SampleLevel(picSmp, eu, 0).rgb\n"
+"                  + pic.SampleLevel(picSmp, eu + float2( sp.x,  sp.y), 0).rgb\n"
+"                  + pic.SampleLevel(picSmp, eu + float2(-sp.x,  sp.y), 0).rgb\n"
+"                  + pic.SampleLevel(picSmp, eu + float2( sp.x, -sp.y), 0).rgb\n"
+"                  + pic.SampleLevel(picSmp, eu + float2(-sp.x, -sp.y), 0).rgb;\n"
+"      edge *= 0.2;\n"
+"      // The falloff's level sets are rectangles, which is what read as straight lines. Warp the\n"
+"      // distance with two octaves of value noise and modulate the result with a third: the halo\n"
+"      // becomes a soft brushed texture, and the noise doubles as dither against 8-bit banding.\n"
+"      float nz = VN(i.uv * 70.0) - 0.5;\n"
+"      float nf = VN(i.uv * 260.0) - 0.5;\n"
+"      float wob = nz * 0.012 + nf * 0.005 - 0.0085;   // keeps the halo touching the panel\n"
+"      dx = max(dx + wob, 0.0);\n"
+"      dy = max(dy + wob, 0.0);\n"
 "      // The picture is stored sRGB-encoded and this target is *_SRGB, so hand the hardware the\n"
-"      // linear value: at the screen's edge the halo then equals the picture's own colour exactly\n"
-"      // and fades to black from there. The softness is proportional to the panel, so a screen that\n"
-"      // is moved further away or made smaller keeps the same looking halo.\n"
+"      // linear value: at the screen's edge the halo then equals the picture's own colour.\n"
 "      float sx = max(0.0118 * scrC.w * scrC.w, 0.0001);\n"
 "      float sy = max(0.0118 * scrB.z * scrB.z, 0.0001);\n"
-"      col += pow(max(edge, (float3)0.0), (float3)2.2) * exp(-(dx * dx / sx + dy * dy / sy));\n"
+"      float3 lin = pow(max(edge, (float3)0.0), (float3)2.2) * exp(-(dx * dx / sx + dy * dy / sy));\n"
+"      float dg = VN(i.uv * 512.0) - 0.5;\n"
+"      col += max(lin * (1.0 + dg * 0.18), 0.0);\n"
 "    }\n"
 "  }\n"
 "  float n = frac(sin(dot(i.p.xy, float2(12.9898, 78.233))) * 43758.5453);\n"
