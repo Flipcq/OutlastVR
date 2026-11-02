@@ -229,9 +229,9 @@ static bool g_blackAllowed = true;         // [XR] BlackSceneLayer=0 stands the 
 static volatile float g_cinemaDistanceM = 3.2f;   // (Beta 1.1.9) a screen ACROSS THE ROOM (2.2 -> 2.9 -> 3.2 m)
 static volatile float g_cinemaWidthDeg = 56.0f;    // ...and clearly smaller each time (82 -> 76 -> 66 -> 56)
 static volatile long  g_cinemaHeadLocked = 1;
-// [Cinema] MenuGlow: the edge gradient belongs to the front end, not to the menus inside a level.
-// 0 = never, 1 = only out of game (default), 2 = every theater screen.
-static volatile long  g_menuGlow = 1;
+// [Cinema] MenuGlow: kept as a setting but always off now - the theater is a black void,
+// no edge gradient anywhere (front end or in-game menus).
+static volatile long  g_menuGlow = 0;
 
 static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
 // [Cinema] ScreenOffsetX: metres added to the screen's horizontal position (positive = right).
@@ -1492,7 +1492,7 @@ static bool Init(UINT w, UINT h) {
                 // before this look": rewrite the section once, then never touch it again, so a hand-tuned
                 // ini keeps its tuning.
                 const int cinemaPreset = (int)GetPrivateProfileIntW(L"Cinema", L"Preset", 0, ini);
-                if (cinemaPreset < 5) {
+                if (cinemaPreset < 6) {
                     g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1; g_menuGlow = 1;
                     g_cinemaDistanceM = 3.2f; g_cinemaWidthDeg = 56.0f;
                     WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
@@ -1500,15 +1500,15 @@ static bool Init(UINT w, UINT h) {
                     WritePrivateProfileStringW(L"Cinema", L"HeadLocked", L"1", ini);
                     WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
                     WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
-                    WritePrivateProfileStringW(L"Cinema", L"MenuGlow", L"1", ini);
-                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"5", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"MenuGlow", L"0", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"6", ini);
                     XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
                          g_cinemaDistanceM, g_cinemaWidthDeg);
                 } else {
                     g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 1, ini) ? 1 : 0;
                     g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
                     g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
-                    g_menuGlow = (long)GetPrivateProfileIntW(L"Cinema", L"MenuGlow", 1, ini);
+                    g_menuGlow = (long)GetPrivateProfileIntW(L"Cinema", L"MenuGlow", 0, ini);
                     wchar_t v[32];
                     GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
                     GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v);
@@ -4259,12 +4259,9 @@ static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
 }
 
 // Where the gradient may show: never, out of game only (the default - the front end, the logos and the
-// loaders get it, the pause/notes/documents menus inside a level do not), or everywhere.
-static float MenuGlowGain() {
-    if (g_menuGlow <= 0) return 0.0f;
-    if (g_menuGlow >= 2) return 0.6f;
-    return OLUE3_HasHero() ? 0.0f : 0.6f;   // out of a level: the glow; inside one: none
-}
+// The edge gradient is removed entirely: the theater is a black void with no glow,
+// front end or in-game menus alike.
+static float MenuGlowGain() { return 0.0f; }
 
 static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh) {
     if (!g_thEnv || !g_rtEyeFovValid || !EnsureEnvironment()) return false;
