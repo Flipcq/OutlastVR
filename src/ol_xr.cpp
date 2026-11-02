@@ -78,6 +78,7 @@ static UINT g_runtimeEyeW = 0, g_runtimeEyeH = 0;
 extern "C" int OLUE3_SetHiResEye(unsigned eyeW, unsigned eyeH);   // [HIRES] ol_ue3.cpp
 static bool g_nativeEyeResolution = true;
 static float g_upscaleSharpness = 0.35f;
+static bool  g_nvSharp = true;     // [NVSHARP] [Render] NightVisionSharp: the flip screen's night vision has no blur
 // [UPSCALE] 1 = bicubic + contrast-adaptive sharpening (Test34 default), 0 = the Test28 bilinear +
 // unsharp path exactly. [XR] Upscaler; both values live-switchable from the menu.
 static volatile long g_upscaler = 1;
@@ -1500,6 +1501,7 @@ static bool Init(UINT w, UINT h) {
                 g_fitMode    = (int)GetPrivateProfileIntW(L"XR", L"FitRuntimeFrustum", (UINT)-1, ini);
                 g_nativeEyeResolution = GetPrivateProfileIntW(L"XR", L"NativeEyeResolution", 1, ini) != 0;
                 { wchar_t sv[32];
+                  g_nvSharp = GetPrivateProfileIntW(L"Render", L"NightVisionSharp", 1, ini) != 0;   // [NVSHARP]
                   GetPrivateProfileStringW(L"XR", L"Sharpness", L"0", sv, 32, ini);
                   g_upscaleSharpness = (float)_wtof(sv);
                   if (!isfinite(g_upscaleSharpness)) g_upscaleSharpness = 0.35f;
@@ -3838,7 +3840,9 @@ static const char* kFlipHlsl =
 "  float n = H(floor(i.q * float2(192, 144)) + tune.x * 61.0);\n"
 "  float3 c;\n"
 "  if (tune.y > 0.5 && i.uv.x >= lim.x && i.uv.x <= lim.y && i.uv.y >= lim.z && i.uv.y <= lim.w) {\n"
-"    float3 s = srcT.SampleLevel(s0, i.uv, 0).rgb;\n"                    // gamma-space bytes
+"    float2 suv = i.uv;\n"
+"    if (tune.w > 1.5) { uint tw, th; srcT.GetDimensions(tw, th); suv = (floor(i.uv * float2(tw, th)) + 0.5) / float2(tw, th); }\n"
+"    float3 s = srcT.SampleLevel(s0, suv, 0).rgb;\n"                    // gamma-space bytes
 "    if (tune.w > 0.5) {\n"                                                // night vision: amplified low light, green, grainy
 "      float l = pow(saturate(dot(s, float3(0.30, 0.59, 0.11)) * tune.z), 0.5);\n"
 "      c = l * float3(0.42, 1.0, 0.48) + (n - 0.5) * 0.13;\n"
@@ -3976,7 +3980,8 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
     const float v0 = (tu - (ty + hh)) / (tu - td), v1 = (tu - (ty - hh)) / (tu - td);
     // the left eye is the left half of the uploaded frame
     const float t = (float)((GetTickCount64() % 100000ULL) * 0.001);
-    float cb[12] = { u0 * 0.5f, v0, (u1 - u0) * 0.5f, v1 - v0,  0.0f, 0.5f, 0.0f, 1.0f,  t, onImage ? 1.0f : 0.0f, fs.nv ? 9.0f : 1.0f, fs.nv ? 1.0f : 0.0f };
+    // tune.w: 0 colour, 1 night vision with the lens picture smoothed, 2 night vision sharp (texels, no blur)
+    float cb[12] = { u0 * 0.5f, v0, (u1 - u0) * 0.5f, v1 - v0,  0.0f, 0.5f, 0.0f, 1.0f,  t, onImage ? 1.0f : 0.0f, fs.nv ? 9.0f : 1.0f, fs.nv ? (g_nvSharp ? 2.0f : 1.0f) : 0.0f };
     ID3D11ShaderResourceView* srv = LensSrv();                         // [LENSCAM] the lens itself, whole
     const bool lens = srv != nullptr;
     if (lens) { srv->AddRef(); const float lc[8] = { 0, 0, 1, 1,  0, 1, 0, 1 }; memcpy(cb, lc, sizeof(lc)); cb[9] = 1.0f; }

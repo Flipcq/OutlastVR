@@ -4579,7 +4579,7 @@ static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, ya
 // [DOCUMENT] (Beta 1.1.9) The left WRIST lift while holding the document, in degrees. It bends the
 // wrist upward around the wrist joint, so the hand and the paper in it turn up together (the neutral
 // grip it has without the document is flat). Tuned live from the menu, saved to [Motion] DocumentWristLift.
-static float g_docWristTwist = -18.0f;
+static float g_docWristTwist = -20.0f;
 extern "C" float OLUE3_GetDocumentWristTwist() { return g_docWristTwist; }
 extern "C" void OLUE3_SetDocumentWristTwist(float deg) {
     g_docWristTwist = deg < -180.0f ? -180.0f : (deg > 180.0f ? 180.0f : deg);
@@ -5297,11 +5297,11 @@ static bool PoseApplyVisible(void* comp) {
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
             if (hand == 0 && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
-                // roll the forearm about its own long axis, and the hand and the paper with it: the
-                // inside of the forearm turns toward the camera, as when reading a document
-                const VIk3 axis = IVSub(space.d[ha].t, space.d[fo].t);
+                // roll the whole arm about the shoulder->wrist line: the upper arm, forearm, hand and the
+                // paper all turn together, so the inside of the forearm faces the camera as when reading
+                const VIk3 axis = IVSub(space.d[ha].t, space.d[up].t);
                 if (IVLen(axis) > 0.1f)
-                    PoseTransformTree(space,mesh,fo,IQAxis(IVNorm(axis), -g_docWristTwist * 0.0174532925f));
+                    PoseTransformTree(space,mesh,up,IQAxis(IVNorm(axis), -g_docWristTwist * 0.0174532925f));
             }
         }
         // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip.

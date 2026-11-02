@@ -79,7 +79,11 @@ constexpr int BracketX = 877, BracketY = 481;      // the box, in the display's 
 constexpr int BracketW = 167, BracketH = 139, BracketArm = 44;
 constexpr int FocusPad = 1;                        // transparent hair around the arms, so nothing clips
 constexpr int FocusWidth = BracketW + 2*FocusPad, FocusHeight = BracketH + 2*FocusPad;
-constexpr float FocusDistance = 8.00f;             // metres in front of the eye: the brackets' plane
+// [FOCUSDISP] The brackets' plane. At 8 m the box asked the eyes for a very different convergence than
+// the readouts beside it on the display (2 m), so it read as a separate, doubled square. 2.25 m sits
+// almost on the display's own plane: the box still has a layer of its own (the "focal square off" style
+// drops it, and it can be tuned here), but its disparity against the rest of the HUD is now tiny.
+constexpr float FocusDistance = 2.25f;             // metres in front of the eye: the brackets' plane
 struct FocusQuadSize { float offsetX, offsetY, width, height; };   // view-space metres, eye-centred
 // The angles the box would have on the display, projected onto the focus plane instead: same
 // direction, same apparent size, FocusDistance away (a quad layer is composited per eye, so the

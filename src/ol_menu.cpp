@@ -733,8 +733,9 @@ static void BuildUI() {
     // [CLIMB] (Test40)
     Section("CLIMBING");
     { int cm = OLInteract_ClimbMode();
-      static const char* kClimb[] = { "A button (the game's climb)", "Guided (the game's climb, your pace)", "Physical (your hands carry Miles)" };
-      if (ImGui::Combo("Climbing", &cm, kClimb, 3)) OLInteract_SetClimbMode(cm);
+      static const char* kClimb[] = { "A button (the game's climb)", "Physical (your hands carry Miles)" };
+      int ci = cm == 2 ? 1 : 0;
+      if (ImGui::Combo("Climbing", &ci, kClimb, 2)) OLInteract_SetClimbMode(ci ? 2 : 0);
       Help(
           "Physical: squeeze a grip on an edge or a ladder rung and that hand holds on -\n"
           "pull down and Miles rises, move it sideways and he shimmies, hand over hand.\n"

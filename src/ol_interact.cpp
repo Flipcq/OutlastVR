@@ -189,7 +189,7 @@ extern "C" void OLInteract_ResetDocumentAdjust() {
 }
 // [DOCUMENT] (V1) the left wrist's lift while it holds the document (deg): the wrist bends upward
 // around the wrist joint, lifting the hand and the paper together out of the flat neutral grip.
-static const float kDocDefaultWristTwist = -18.0f;
+static const float kDocDefaultWristTwist = -20.0f;
 extern "C" float OLInteract_GetDocumentWrist() { return OLUE3_GetDocumentWristTwist(); }
 extern "C" void  OLInteract_SetDocumentWrist(float deg) { OLUE3_SetDocumentWristTwist(deg); }
 extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristTwist(kDocDefaultWristTwist); }
@@ -216,11 +216,11 @@ extern "C" void OLInteract_Set(int w, int on) {
     if (w >= 0 && w < ON_COUNT) g_on[w] = on ? 1 : 0;
     if (w == ON_SCREEN) OLUE3_SetFlipScreenOn(on);
 }
-// (Test43) 0 = the A button, 1 = guided, 2 = physical
+// (Test43) 0 = the A button, 2 = physical. (The guided climb was removed: a saved 1 reads as physical.)
 extern "C" int OLInteract_ClimbMode() { return g_on[ON_CLIMB] ? (int)g_climbMode : 0; }
 extern "C" void OLInteract_SetClimbMode(int m) {
     if (m <= 0) g_on[ON_CLIMB] = 0;
-    else { g_on[ON_CLIMB] = 1; g_climbMode = m >= 2 ? 2 : 1; }
+    else { g_on[ON_CLIMB] = 1; g_climbMode = 2; }
 }
 extern "C" int OLInteract_CamHold() { return (int)g_camHold; }
 extern "C" void OLInteract_SetCamHold(int m) { g_camHold = m == 3 ? 3 : 4; OLUE3_DevCamHold((int)g_camHold); }
@@ -246,7 +246,7 @@ void OLInteract_Init() {
     // ClimbMode, when there, decides (the launcher writes it); an older ini only has ClimbWithHands
     const int cm = GetPrivateProfileIntW(L"Motion", L"ClimbMode", -1, ini);
     if (cm == 0) g_on[ON_CLIMB] = 0;
-    else if (cm == 1 || cm == 2) { g_on[ON_CLIMB] = 1; g_climbMode = cm; }
+    else if (cm == 1 || cm == 2) { g_on[ON_CLIMB] = 1; g_climbMode = 2; }
     else g_climbMode = 2;
     g_camHold = GetPrivateProfileIntW(L"Motion", L"CamcorderHold", 4, ini) == 3 ? 3 : 4;   // (Beta 1.1) a saved 5 means 4
     OLInteract_SetCamcorderHud(GetPrivateProfileIntW(L"Render", L"CamcorderHud", 1, ini));
@@ -279,8 +279,8 @@ void OLInteract_Init() {
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[4], L"-28", v, 32, ini); rot[1] = (float)_wtof(v);
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
         OLInteract_SetDocumentAdjust(off, rot);
-        float wr = -18.0f;
-        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"-18", v, 32, ini); wr = (float)_wtof(v);
+        float wr = -20.0f;
+        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"-20", v, 32, ini); wr = (float)_wtof(v);
         OLInteract_SetDocumentWrist(wr);
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
@@ -440,8 +440,6 @@ static const ULONGLONG kCamGuardSettleMs = 1500;   // down this long = the start
 static bool GameReloading() { return s_camRaw == 4 || s_camRaw == 5; }
 static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
-static volatile float s_vfShown = 0.0f;     // s_vfZoom eased over ~0.35 s: the zoom glides instead of jumping
-static ULONGLONG s_vfShownMs = 0;
 static volatile ULONGLONG s_vfMs = 0;
 static int   s_numBat = 0, s_prevNumBat = -1;
 // [CAMHUD] XR and gameplay may run on different threads. Publish the whole snapshot together.
@@ -2715,11 +2713,6 @@ extern "C" void OLInteract_Tick() {
         const bool on = g_on[ON_VIEWFINDER] && s_camUp == 1 && (s_vfZoom > 0.0f ? s_zoom > 0.01f : s_zoom > 0.03f);
         s_vfZoom = on ? (s_zoom < 1.0f ? s_zoom : 1.0f) : 0.0f;
         s_vfMs = now;
-        const float ease = s_vfShownMs ? std::fmin((float)(now - s_vfShownMs) * 0.001f, 0.1f) : 0.0f;
-        s_vfShownMs = now;
-        float shown = s_vfShown + (s_vfZoom - s_vfShown) * (1.0f - std::exp(-ease / 0.35f));
-        if (s_vfZoom <= 0.0f && shown < 0.002f) shown = 0.0f;
-        s_vfShown = shown;
     }
     float hw[3] = {}, yaw = 0.0f;
     OLXrFrameHands fh = {}; OLXrPose head = {}; OLXrPad p = {};
@@ -2884,9 +2877,8 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
 }
 
 extern "C" float OLInteract_ViewfinderZoom() {
-    // The eased zoom (s_vfShown) is what the eye's field of view follows, so a W-T move glides.
     if (!s_vfMs || GetTickCount64() - s_vfMs > 250) return 0.0f;
-    return s_vfShown;
+    return s_vfZoom;
 }
 // While the camcorder is up and the right hand is at the eye - or it is pinned at his face by a
 // held right stick click - the right arm is the game's.
