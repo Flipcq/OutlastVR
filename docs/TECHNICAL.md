@@ -31,7 +31,7 @@ Licensed under [GPL-3.0](../LICENSE).
   animation ownership.
 - **Cutscene and menu handling** - narrow-FOV renders (menus, some cutscenes) fall back to a
   big screen in a pitch-black void rather than stretching a narrow frame across the whole
-  headset; the screen eases after the head (`[Cinema] HeadLocked=1`, 76 deg at 2.2 m, so it
+  headset; the screen eases after the head (`[Cinema] HeadLocked=1`, 66 deg at 2.9 m, so it
   lags instead of sitting welded to the face) and a soft halo samples the picture's *own edge
   colours* so it melts into the black in its own palette. Some cutscene cameras render at full
   width like gameplay instead.
