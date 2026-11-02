@@ -1487,16 +1487,14 @@ static bool Init(UINT w, UINT h) {
                 if (cinemaPreset < 2) {
                     g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1;
                     g_cinemaDistanceM = 3.2f; g_cinemaWidthDeg = 56.0f;
-                    if (ini) {
-                        WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
-                        WritePrivateProfileStringW(L"Cinema", L"Curved", L"1", ini);
-                        WritePrivateProfileStringW(L"Cinema", L"HeadLocked", L"1", ini);
-                        WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
-                        WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
-                        WritePrivateProfileStringW(L"Cinema", L"Preset", L"2", ini);
-                        XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
-                             g_cinemaDistanceM, g_cinemaWidthDeg);
-                    }
+                    WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"Curved", L"1", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"HeadLocked", L"1", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"2", ini);
+                    XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
+                         g_cinemaDistanceM, g_cinemaWidthDeg);
                 } else {
                     g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 1, ini) ? 1 : 0;
                     g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
