@@ -232,9 +232,7 @@ static volatile long  g_cinemaHeadLocked = 1;
 // [Cinema] MenuGlow: the edge gradient belongs to the front end, not to the menus inside a level.
 // 0 = never, 1 = only out of game (default), 2 = every theater screen.
 static volatile long  g_menuGlow = 1;
-// [Cinema] InGameScreenBrightness: percent. The notes and documents menus inside a level are a
-// sheet of white paper filling the screen, and at panel brightness that is a lamp in your face.
-static volatile long  g_ingameBright = 66;
+
 static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
 // [Cinema] ScreenOffsetX: metres added to the screen's horizontal position (positive = right).
 // Use this if the menu screen feels slightly off-centre in your headset.
@@ -1494,7 +1492,7 @@ static bool Init(UINT w, UINT h) {
                 // before this look": rewrite the section once, then never touch it again, so a hand-tuned
                 // ini keeps its tuning.
                 const int cinemaPreset = (int)GetPrivateProfileIntW(L"Cinema", L"Preset", 0, ini);
-                if (cinemaPreset < 4) {
+                if (cinemaPreset < 5) {
                     g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1; g_menuGlow = 1;
                     g_cinemaDistanceM = 3.2f; g_cinemaWidthDeg = 56.0f;
                     WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
@@ -1503,8 +1501,7 @@ static bool Init(UINT w, UINT h) {
                     WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
                     WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
                     WritePrivateProfileStringW(L"Cinema", L"MenuGlow", L"1", ini);
-                    WritePrivateProfileStringW(L"Cinema", L"InGameScreenBrightness", L"66", ini);
-                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"4", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"5", ini);
                     XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
                          g_cinemaDistanceM, g_cinemaWidthDeg);
                 } else {
@@ -1512,9 +1509,6 @@ static bool Init(UINT w, UINT h) {
                     g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
                     g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
                     g_menuGlow = (long)GetPrivateProfileIntW(L"Cinema", L"MenuGlow", 1, ini);
-                    g_ingameBright = (long)GetPrivateProfileIntW(L"Cinema", L"InGameScreenBrightness", 66, ini);
-                    if (g_ingameBright < 20) g_ingameBright = 20;
-                    if (g_ingameBright > 100) g_ingameBright = 100;
                     wchar_t v[32];
                     GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
                     GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v);
@@ -3104,9 +3098,8 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
                            (clampLoPx + 0.5f) / (float)srcW, (clampHiPx - 0.5f) / (float)srcW,
                            1.0f / (float)srcW, 1.0f / (float)srcH,
                            scalingUp ? g_upscaleSharpness : 0.0f, g_upscaler ? 1.0f : 0.0f,
-                           // tune.z = how dark: the presentation fade, plus the in-game menu dim
-                           // (bright paper menus inside a level, never the front end).
-                           1.0f - g_presentFade * ((g_screenOn && OLUE3_HasHero()) ? (float)g_ingameBright * 0.01f : 1.0f),
+                           // tune.z = how dark: only the presentation fade now.
+                           1.0f - g_presentFade,
                            scalingUp ? 1.0f : 0.0f };   // tune.w = resample
     g_ctx->UpdateSubresource(g_blitCB, 0, nullptr, cb, 0, 0);
     const bool placed = (dstVpW > 0.5f && dstVpH > 0.5f);
