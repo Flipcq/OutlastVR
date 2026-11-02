@@ -3949,7 +3949,7 @@ static const char* kEnvHlsl =
 "      // The picture is stored sRGB-encoded and this target is *_SRGB, so hand the hardware the\n"
 "      // linear value: at the screen's edge the halo then equals the picture's own colour exactly\n"
 "      // and fades to black from there.\n"
-"      col += pow(max(edge, 0.0), 2.2) * exp(-r2 / 0.035);\n"
+"      col += pow(max(edge, (float3)0.0), (float3)2.2) * exp(-r2 / 0.035);\n"
 "    }\n"
 "  }\n"
 "  float n = frac(sin(dot(i.p.xy, float2(12.9898, 78.233))) * 43758.5453);\n"
