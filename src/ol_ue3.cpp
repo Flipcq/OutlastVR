@@ -5339,54 +5339,86 @@ static bool PoseApplyVisible(void* comp) {
             }
             if (camHold > 0.0f) GripApply(space, mesh, camHold);   // [NATIVEGRIP]
         }
-        // [DOCUMENT] (Beta 1.1.9) The wrist lifts the document. It has to come AFTER the helper rebase
-        // above: the helpers are sibling skinning chains, so a rotation of the arm drivers alone left the
-        // palm aux bone - the bone the paper hangs from - exactly where it was, which is why every earlier
-        // version of this looked identical.
-        // Turning the forearm about its own long axis (what this used to do) TWISTS the hand in place: the
-        // paper spins in front of you and the whole arm looks like it is rotating. The pose wants a WRIST:
-        // the hand hinged at the wrist joint, the paper swinging UP and slightly toward the body, the
-        // forearm and the upper arm left alone. So the axis is the normal of the plane the forearm and the
-        // shoulder define - turning about it sweeps the hand inside that plane, from along the forearm
-        // toward the shoulder, which is exactly "up, and a little forward". The wrist joint itself is the
-        // pivot, so the hand does not travel.
-        if (changed[0] && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
+        // [DOCUMENT] (Beta 1.1.9) The document is a RIGID object in the hand, and the wrist lifts it.
+        //
+        // Rigid: the paper hangs from Miles's hand-aux bone, a SIBLING skinning chain of the arm (that is
+        // why every earlier version that only rotated the arm bones did nothing). The aux is rebased onto
+        // the hand further up, but that relation comes from the game's own animation and drifts from frame
+        // to frame, so the paper turned "differently from the hand". While the document is held we capture
+        // that relation ONCE and then place the aux from the hand every frame: whatever the hand does, the
+        // paper does the same thing, rigidly, like something gripped in the fist.
+        //
+        // Lift: turning the forearm about its own long axis (an earlier attempt) pronates the whole arm and
+        // the paper spins in place. The pose wants a wrist: the hand hinged at the wrist joint, sweeping UP
+        // and slightly toward the body, forearm and upper arm untouched. The axis is the normal of the plane
+        // the forearm and the shoulder define; the wrist joint is the pivot, so the hand does not travel.
+        {
             const int ua0 = g_poseBone[0][0], fo0 = g_poseBone[0][1], ha0 = g_poseBone[0][2];
-            if (fo0 >= 0 && fo0 < space.n && ha0 >= 0 && ha0 < space.n) {
-                const VIk3 wrist = space.d[ha0].t;
-                const VIk3 fore = IVSub(wrist, space.d[fo0].t);
-                if (IVLen(fore) > 0.1f) {
-                    const VIk3 f = IVNorm(fore);
-                    const VIk3 up = { 0.0f, 0.0f, 1.0f };                          // UE3: Z is up
-                    const VIk3 toBody = (ua0 >= 0 && ua0 < space.n) ? IVSub(space.d[ua0].t, wrist) : up;
-                    VIk3 axis = IVCross(f, toBody);
-                    if (IVLen(axis) < 0.15f) axis = IVCross(f, up);                // arm pointing at the shoulder
-                    if (IVLen(axis) > 0.05f) {
-                        axis = IVNorm(axis);
-                        float ang = -g_docWristTwist * 0.0174532925f;              // the slider sets the lift
-                        if (ang > 1.5708f) ang = 1.5708f;
-                        if (ang < -1.5708f) ang = -1.5708f;
-                        // Swing the paper TOWARD the body whichever side the arm is on: nothing here knows
-                        // which way the mesh's axes run, so pick the sign that moves the paper's bone closer
-                        // to the shoulder.
-                        const bool paper = (28 < space.n);
-                        if (paper) {
-                            const VIk3 dPaper = IVSub(space.d[28].t, wrist);
+            const int aux = (g_lAux >= 0 && g_lAux < space.n) ? g_lAux : 28;
+            const bool bones = aux >= 0 && aux < space.n && ha0 >= 0 && ha0 < space.n && changed[0];
+            const bool held = OLInteract_DocumentHeld() != 0;
+            // the paper's relation to the hand, captured once per hold
+            static bool   s_relOk = false;
+            static QIk4   s_relQ = { 0.0f, 0.0f, 0.0f, 1.0f };
+            static VIk3   s_relT = { 0.0f, 0.0f, 0.0f };
+            static float  s_relS = 1.0f;
+            if (!held) s_relOk = false;
+            if (held && bones) {
+                if (!s_relOk) {
+                    const IkAtom l = IkLocalOf(space, aux, ha0);   // the grip the game itself built
+                    s_relQ = l.q; s_relT = l.t; s_relS = l.scale; s_relOk = true;
+                    char l2[160];
+                    sprintf_s(l2, "[OLVR][DOCUMENT] paper bound rigidly to hand bone %d (aux %d), local offset (%.1f %.1f %.1f)",
+                              ha0, aux, s_relT.x, s_relT.y, s_relT.z);
+                    OLProxyLog(l2);
+                }
+                if (fabsf(g_docWristTwist) > 0.01f) {   // the wrist lift: the HAND only
+                    const VIk3 wrist = space.d[ha0].t;
+                    const VIk3 fore = (fo0 >= 0 && fo0 < space.n) ? IVSub(wrist, space.d[fo0].t) : VIk3{ 0, 0, 0 };
+                    if (fo0 >= 0 && fo0 < space.n && IVLen(fore) > 0.1f) {
+                        const VIk3 f = IVNorm(fore);
+                        const VIk3 up = { 0.0f, 0.0f, 1.0f };                        // UE3: Z is up
+                        const VIk3 toBody = (ua0 >= 0 && ua0 < space.n) ? IVSub(space.d[ua0].t, wrist) : up;
+                        VIk3 axis = IVCross(f, toBody);
+                        if (IVLen(axis) < 0.15f) axis = IVCross(f, up);              // arm pointing at the shoulder
+                        if (IVLen(axis) > 0.05f) {
+                            axis = IVNorm(axis);
+                            float ang = -g_docWristTwist * 0.0174532925f;            // the slider sets the lift
+                            if (ang > 1.5708f) ang = 1.5708f;
+                            if (ang < -1.5708f) ang = -1.5708f;
+                            // Swing the paper TOWARD the body whichever side the arm is on: nothing here knows
+                            // which way the mesh's axes run, so pick the sign that moves the paper's bone closer
+                            // to the shoulder.
+                            const VIk3 dPaper = IVSub(space.d[aux].t, wrist);
                             if (IVDot(IVSub(IQRotate(IQAxis(axis, ang), dPaper), dPaper), toBody) < 0.0f)
                                 ang = -ang;
-                        }
-                        const QIk4 lift = IQAxis(axis, ang);
-                        PoseRollChain(space, mesh, ha0, wrist, lift);              // the hand and its fingers
-                        if (paper) PoseRollChain(space, mesh, 28, wrist, lift);    // the paper's own bone
-                        static ULONGLONG s_wristLog = 0;
-                        if (!s_wristLog || GetTickCount64() - s_wristLog > 3000) {
-                            s_wristLog = GetTickCount64();
-                            char l[176];
-                            sprintf_s(l, "[OLVR][DOCUMENT] wrist lift %.0f deg at the wrist (%.1f uu along the forearm), bones %d/%d/28",
-                                      ang * 57.2957795f, IVLen(fore), ha0, ua0);
-                            OLProxyLog(l);
+                            PoseRollChain(space, mesh, ha0, wrist, IQAxis(axis, ang));   // hand + fingers
+                            static ULONGLONG s_wristLog = 0;
+                            if (!s_wristLog || GetTickCount64() - s_wristLog > 3000) {
+                                s_wristLog = GetTickCount64();
+                                char l2[176];
+                                sprintf_s(l2, "[OLVR][DOCUMENT] wrist lift %.0f deg at the wrist (%.1f uu along the forearm), hand bone %d",
+                                          ang * 57.2957795f, IVLen(fore), ha0);
+                                OLProxyLog(l2);
+                            }
                         }
                     }
+                }
+                // Rigid follow, AFTER the lift: the aux (and everything it carries) is derived from the
+                // hand, so the paper turns exactly as much as the hand turns - never more, never less.
+                const IkAtom& h = space.d[ha0];
+                const IkAtom prev = space.d[aux];
+                const QIk4 nq = IQMul(h.q, s_relQ);
+                const VIk3 nt = IVAdd(h.t, IQRotate(h.q, IVScale(s_relT, h.scale)));
+                const float ns = h.scale * s_relS;
+                const QIk4 dq = IQMul(nq, IQConj(prev.q));
+                const QIk4 pinv = IQConj(prev.q);
+                const float sc = (fabsf(prev.scale) > 1e-5f) ? (ns / prev.scale) : 1.0f;
+                for (int i = 0; i < space.n; ++i) if (PoseDescendant(mesh, i, aux, space.n)) {
+                    const VIk3 rel = IQRotate(pinv, IVSub(space.d[i].t, prev.t));
+                    space.d[i].t = IVAdd(nt, IQRotate(nq, IVScale(rel, sc)));
+                    space.d[i].q = IQMul(dq, space.d[i].q);
+                    space.d[i].scale *= sc;
                 }
             }
         }
