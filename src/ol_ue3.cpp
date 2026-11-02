@@ -166,6 +166,7 @@ extern "C" float OLInteract_ViewfinderZoom();
 extern "C" void OLInteract_Tick();
 extern "C" int OLInteract_RightArmNative();
 extern "C" int OLInteract_FaceCamPinned();             // (Beta 1.1.4) [FACECAM] let the game's arm play
+extern "C" int OLInteract_CamUpKnown();                // (V1) 1 camcorder at his face, 0 down, -1 not sampled yet
 extern "C" int OLInteract_HandNV();                    // (Test43) [HANDNV] the camcorder's night vision
 extern "C" void OLPrompts_Install(uintptr_t base);   // [PROMPTS] ol_prompts.cpp
 extern "C" void OLSound_Install();                     // [SOUND] (Test43) ol_sound.cpp: Wwise - breath, audio report
@@ -4574,9 +4575,15 @@ static float g_docShoulderOff[3] = { 2.0f, 5.0f, -3.0f };   // up, forward, righ
 static float g_docShoulderRot[3] = { 0.0f, 0.0f, 0.0f };
 static float g_docHeldOff[3] = { 18.0f, -5.0f, 2.0f };       // in the left hand's bone frame (uu): forward, right, up
 static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, yaw (deg)
-// [DOCUMENT] (Beta 1.1.9) Left wrist roll while holding the document: -15 deg turns the palm inward
-// toward the document for a natural reading pose instead of the neutral controller grip.
-static const float kDocWristRoll = -15.0f;
+// [DOCUMENT] (Beta 1.1.9) Left wrist roll while holding the document, in degrees. It is applied
+// ABOUT THE WRIST->PAPER LINE (see the arm solve below), so the hand turns around the sheet while
+// the sheet itself stays exactly where it was placed - the paper never drifts farther away. Tuned
+// live from the menu and saved to [Motion] DocumentWristRoll.
+static float g_docWristRoll = -15.0f;
+extern "C" float OLUE3_GetDocumentWristRoll() { return g_docWristRoll; }
+extern "C" void OLUE3_SetDocumentWristRoll(float deg) {
+    g_docWristRoll = deg < -180.0f ? -180.0f : (deg > 180.0f ? 180.0f : deg);
+}
 extern "C" int OLUE3_DocumentVisual(float out[3]) {
     if (!g_docShoulderMs || GetTickCount64() - g_docShoulderMs > 300) return 0;
     out[0] = g_docShoulderTrack[0]; out[1] = g_docShoulderTrack[1]; out[2] = g_docShoulderTrack[2];
@@ -5007,6 +5014,12 @@ static bool PoseApplyVisible(void* comp) {
             pad.handValid |= 2u;
         }
         if (!g_poseRefValid || !SameMilesBody(g_poseRefMesh, mesh)) {
+            // (V1) Never freeze Miles's reference pose while the game holds the camcorder at his
+            // face: the game drives his right arm from that first frame, so the captured wrist
+            // would be the camcorder pose and the VR right arm would stay wrong (mirrored back)
+            // for the rest of the session. -1 (not sampled yet) also waits, so the very first
+            // frame cannot capture it before the startup guard in ol_interact has lowered it.
+            if (OLInteract_CamUpKnown() != 0) return false;
             if (!PoseCaptureReference(space,mesh)) return false;
             g_poseRecenterSeen=OLXR_RecenterGeneration();
         }
@@ -5247,12 +5260,17 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
-            // [DOCUMENT] a slight, natural turn of the left wrist while it holds the document, so the
-            // hand does not sit in the neutral controller pose against the turned paper. A fixed -15 deg
-            // roll turns the palm inward toward the document for a natural reading pose.
-            if (hand == 0 && OLInteract_DocumentHeld()) {
-                static const float kDocWrist[3] = { kDocWristRoll, 0.0f, 0.0f };  // roll, pitch, yaw (deg)
-                wristTarget = IQMul(IQEulerDeg(kDocWrist), wristTarget);
+            // [DOCUMENT] a natural turn of the left wrist while it holds the document. It is a roll
+            // about the wrist->paper line: the hand (and the palm) turns around the sheet, so the
+            // document keeps the placement tuned in the menu and does not swing farther away.
+            if (hand == 0 && OLInteract_DocumentHeld() && g_lAux >= 0 && g_lAux < space.n) {
+                const IkAtom& A = space.d[g_lAux];
+                const VIk3 paper = IVAdd(A.t, IQRotate(A.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
+                VIk3 axis = IVSub(paper, space.d[ha].t);
+                if (IVLen(axis) > 0.01f) {
+                    axis = IVNorm(axis);
+                    wristTarget = IQMul(IQAxis(axis, g_docWristRoll * 0.0174532925f), wristTarget);
+                }
             }
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;

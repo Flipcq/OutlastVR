@@ -62,6 +62,8 @@ extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime); // [BA
 extern "C" void  OLUE3_DevBatteryTune(int which, float a, float b, float c);   // [BATTERY] live tuning
 extern "C" void  OLUE3_GetBatteryTune(float off[3], float rot[3]);
 extern "C" void  OLUE3_DevDocumentTune(int which, float a, float b, float c);  // [DOCUMENT] live tuning
+extern "C" float OLUE3_GetDocumentWristRoll();                                 // [DOCUMENT] left wrist roll about the paper
+extern "C" void  OLUE3_SetDocumentWristRoll(float deg);
 extern "C" int   OLUE3_HeroMoveState(int* lm, int* sm);                 // (Test40) LocomotionMode, SpecialMove
 extern "C" int   OLUE3_DoorSetRatioAndTarget(void* door, float r);      // (Test40) 0xCC46A0
 extern "C" int   OLUE3_CameraBoneWorld(float out[3]);                   // (Test40) for the anchor check
@@ -185,6 +187,13 @@ extern "C" void OLInteract_SetDocumentAdjust(const float off[3], const float rot
 extern "C" void OLInteract_ResetDocumentAdjust() {
     OLInteract_SetDocumentAdjust(kDocDefaultOff, kDocDefaultRot);
 }
+// [DOCUMENT] (V1) the left wrist's roll about the wrist->paper line while the document is held.
+// It used to be a fixed -15 deg applied in the body frame, which swung the paper itself away from
+// where it was placed. Now the turn happens around the paper, so tuning it only turns the hand.
+static const float kDocDefaultWristRoll = -15.0f;
+extern "C" float OLInteract_GetDocumentWrist() { return OLUE3_GetDocumentWristRoll(); }
+extern "C" void  OLInteract_SetDocumentWrist(float deg) { OLUE3_SetDocumentWristRoll(deg); }
+extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristRoll(kDocDefaultWristRoll); }
 // [BATTERY] where the reload animation starts (seconds in), so the "grab a new cell from the hip"
 // part can be skipped and the animation begins at the insertion. Tunable live from the menu.
 static float g_reloadStart = 1.0f;
@@ -270,6 +279,8 @@ void OLInteract_Init() {
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[4], L"-28", v, 32, ini); rot[1] = (float)_wtof(v);
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
         OLInteract_SetDocumentAdjust(off, rot);
+        GetPrivateProfileStringW(L"Motion", L"DocumentWristRoll", L"-15", v, 32, ini);
+        OLInteract_SetDocumentWrist((float)_wtof(v));
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
     ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) viewfinder=%ld howTo=%ld "
@@ -288,6 +299,7 @@ void OLInteract_Save(const wchar_t* ini) {
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_docAdjOff[i] : g_docAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kDocAdjKeys[i], b, ini); }
+    swprintf_s(b, L"%.0f", OLInteract_GetDocumentWrist()); WritePrivateProfileStringW(L"Motion", L"DocumentWristRoll", b, ini);
     swprintf_s(b, L"%.2f", g_reloadStart); WritePrivateProfileStringW(L"Motion", L"ReloadAnimStart", b, ini);
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
 }
@@ -420,7 +432,12 @@ static bool WrI(void* base, unsigned off, int v) {
 static ULONGLONG s_tickMs = 0;              // last tick; the pad merge stops acting when this goes stale
 static int   s_camUp = -1;                  // the game's CamcorderState (1 = raised)
 static int   s_camRaw = -1;                 // the same, unnormalised (4/5 = the game is already reloading)
-static bool  s_camStarted = false;          // the first gameplay tick wrote CamcorderState to 0
+static bool  s_camStarted = false;          // startup guard done: the camcorder has been seen down once
+static int   s_camGuardTicks = 0;           // startup guard: gameplay ticks spent keeping it down
+static bool  s_camStartLogged = false;      // the startup guard logged what it did
+static ULONGLONG s_camGuardAt = 0;          // when the startup guard last forced the camcorder down
+static void* s_camGuardHero = nullptr;      // startup guard re-arms when the pawn changes (a new level)
+static const int kCamGuardTicks = 120;      // ~2 s at frame rate: long enough to beat a scripted first frame
 // [RELOAD] the game's own reload (Y) is playing: CCS_ReloadingActive / CCS_ReloadingInactive.
 static bool GameReloading() { return s_camRaw == 4 || s_camRaw == 5; }
 static float s_zoom = 0.0f, s_energy = 1.0f;
@@ -2608,6 +2625,7 @@ extern "C" void OLInteract_Tick() {
     const ULONGLONG now = GetTickCount64();
     if (!OLUE3_GameplayActive() || !Resolve()) {
         OLProxy_SetHandleY(0);   // [RELOAD] no gameplay: let the game see Y again
+        if (!OLUE3_GameplayActive()) s_camUp = -1;   // (V1) not sampled now: the arm solver waits before freezing a reference
         // (Test43) a hand-carried climb rides out a moment of this (a hitch, a blink): the pad merge lets
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
         if (s_pc) { static ULONGLONG s_offLog = 0; if (now - s_offLog > 2000) { s_offLog = now; ILog("[OLVR][PHYSCLIMB] gameplay check off for a moment while climbing - holding on"); } }
@@ -2621,15 +2639,34 @@ extern "C" void OLInteract_Tick() {
     unsigned char cs = 0; float z = 0.0f, en = 1.0f; int nb = 0;
     s_camRaw = Rd(hero, F.camState, &cs) ? (int)cs : -1;
     s_camUp = s_camRaw >= 0 ? (s_camRaw == 1 ? 1 : 0) : -1;
-    // (V1) the game can begin with the camcorder already at his face (CamcorderState == 1), which
-    // snaps the right hand to a camcorder position on the very first gameplay frame. Never begin
-    // gameplay with it at his face: on the first tick only, write CamcorderState to 0 directly so
-    // the game really thinks the camera is down. That frees Miles's right arm for the player to
-    // grab the camera physically with the hand - no need to hold R3 twice to take it off his face.
-    if (!s_camStarted && s_camUp == 1 && hero && F.camState && WrB(hero, F.camState, 0)) {
-        s_camStarted = true;
-        s_camUp = 0;
-        ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - wrote CamcorderState to 0");
+    // (V1) Some saves/levels begin with the camcorder already at Miles's face. The game poses his
+    // right arm from that very first frame, and the arm solver freezes the pose it finds as its
+    // reference - a camcorder there at startup leaves the VR right hand stuck wrong for the whole
+    // session. Keep it down for the first gameplay frames of each pawn (until it has been seen
+    // down once): write CamcorderState directly every tick the game still has it up, so a field
+    // that resolves late or a script that raises it again is handled too.
+    if (hero != s_camGuardHero) {
+        s_camGuardHero = hero; s_camStarted = false; s_camGuardTicks = 0; s_camStartLogged = false;
+        s_camGuardAt = 0;
+    }
+    if (!s_camStarted) {
+        ++s_camGuardTicks;
+        if (s_camUp == 0) {
+            s_camStarted = true;                       // already down: nothing to do
+        } else if (s_camUp == 1 && s_camGuardTicks <= kCamGuardTicks) {
+            if (hero && F.camState && WrB(hero, F.camState, 0)) {
+                s_camGuardAt = now;
+                if (!s_camStartLogged) {
+                    s_camStartLogged = true;
+                    ILog("[OLVR][FACECAM] gameplay began with the camcorder at his face - wrote CamcorderState to 0 (startup guard)");
+                }
+                s_camUp = 0;
+            } else {
+                s_camStarted = true;                   // cannot force it: the pin below takes over
+            }
+        } else if (s_camGuardTicks > kCamGuardTicks) {
+            s_camStarted = true;                       // give up: whatever the game does, pin it below
+        }
     }
     // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
     // a lower (ours, the game's, a reload, a cutscene) releases it.
@@ -2650,6 +2687,14 @@ extern "C" void OLInteract_Tick() {
         // The camcorder came off Miles's face via the game's lower animation. Leave it in the
         // normal holster path (hip) unless the player physically grabs it with the right grip.
         ILog("[OLVR][FACECAM] the camcorder is down - face pin released");
+    }
+    // (V1) The game raised the camcorder by itself (a script, or a save that began at his face):
+    // adopt the face pin. His own arm then plays the raise pose instead of the empty controller
+    // hand, the camcorder can be grabbed at his face, and ONE held right-stick click lowers it -
+    // without the pin that first click only "fixed" it and a second was needed to lower it.
+    if (s_camUp == 1 && !s_faceLock && !s_facePending && !s_faceLowering && !s_camByGesture) {
+        s_faceLock = true;
+        ILog("[OLVR][FACECAM] the game raised the camcorder by itself - pinned at his face");
     }
     const bool zoomRead = Rd(hero, F.zoom, &z), energyRead = Rd(hero, F.energy, &en);
     const bool sparesRead = Rd(pc, F.numBat, &nb);
@@ -2854,6 +2899,18 @@ extern "C" int OLInteract_RightArmNative() {
 extern "C" int OLInteract_FaceCamPinned() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
     return (s_camUp == 1 && s_faceLock) ? 1 : 0;
+}
+// (V1) The camcorder state as the arm solver needs it: 1 at Miles's face, 0 down, -1 before the
+// first gameplay tick has sampled it. The solver must not freeze Miles's reference pose while it
+// is up (the game poses his right arm from that frame), so it waits for a 0 here.
+extern "C" int OLInteract_CamUpKnown() {
+    const ULONGLONG now = GetTickCount64();
+    if (!s_tickMs || now - s_tickMs > 250) return -1;
+    // If the startup guard just forced a camcorder that was up back down, let the game's arm
+    // return to its rest pose first (150 ms) - otherwise a late skel update in the same frame
+    // could still freeze the camcorder pose.
+    if (s_camGuardAt && s_camUp == 0 && now - s_camGuardAt < 150) return -1;
+    return s_camUp;
 }
 extern "C" int OLInteract_FaceCamBusy() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;

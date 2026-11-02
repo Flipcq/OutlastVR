@@ -726,11 +726,14 @@ static void BuildUI() {
       ch |= ImGui::SliderFloat("Document pitch",   &rot[1], -180.0f, 180.0f, "%.0f deg");
       ch |= ImGui::SliderFloat("Document yaw",     &rot[2], -180.0f, 180.0f, "%.0f deg");
       if (ch) OLInteract_SetDocumentAdjust(off, rot);
-      if (ImGui::Button("Reset the document's position")) OLInteract_ResetDocumentAdjust();
+      float wr = OLInteract_GetDocumentWrist();
+      if (ImGui::SliderFloat("Document wrist roll", &wr, -90.0f, 90.0f, "%.0f deg")) OLInteract_SetDocumentWrist(wr);
+      if (ImGui::Button("Reset the document's position")) { OLInteract_ResetDocumentAdjust(); OLInteract_ResetDocumentWrist(); }
       Help(
           "Where the confidential document sits in your left hand. Grab it from your left\n"
           "shoulder and keep holding it, then drag the sliders - it moves live so you can\n"
-          "find the right spot without taking the headset off. It is saved to outlastvr.ini."); }
+          "find the right spot without taking the headset off. Wrist roll turns the hand\n"
+          "around the paper (the paper itself stays where you put it). Saved to outlastvr.ini."); }
 
     // [INTERACT] (Test37)
     Section("DOORS");

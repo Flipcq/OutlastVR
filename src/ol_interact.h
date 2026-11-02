@@ -73,6 +73,10 @@ extern "C" void OLInteract_ResetBatteryAdjust();
 extern "C" void OLInteract_GetDocumentAdjust(float off[3], float rot[3]);
 extern "C" void OLInteract_SetDocumentAdjust(const float off[3], const float rot[3]);
 extern "C" void OLInteract_ResetDocumentAdjust();
+// [DOCUMENT] (V1) the left wrist's roll about the wrist->paper line while it holds the document (deg).
+extern "C" float OLInteract_GetDocumentWrist();
+extern "C" void  OLInteract_SetDocumentWrist(float deg);
+extern "C" void  OLInteract_ResetDocumentWrist();
 // [BATTERY] where the reload animation starts (seconds in): skip the "grab a new cell" part.
 extern "C" float OLInteract_GetReloadStart();
 extern "C" void  OLInteract_SetReloadStart(float s);
