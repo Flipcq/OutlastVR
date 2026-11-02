@@ -5356,6 +5356,14 @@ static bool PoseApplyVisible(void* comp) {
                     PoseRollChain(space, mesh, fo0, pivot, roll);   // forearm, hand, fingers
                     PoseRollChain(space, mesh, 28,   pivot, roll);   // L hand auxiliary: the paper's bone
                     PoseRollChain(space, mesh, 29,   pivot, roll);   // L forearm twist chain
+                    static ULONGLONG s_wristLog = 0;
+                    if (!s_wristLog || GetTickCount64() - s_wristLog > 3000) {
+                        s_wristLog = GetTickCount64();
+                        char l[160];
+                        sprintf_s(l, "[OLVR][DOCUMENT] wrist roll %.0f deg about the forearm axis (%.1f uu), bones %d/%d/28/29",
+                                  -g_docWristTwist, IVLen(axis), fo0, ha0);
+                        OLProxyLog(l);
+                    }
                 }
             }
         }
