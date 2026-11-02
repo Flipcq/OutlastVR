@@ -3813,7 +3813,6 @@ static bool EnsureFlip() {
 // instead of a crop of the eye picture. Point the camcorder behind you and the screen shows behind you.
 extern "C" IDirect3DTexture9* OLProxy_LensTex();
 extern "C" int OLUE3_LensLive();
-extern "C" int OLUE3_HasHero();   // [HALO] 1 = a level with a body is running
 struct LensSlot { IDirect3DTexture9* tex9; IDirect3DSurface9* surf9; IDirect3DQuery9* done9; HANDLE sh;
                   ID3D11Texture2D* tex11; ID3D11ShaderResourceView* srv; };
 static LensSlot g_lens[3] = {};
@@ -3990,6 +3989,8 @@ static XrVector3f g_thHead = { 0, 0, 0 };   // the viewpoint the theater is buil
 static float g_thYaw = 0.0f;                 // facing, radians, same convention as the screen anchor
 static DWORD g_thLastMs = 0, g_thAwaySince = 0;
 static bool  g_thFollowing = false;
+
+extern "C" int OLUE3_HasHero();   // [HALO] 1 = a level with a body is running
 
 static const char* kEnvHlsl =
 "cbuffer EnvCB : register(b0) { float4 tanB; float4 eyeQ; float4 eyeP; float4 scrC; float4 scrB; };\n"
