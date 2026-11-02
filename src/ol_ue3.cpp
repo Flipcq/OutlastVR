@@ -167,6 +167,7 @@ extern "C" void OLInteract_Tick();
 extern "C" int OLInteract_RightArmNative();
 extern "C" int OLInteract_FaceCamPinned();             // (Beta 1.1.4) [FACECAM] let the game's arm play
 extern "C" int OLInteract_CamUpKnown();                // (V1) 1 camcorder at his face, 0 down, -1 not sampled yet
+extern "C" int OLInteract_PoseRefReady();              // (V1) the startup camcorder guard is over: safe to freeze a pose
 extern "C" int OLInteract_HandNV();                    // (Test43) [HANDNV] the camcorder's night vision
 extern "C" void OLPrompts_Install(uintptr_t base);   // [PROMPTS] ol_prompts.cpp
 extern "C" void OLSound_Install();                     // [SOUND] (Test43) ol_sound.cpp: Wwise - breath, audio report
@@ -4575,16 +4576,14 @@ static float g_docShoulderOff[3] = { 2.0f, 5.0f, -3.0f };   // up, forward, righ
 static float g_docShoulderRot[3] = { 0.0f, 0.0f, 0.0f };
 static float g_docHeldOff[3] = { 18.0f, -5.0f, 2.0f };       // in the left hand's bone frame (uu): forward, right, up
 static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, yaw (deg)
-// [DOCUMENT] (Beta 1.1.9) Left wrist turn while holding the document (roll, pitch, yaw, deg). It is
-// applied to the hand in body space; DocumentPlace undoes it for the paper itself, so the hand turns
-// freely and the sheet stays exactly at the placement tuned in the menu (it never drifts away).
-// Tuned live from the menu and saved to [Motion] DocumentWristRoll/Pitch/Yaw.
-static float g_docWristRot[3] = { -15.0f, 0.0f, 0.0f };
-static QIk4  s_docWristQ = { 0.0f, 0.0f, 0.0f, 1.0f };   // this frame's wrist turn (body space)
-static bool  s_docWristValid = false;
-extern "C" void OLUE3_GetDocumentWrist(float r[3]) { for (int i = 0; i < 3; ++i) r[i] = g_docWristRot[i]; }
-extern "C" void OLUE3_SetDocumentWrist(const float r[3]) {
-    for (int i = 0; i < 3; ++i) g_docWristRot[i] = r[i] < -180.0f ? -180.0f : (r[i] > 180.0f ? 180.0f : r[i]);
+// [DOCUMENT] (Beta 1.1.9) The left WRIST turn while holding the document, in degrees. It twists the
+// forearm about its own long axis (pronation at the wrist) and undoes that twist on the hand, so only
+// the wrist turns: the hand and the paper stay exactly where they are. Tuned live from the menu and
+// saved to [Motion] DocumentWristTwist.
+static float g_docWristTwist = -15.0f;
+extern "C" float OLUE3_GetDocumentWristTwist() { return g_docWristTwist; }
+extern "C" void OLUE3_SetDocumentWristTwist(float deg) {
+    g_docWristTwist = deg < -180.0f ? -180.0f : (deg > 180.0f ? 180.0f : deg);
 }
 extern "C" int OLUE3_DocumentVisual(float out[3]) {
     if (!g_docShoulderMs || GetTickCount64() - g_docShoulderMs > 300) return 0;
@@ -4837,18 +4836,9 @@ static void DocumentPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam
     // follows the hand (rotates with it) like the spare battery, so it can be turned by hand.
     VIk3 handT = shoulderT; QIk4 handQ = shoulderQ;
     if (g_lAux >= 0 && g_lAux < space.n) {
-        IkAtom Ab = space.d[g_lAux];
-        if (s_docWristValid) {   // undo the wrist turn for the sheet only (see PoseApplyVisible)
-            const int lHand = g_poseBone[0][2];
-            if (lHand >= 0 && lHand < space.n) {
-                const QIk4 inv = IQConj(s_docWristQ);
-                const VIk3 W = space.d[lHand].t;
-                Ab.t = IVAdd(W, IQRotate(inv, IVSub(Ab.t, W)));
-                Ab.q = IQMul(inv, Ab.q);
-            }
-        }
-        handT = IVAdd(Ab.t, IQRotate(Ab.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
-        handQ = IQMul(Ab.q, IQEulerDeg(g_docHeldRot));
+        const IkAtom& A = space.d[g_lAux];
+        handT = IVAdd(A.t, IQRotate(A.q, { g_docHeldOff[0], g_docHeldOff[1], g_docHeldOff[2] }));
+        handQ = IQMul(A.q, IQEulerDeg(g_docHeldRot));
     }
     {   // where the held document actually is, for ol_interact's "look at it" check (its centre, not the hand)
         const VIk3 dh = IVSub(handT, cam);
@@ -4934,6 +4924,16 @@ static int CamcorderUpNow() {
     if (!hero || !off) return -1;
     __try { return *(volatile unsigned char*)((char*)hero + off) == 1 ? 1 : 0; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+// (V1) Is the game already holding the right hand up at the camcorder? Some starts run with the
+// camcorder at his face even while CamcorderState reads 0 (the HUD proves it), so the state alone
+// cannot protect the reference pose. The native right hand sits next to the head/camera bone in
+// that pose; a calm reference pose has it down by his side.
+static bool NativeRightHandAtFace(const IkArray& space) {
+    const int hand = g_poseBone[1][2], eye = g_poseCameraBone;
+    if (!space.d || hand < 0 || hand >= space.n || eye < 0 || eye >= space.n) return false;
+    const VIk3 d = IVSub(space.d[hand].t, space.d[eye].t);
+    return IVDot(d, d) < 30.0f * 30.0f;
 }
 static bool PoseApplyVisible(void* comp) {
     const bool screen=OLXR_ScreenActive()!=0;
@@ -5044,7 +5044,15 @@ static bool PoseApplyVisible(void* comp) {
             // would be the camcorder pose and the VR right arm would stay wrong (mirrored back)
             // for the rest of the session. -1 (not sampled yet) also waits, so the very first
             // frame cannot capture it before the startup guard in ol_interact has lowered it.
-            if (CamcorderUpNow() != 0 || OLInteract_CamUpKnown() != 0) return false;
+            if (CamcorderUpNow() != 0 || OLInteract_CamUpKnown() != 0 ||
+                OLInteract_PoseRefReady() == 0 || NativeRightHandAtFace(space)) {
+                static bool s_waitLogged = false;
+                if (!s_waitLogged) {
+                    s_waitLogged = true;
+                    OLProxyLog("[OLVR][FACECAM] reference pose held back until the startup camcorder state settles");
+                }
+                return false;
+            }
             if (!PoseCaptureReference(space,mesh)) return false;
             g_poseRecenterSeen=OLXR_RecenterGeneration();
         }
@@ -5091,7 +5099,6 @@ static bool PoseApplyVisible(void* comp) {
             OLProxyLog("[OLVR][VISIBLEIK] Outlast 1 absolute grip-to-wrist axes calibrated from Miles reference pose");
         }
         const QIk4 liveBodyBasis=PoseUprightHand(cameraForward);
-        s_docWristValid = false;
         bool changed[2] = { false,false };
         for (int hand=0; hand<2; ++hand) {
             if (!(pad.handValid & (1u << hand))) { g_poseRamp[hand] = 0.0f; continue; }
@@ -5286,16 +5293,18 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
-            // [DOCUMENT] a natural turn of the left wrist while it holds the document. The turn is
-            // applied to the hand here; DocumentPlace removes it again for the paper, so the hand
-            // can be turned to a comfortable angle while the sheet stays at its tuned placement.
-            if (hand == 0 && OLInteract_DocumentHeld()) {
-                const QIk4 q = IQEulerDeg(g_docWristRot);
-                wristTarget = IQMul(q, wristTarget);
-                s_docWristQ = q; s_docWristValid = true;
-            }
+            // [DOCUMENT] the wrist turn is applied AFTER the arm solve, below, as a pure forearm
+            // twist: neither the hand nor the paper it holds is rotated.
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
+            if (hand == 0 && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
+                VIk3 axis = IVSub(space.d[ha].t, space.d[fo].t);
+                if (IVLen(axis) > 0.1f) {
+                    const QIk4 q = IQAxis(IVNorm(axis), g_docWristTwist * 0.0174532925f);
+                    PoseTransformTree(space,mesh,fo,q);          // pronation: the forearm turns
+                    PoseTransformTree(space,mesh,ha,IQConj(q));  // hand (and paper) stay put
+                }
+            }
         }
         // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip.
         // (Beta 1.1.4) [FACECAM] Only while a held click pins it at his face does the game's own arm
