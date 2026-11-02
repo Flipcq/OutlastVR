@@ -420,4 +420,8 @@ extern "C" void OLSound_Install() {
     const bool d4 = Hook("?SetState@SoundEngine@AK@@YA?AW4AKRESULT@@KK@Z", (void*)&HookSetState, &o_SetState);
     SLog("[OLVR][SOUND] Wwise hooked: PostEvent id/name/wide %d/%d/%d, listener %d, active %d, occlusion %d, state %d | %d breath events (stress breath id %u), gasp id %u",
          p1, p2, p3, d1, d2, d3, d4, kEvN, s_ev[0].id, s_gaspId);
+    // [CAMSTART] stay silent until the gameplay startup guard reports the camcorder settled. The
+    // game raises it (with night vision) on its first playable frames, before the first mod tick, so
+    // the mute has to be armed from install, not from the tick.
+    s_camSuppressUntil = GetTickCount64() + 600000;
 }

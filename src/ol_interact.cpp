@@ -190,7 +190,7 @@ extern "C" void OLInteract_ResetDocumentAdjust() {
 }
 // [DOCUMENT] (V1) the left wrist's lift while it holds the document (deg): the wrist bends upward
 // around the wrist joint, lifting the hand and the paper together out of the flat neutral grip.
-static const float kDocDefaultWristTwist = 15.0f;
+static const float kDocDefaultWristTwist = -15.0f;
 extern "C" float OLInteract_GetDocumentWrist() { return OLUE3_GetDocumentWristTwist(); }
 extern "C" void  OLInteract_SetDocumentWrist(float deg) { OLUE3_SetDocumentWristTwist(deg); }
 extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristTwist(kDocDefaultWristTwist); }
@@ -279,8 +279,8 @@ void OLInteract_Init() {
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[4], L"-28", v, 32, ini); rot[1] = (float)_wtof(v);
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
         OLInteract_SetDocumentAdjust(off, rot);
-        float wr = 15.0f;
-        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"15", v, 32, ini); wr = (float)_wtof(v);
+        float wr = -15.0f;
+        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"-15", v, 32, ini); wr = (float)_wtof(v);
         OLInteract_SetDocumentWrist(wr);
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
@@ -2630,9 +2630,6 @@ extern "C" void OLInteract_Tick() {
     const ULONGLONG now = GetTickCount64();
     if (!OLUE3_GameplayActive() || !Resolve()) {
         OLProxy_SetHandleY(0);   // [RELOAD] no gameplay: let the game see Y again
-        // [CAMSTART] Outlast raises the camcorder as its first playable frame; keep the take/put and
-        // night-vision switch one-shots silent through the load and the startup guard.
-        if (!OLUE3_GameplayActive()) OLSound_SuppressCamStartup(4000);
         if (!OLUE3_GameplayActive()) s_camUp = -1;   // (V1) not sampled now: the arm solver waits before freezing a reference
         // (Test43) a hand-carried climb rides out a moment of this (a hitch, a blink): the pad merge lets
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
@@ -2658,6 +2655,7 @@ extern "C" void OLInteract_Tick() {
         s_camGuardHero = hero; s_camStarted = false; s_camGuardTicks = 0; s_camStartLogged = false;
         s_camDownSince = 0; s_camStartToggleAt = 0;
     }
+    if (!s_camStarted) OLSound_SuppressCamStartup(1000);   // [CAMSTART] no startup camcorder sound
     if (!s_camStarted) {
         ++s_camGuardTicks;
         if (s_camUp == 1 && s_camGuardTicks <= kCamGuardTicks) {
@@ -2679,6 +2677,7 @@ extern "C" void OLInteract_Tick() {
         if (s_camByGesture || s_rsDown || s_hState == H_IN_HAND ||
             s_facePending || s_faceLowering) s_camStarted = true;      // the player is using it
     }
+    if (s_camStarted) OLSound_SuppressCamStartup(0);   // [CAMSTART] startup over: camcorder sounds play again
     // (Beta 1.1.4) [FACECAM] The game's own camcorder state is the truth: a raise lands the pin,
     // a lower (ours, the game's, a reload, a cutscene) releases it.
     if (s_facePending && s_camUp == 1) {
