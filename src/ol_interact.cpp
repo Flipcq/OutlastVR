@@ -193,6 +193,32 @@ static const float kDocDefaultWristTwist = -45.0f;
 extern "C" float OLInteract_GetDocumentWrist() { return OLUE3_GetDocumentWristTwist(); }
 extern "C" void  OLInteract_SetDocumentWrist(float deg) { OLUE3_SetDocumentWristTwist(deg); }
 extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristTwist(kDocDefaultWristTwist); }
+// [DOCWRIST] (Beta 1.1.9) The wrist can also be dialled live, axis by axis: three degrees-angles
+// applied at the wrist joint about the actor's own X (forward), Y (right) and Z (up). Set any of them
+// and the automatic lift above stands down, so what you dial is exactly what you get - this is how the
+// grip gets tuned in the headset instead of by guesswork.
+static float g_docWristRot[3] = { 0.0f, 0.0f, 0.0f };
+extern "C" void OLInteract_GetDocumentWristRot(float out[3]) {
+    out[0] = g_docWristRot[0]; out[1] = g_docWristRot[1]; out[2] = g_docWristRot[2];
+}
+extern "C" void OLInteract_SetDocumentWristRot(const float in[3]) {
+    for (int i = 0; i < 3; ++i) {
+        float v = in ? in[i] : 0.0f;
+        if (v < -180.0f) v = -180.0f;
+        if (v > 180.0f) v = 180.0f;
+        g_docWristRot[i] = v;
+    }
+}
+extern "C" void OLInteract_ResetDocumentWristRot() {
+    const float zero[3] = { 0.0f, 0.0f, 0.0f };
+    OLInteract_SetDocumentWristRot(zero);
+}
+// The line to send back: everything that positions the paper's wrist, in one place.
+extern "C" void OLInteract_LogDocumentWrist() {
+    ILog("[OLVR][DOCWRIST] wrist: lift %.0f | x %.0f y %.0f z %.0f (deg, about the actor's X fwd / Y right / Z up) | grip fwd %.0f right %.0f up %.0f | roll %.0f pitch %.0f yaw %.0f",
+         OLInteract_GetDocumentWrist(), g_docWristRot[0], g_docWristRot[1], g_docWristRot[2],
+         g_docAdjOff[0], g_docAdjOff[1], g_docAdjOff[2], g_docAdjRot[0], g_docAdjRot[1], g_docAdjRot[2]);
+}
 // [BATTERY] where the reload animation starts (seconds in), so the "grab a new cell from the hip"
 // part can be skipped and the animation begins at the insertion. Tunable live from the menu.
 static float g_reloadStart = 1.0f;
@@ -282,6 +308,13 @@ void OLInteract_Init() {
         float wr = -45.0f;
         GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"-45", v, 32, ini); wr = (float)_wtof(v);
         OLInteract_SetDocumentWrist(wr);
+        {   // [DOCWRIST] the live-tuned wrist angles
+            float rot[3] = { 0.0f, 0.0f, 0.0f };
+            GetPrivateProfileStringW(L"Motion", L"DocumentWristX", L"0", v, 32, ini); rot[0] = (float)_wtof(v);
+            GetPrivateProfileStringW(L"Motion", L"DocumentWristY", L"0", v, 32, ini); rot[1] = (float)_wtof(v);
+            GetPrivateProfileStringW(L"Motion", L"DocumentWristZ", L"0", v, 32, ini); rot[2] = (float)_wtof(v);
+            OLInteract_SetDocumentWristRot(rot);
+        }
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
     ILog("[OLVR][INTERACT] doors=%ld holster=%ld raiseToEye=%ld (reach %.2f m) viewfinder=%ld howTo=%ld "
@@ -301,6 +334,12 @@ void OLInteract_Save(const wchar_t* ini) {
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_docAdjOff[i] : g_docAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kDocAdjKeys[i], b, ini); }
     { swprintf_s(b, L"%.0f", OLInteract_GetDocumentWrist()); WritePrivateProfileStringW(L"Motion", L"DocumentWristLift", b, ini); }
+    {   // [DOCWRIST] the live-tuned wrist angles
+        float rot[3]; OLInteract_GetDocumentWristRot(rot);
+        swprintf_s(b, L"%.0f", rot[0]); WritePrivateProfileStringW(L"Motion", L"DocumentWristX", b, ini);
+        swprintf_s(b, L"%.0f", rot[1]); WritePrivateProfileStringW(L"Motion", L"DocumentWristY", b, ini);
+        swprintf_s(b, L"%.0f", rot[2]); WritePrivateProfileStringW(L"Motion", L"DocumentWristZ", b, ini);
+    }
     swprintf_s(b, L"%.2f", g_reloadStart); WritePrivateProfileStringW(L"Motion", L"ReloadAnimStart", b, ini);
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
 }

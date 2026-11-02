@@ -5372,8 +5372,19 @@ static bool PoseApplyVisible(void* comp) {
                               ha0, aux, s_relT.x, s_relT.y, s_relT.z);
                     OLProxyLog(l2);
                 }
-                if (fabsf(g_docWristTwist) > 0.01f) {   // the wrist lift: the HAND only
-                    const VIk3 wrist = space.d[ha0].t;
+                // [DOCWRIST] Live tuning wins when it is set: the in-game menu dials the hand at the
+                // wrist joint around the body's forward (X), right (Y) and up (Z) axes. Any non-zero
+                // value stands the automatic lift below down, so what the sliders say is what you get.
+                const VIk3 wrist = space.d[ha0].t;
+                float manual[3] = { 0.0f, 0.0f, 0.0f };
+                OLInteract_GetDocumentWristRot(manual);
+                const bool manualOn = fabsf(manual[0]) + fabsf(manual[1]) + fabsf(manual[2]) > 0.05f;
+                if (manualOn) {
+                    const QIk4 q = IQMul(IQAxis({ 1.0f, 0.0f, 0.0f }, manual[0] * 0.0174532925f),
+                                  IQMul(IQAxis({ 0.0f, 1.0f, 0.0f }, manual[1] * 0.0174532925f),
+                                        IQAxis({ 0.0f, 0.0f, 1.0f }, manual[2] * 0.0174532925f)));
+                    PoseRollChain(space, mesh, ha0, wrist, q);   // the hand and its fingers
+                } else if (fabsf(g_docWristTwist) > 0.01f) {   // the automatic wrist lift: the HAND only
                     const VIk3 fore = (fo0 >= 0 && fo0 < space.n) ? IVSub(wrist, space.d[fo0].t) : VIk3{ 0, 0, 0 };
                     if (fo0 >= 0 && fo0 < space.n && IVLen(fore) > 0.1f) {
                         const VIk3 f = IVNorm(fore);
@@ -5383,9 +5394,6 @@ static bool PoseApplyVisible(void* comp) {
                         if (IVLen(axis) < 0.15f) axis = IVCross(f, up);              // arm pointing at the shoulder
                         if (IVLen(axis) > 0.05f) {
                             axis = IVNorm(axis);
-                            // The slider's sign picks the direction, and the default (-45) turns the palm
-                            // FORWARD, toward the camera: the first build swung it backwards, over the
-                            // shoulder, which is what the user saw as "a mao muito girada para tras".
                             float ang = g_docWristTwist * 0.0174532925f;
                             if (ang > 1.5708f) ang = 1.5708f;
                             if (ang < -1.5708f) ang = -1.5708f;

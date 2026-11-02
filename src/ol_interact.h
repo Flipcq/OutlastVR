@@ -78,6 +78,12 @@ extern "C" void OLInteract_ResetDocumentAdjust();
 extern "C" float OLInteract_GetDocumentWrist();
 extern "C" void  OLInteract_SetDocumentWrist(float deg);
 extern "C" void  OLInteract_ResetDocumentWrist();
+// [DOCWRIST] live tuning from the in-game menu: degrees about the actor's X (forward), Y (right),
+// Z (up), applied at the wrist joint. Any non-zero value stands the automatic lift down.
+extern "C" void  OLInteract_GetDocumentWristRot(float out[3]);
+extern "C" void  OLInteract_SetDocumentWristRot(const float in[3]);
+extern "C" void  OLInteract_ResetDocumentWristRot();
+extern "C" void  OLInteract_LogDocumentWrist();
 // [BATTERY] where the reload animation starts (seconds in): skip the "grab a new cell" part.
 extern "C" float OLInteract_GetReloadStart();
 extern "C" void  OLInteract_SetReloadStart(float s);

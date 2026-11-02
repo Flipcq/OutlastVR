@@ -715,13 +715,29 @@ static void BuildUI() {
       if (ch) OLInteract_SetDocumentAdjust(off, rot);
       float wr = OLInteract_GetDocumentWrist();
       if (ImGui::SliderFloat("Document wrist lift", &wr, -90.0f, 90.0f, "%.0f deg")) OLInteract_SetDocumentWrist(wr);
+      // [DOCWRIST] Live, axis by axis. Zero on all three = the automatic lift above; any non-zero
+      // value replaces it, so this is the "tune it in the headset" control.
+      {
+        float rot[3]; OLInteract_GetDocumentWristRot(rot);
+        bool rc = false;
+        rc |= ImGui::SliderFloat("Wrist turn X (fwd axis)", &rot[0], -180.0f, 180.0f, "%.0f deg");
+        rc |= ImGui::SliderFloat("Wrist turn Y (right axis)", &rot[1], -180.0f, 180.0f, "%.0f deg");
+        rc |= ImGui::SliderFloat("Wrist turn Z (up axis)", &rot[2], -180.0f, 180.0f, "%.0f deg");
+        if (rc) OLInteract_SetDocumentWristRot(rot);
+        if (ImGui::Button("Log these wrist values")) OLInteract_LogDocumentWrist();
+        ImGui::SameLine();
+        if (ImGui::Button("Back to the automatic lift")) { OLInteract_ResetDocumentWristRot(); }
+      }
       if (ImGui::Button("Reset the document's position")) { OLInteract_ResetDocumentAdjust(); OLInteract_ResetDocumentWrist(); }
       Help(
           "Where the confidential document sits in your left hand. Grab it from your left\n"
           "shoulder and keep holding it, then drag the sliders - it moves live so you can\n"
           "find the right spot without taking the headset off. The paper is gripped RIGIDLY:\n"
-          "whatever your hand does, the paper does the same. Wrist lift bends the wrist only;\n"
-          "negative turns the palm toward you, positive the other way. Saved to outlastvr.ini."); }
+          "whatever your hand does, the paper does the same. 'Wrist turn X/Y/Z' rotate the\n"
+          "hand at the wrist joint around the body's forward, right and up axes; set any of\n"
+          "them and the automatic 'wrist lift' steps aside, so you dial it exactly. When it\n"
+          "looks right, press 'Log these wrist values' - the line goes to OutlastVR_Log.txt.\n"
+          "Saved to outlastvr.ini."); }
 
     // [INTERACT] (Test37)
     Section("DOORS");

@@ -3937,7 +3937,7 @@ static bool g_envTried = false, g_envReady = false;
 // [HALO] The menu's colours are captured ONCE per appearance into an 8x8 texture. Sampling the live
 // picture every frame made the halo move with the menu (and repeated the picture's border outwards in
 // straight streaks); an 8x8 still of it is a soft palette that stays put.
-static const UINT kHaloW = 8, kHaloH = 8;
+static const UINT kHaloW = 16, kHaloH = 16;
 static ID3D11Texture2D* g_haloTex = nullptr;
 static ID3D11ShaderResourceView* g_haloSrv = nullptr;
 static bool  g_haloValid = false;
@@ -3987,10 +3987,10 @@ static const char* kEnvHlsl =
 "      dx = max(dx + wob, 0.0);\n"
 "      dy = max(dy + wob, 0.0);\n"
 "      // The capture is an *_SRGB texture, so the sampler already handed us LINEAR values (this target\n"
-"      // is *_SRGB too and encodes on write): no gamma juggling here.\n"
+"      // is *_SRGB too and encodes on write). A dark menu needs the 2x gain to read as a glow.\n"
 "      float sx = max(0.0118 * scrC.w * scrC.w, 0.0001);\n"
 "      float sy = max(0.0118 * scrB.z * scrB.z, 0.0001);\n"
-"      float3 lin = max(edge, (float3)0.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
+"      float3 lin = min(max(edge, (float3)0.0) * 2.0, (float3)1.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
 "      float dg = VN(i.uv * 512.0) - 0.5;\n"
 "      col += max(lin * (1.0 + dg * 0.18) + dg * 0.0009, 0.0);\n"
 "    }\n"
@@ -4135,14 +4135,33 @@ struct TheaterLayers {
 // [HALO] Take the 8x8 still of the menu the edge gradient is drawn from. Called once when the theater
 // appears (and again the next time it appears): the palette then stays put instead of chasing the
 // menu frame by frame, and it cannot repeat the picture's border outwards in straight streaks.
-static bool CaptureHaloPalette(ID3D11Texture2D* src) {
+static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
     if (!src || !g_haloTex || g_w < 2 || g_h < 2 || !ShaderBlitReady()) return false;
     if (!GammaDraw(src, g_w, g_h, 0.0f, g_w, g_h, 0.0f, (float)g_w, g_haloTex, kHaloW, kHaloH)) return false;
-    static bool s_logged = false;
-    if (!s_logged) {
-        s_logged = true;
-        XLOG("[OLVR][THEATER] menu palette captured (%ux%u) once for the edge gradient", kHaloW, kHaloH);
+    // Read the still back once. GammaDraw darkens by the presentation fade and the menu may simply be
+    // black this early, and a black palette means a black halo - so the caller keeps retrying until
+    // the capture actually carries colour.
+    D3D11_TEXTURE2D_DESC sd = {};
+    sd.Width = kHaloW; sd.Height = kHaloH; sd.MipLevels = 1; sd.ArraySize = 1;
+    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D* stage = nullptr;
+    if (FAILED(g_d3d11->CreateTexture2D(&sd, nullptr, &stage)) || !stage) return true;   // taken, unverified
+    g_ctx->CopyResource(stage, g_haloTex);
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    float sum = 0.0f;
+    if (SUCCEEDED(g_ctx->Map(stage, 0, D3D11_MAP_READ, 0, &m))) {
+        for (UINT y = 0; y < kHaloH; ++y) {
+            const unsigned char* row = (const unsigned char*)m.pData + (size_t)y * m.RowPitch;
+            for (UINT x = 0; x < kHaloW; ++x) {
+                const unsigned char* px = row + (size_t)x * 4;   // B G R A
+                sum += (px[0] + px[1] + px[2]) / (3.0f * 255.0f);
+            }
+        }
+        g_ctx->Unmap(stage, 0);
     }
+    stage->Release();
+    if (average) *average = sum / (float)(kHaloW * kHaloH);
     return true;
 }
 
@@ -4209,11 +4228,26 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
     // [HALO] A new appearance of the theater (it was off long enough for the fade) takes a fresh 8x8
     // still of the menu a moment after it shows - never the black of the fade-in.
     const DWORD nowMs = GetTickCount();
-    if (!g_thLastMs || (nowMs - g_thLastMs) > 400u) { g_haloValid = false; g_haloWantAt = nowMs + 120u; }
+    static int s_haloTries = 0;
+    if (!g_thLastMs || (nowMs - g_thLastMs) > 400u) {
+        g_haloValid = false; g_haloWantAt = nowMs + 300u; s_haloTries = 0;
+    }
     TheaterTick();
-    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0) {
-        if (CaptureHaloPalette(g_uploadTex)) g_haloValid = true;
-        else g_haloWantAt = nowMs + 200u;   // no picture yet, or the blit shader is not ready
+    // The capture goes through the blit shader, which darkens by the presentation fade: taking it
+    // during the fade-in gave a black palette and therefore a black halo. Wait for the fade to end,
+    // and keep retrying while the menu itself is still black (loading screens do that).
+    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0 &&
+        g_presentFade > 0.98f && g_uploadTex) {
+        float avg = 0.0f;
+        const bool taken = CaptureHaloPalette(g_uploadTex, &avg);
+        ++s_haloTries;
+        if (taken && (avg > 0.004f || s_haloTries > 12)) {
+            g_haloValid = true;
+            XLOG("[OLVR][THEATER] menu palette captured (%ux%u), average %.3f, after %d tries",
+                 kHaloW, kHaloH, avg, s_haloTries);
+        } else {
+            g_haloWantAt = nowMs + 250u;
+        }
     }
     const float D = g_cinemaDistanceM;
     const float up = -0.06f;   // centre a touch below eye level
