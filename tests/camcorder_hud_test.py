@@ -24,10 +24,21 @@ stubs = r'''
 #undef min
 #include <cassert>
 #include <cstring>
+#include <cstdarg>
+#include <cstddef>
 #include <map>
 #include <string>
 #include <limits>
 using ULONGLONG = unsigned long long;
+// The production units are MSVC and use the secure CRT; g++ has none of it. Both the
+// buffer-size and the template-style call shapes are provided (see [CAMHUD] logging).
+int sprintf_s(char* b, size_t n, const char* f, ...) {
+    va_list a; va_start(a, f); const int r = std::vsnprintf(b, n, f, a); va_end(a); return r;
+}
+int sprintf_s(char* b, const char* f, ...) {
+    va_list a; va_start(a, f); const int r = std::vsnprintf(b, 400, f, a); va_end(a); return r;
+}
+int vsprintf_s(char* b, const char* f, va_list a) { return std::vsnprintf(b, 400, f, a); }
 using LONG64 = long long;
 using SRWLOCK = int;
 #define SRWLOCK_INIT 0
@@ -102,9 +113,15 @@ int main() {
     menu=false; CamcorderHudTick(true); assert(alpha==0);
     OLInteract_CamcorderHudSubmitted(0); CamcorderHudTick(true); assert(alpha==85);
     OLInteract_CamcorderHudSubmitted(1); CamcorderHudTick(true); assert(alpha==0);
-    OLInteract_SetCamcorderHud(0); CamcorderHudTick(true); assert(alpha==85 && !OLInteract_CamcorderHud(&s));
-    OLInteract_SetCamcorderHud(1); CamcorderHudTick(true); now+=501; CamcorderHudTick(true); assert(alpha==85);
-    now+=1001; assert(!OLInteract_CamcorderHud(&s)); // no stale HUD during gameplay teardown
+    // (Beta 1.1.9) The custom HUD is a STYLE now - 1 reworked, 2 focal square off, 3 battery only - and
+    // SetCamcorderHud clamps to that range, so asking for 0 keeps the reworked style on. [Render]
+    // CamcorderHud=0 in the ini is still the way to fall back to the game's own display.
+    OLInteract_SetCamcorderHud(0); assert(OLInteract_GetCamcorderHud()==1);
+    CamcorderHudTick(true); assert(alpha==0 && OLInteract_CamcorderHud(&s));
+    OLInteract_SetCamcorderHud(9); assert(OLInteract_GetCamcorderHud()==3);
+    OLInteract_SetCamcorderHud(1);
+    now+=501; CamcorderHudTick(true); assert(alpha==85);   // the XR submission went stale: native alpha back
+    now+=1001; assert(!OLInteract_CamcorderHud(&s));       // no stale HUD during gameplay teardown
     now+=1; s_camUp=0; CamcorderHudTick(true); assert(!OLInteract_CamcorderHud(&s));
     s_camUp=1; int hard=2; memcpy(pc+32,&hard,4); s_numBat=2;
     CamcorderHudTick(true); assert(OLInteract_CamcorderHud(&s) && s.capacity==2 && s.spares==2);
@@ -258,10 +275,12 @@ int main() {
     const float boxDegPanel = 2.0f * std::atan(0.5f*(float(OLCamHud::FocusWidth)*pt)/OLCamHud::PanelDistance) * 57.29578f;
     const float boxDegFocus = 2.0f * std::atan(0.5f*fq.width/OLCamHud::FocusDistance) * 57.29578f;
     assert(std::fabs(boxDegPanel - boxDegFocus) < 1e-3f);
-    // ...and it asks for well under the display's convergence (FocusDistance = 8 m: ~0.45 deg), so a
-    // deep box is comfortable to look at while the readouts stay on their own nearer plane.
+    // ...and it asks for a touch less convergence than the display itself (FocusDistance = 2.25 m:
+    // ~1.6 deg against the panel's ~1.8 deg), so the box reads as a deep, comfortable plane while the
+    // readouts stay on their own nearer one. Note the box was moved in from 8 m: at 2.25 m it is still
+    // deeper than the panel, which is what the doubled-square fix needs.
     const float focusConvDeg = 2.0f * std::atan(kHalfIpd / OLCamHud::FocusDistance) * 57.29578f;
-    assert(focusConvDeg > 0.3f && focusConvDeg < 1.2f);
+    assert(focusConvDeg > 1.4f && focusConvDeg < 1.7f);
     assert(focusConvDeg < convDeg);
     assert(OLCamHud::FocusQuadFor(0.0f).width == 0.0f);          // no panel width: no quad, no NaN
 }

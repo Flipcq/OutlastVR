@@ -53,6 +53,8 @@ static bool TryAcquireSRWLockExclusive(SRWLOCK* l) { if(l->locked)return false; 
 static LONG InterlockedExchange(volatile LONG* p,LONG n) { LONG old=*p; *p=n; return old; }
 static LONG InterlockedIncrement(volatile LONG* p) { return ++*p; }
 static int g_gameWnd=1, foreground=1;
+// [RELOAD] the d3d9 proxy's own "the mod handles Y" switch, read by the extracted pad mapping.
+static bool g_yHandled = false;
 static int GetForegroundWindow() { return foreground; }
 static bool modMenu=false, gameMenu=false, gameplay=true, physicalMouse=false;
 static int OLMenu_Visible() { return modMenu; }
@@ -155,7 +157,9 @@ int main() {
     // grip is still sprint, so those presses leave the run alone.
     Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0100 && !DropRequested());
     Idle();Publish(OLXR_BTN_B,1);assert(Poll()==0x0100);
-    Idle();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0008);
+    // (Beta 1.1.9) left grip + Y opens the NOTES list - D-pad left (ShowRecordingMenu), 0x0004 - not the
+    // notebook's evidence tab. The documents list opens by looking at the held document instead.
+    Idle();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0004);
     assert(events.empty());
     // Releasing the modifier under a held B never creates a mouse click.
     Publish(OLXR_BTN_B,1);Publish(OLXR_BTN_B,0);assert(events.empty());
@@ -217,10 +221,13 @@ int main() {
     Hint(L"Press {OLA_ShowTabMenu}",L"Press no shortcut");
     Hint(L"Press {OLA_ShowRecordingMenu}",L"Press left grip + Y");
     Hint(L"Press {OLA_ShowEvidenceMenu}",L"Press no shortcut");
-    Hint(L"Press {OLA_Use} to close",L"Grab the handle to close, or press B");
+    // (Beta 1.1.9) the door prompts are GONE - doors open by hand - so the game's "press Use to
+    // close" line is rewritten to nothing in either layout (the Portuguese line is not one of the
+    // game's English sentences, so it keeps the ordinary button rewrite).
+    Hint(L"Press {OLA_Use} to close",L"");
     gameMenu=true;Hint(L"Press {OLA_Use}",L"Press X");Hint(L"Press {OLA_CrouchToggle}",L"Press B");
-    gameMenu=false;g_mouseUse=0;Hint(L"Press {OLA_Use} to close",L"Grab the handle to close, or press X");
-    puts("PASS: localized Use/crouch hints, English door hints, shortcuts and menu/legacy text");
+    gameMenu=false;g_mouseUse=0;Hint(L"Press {OLA_Use} to close",L"");
+    puts("PASS: localized Use/crouch hints, door prompts dropped, shortcuts and menu/legacy text");
 
     // Actual settings-menu low-level hook must pass our cancellation release,
     // while original physical and other injected clicks still drive its cursor.
