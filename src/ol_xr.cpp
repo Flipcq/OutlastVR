@@ -3836,6 +3836,9 @@ static const char* kFlipHlsl =
 "Texture2D srcT : register(t0);\n"
 "SamplerState s0 : register(s0);\n"
 "float H(float2 p) { return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453); }\n"
+"float3 NvBase(float3 s) {\n"                                            // night vision: amplified low light, green
+"  float l = pow(saturate(dot(s, float3(0.30, 0.59, 0.11)) * tune.z), 0.5);\n"
+"  return l * float3(0.42, 1.0, 0.48); }\n"
 "float4 ps(VOut i) : SV_Target {\n"
 "  float n = H(floor(i.q * float2(192, 144)) + tune.x * 61.0);\n"
 "  float3 c;\n"
@@ -3843,9 +3846,17 @@ static const char* kFlipHlsl =
 "    float2 suv = i.uv;\n"
 "    if (tune.w > 1.5) { uint tw, th; srcT.GetDimensions(tw, th); suv = (floor(i.uv * float2(tw, th)) + 0.5) / float2(tw, th); }\n"
 "    float3 s = srcT.SampleLevel(s0, suv, 0).rgb;\n"                    // gamma-space bytes
-"    if (tune.w > 0.5) {\n"                                                // night vision: amplified low light, green, grainy
-"      float l = pow(saturate(dot(s, float3(0.30, 0.59, 0.11)) * tune.z), 0.5);\n"
-"      c = l * float3(0.42, 1.0, 0.48) + (n - 0.5) * 0.13;\n"
+"    if (tune.w > 1.5) {\n"                                                // night vision, sharp: unsharp mask, light grain
+"      uint tw, th; srcT.GetDimensions(tw, th);\n"
+"      float2 tx = 1.0 / float2(tw, th);\n"
+"      float3 c0 = NvBase(s);\n"
+"      float3 avg = (NvBase(srcT.SampleLevel(s0, suv + float2(tx.x, 0), 0).rgb) +\n"
+"                    NvBase(srcT.SampleLevel(s0, suv - float2(tx.x, 0), 0).rgb) +\n"
+"                    NvBase(srcT.SampleLevel(s0, suv + float2(0, tx.y), 0).rgb) +\n"
+"                    NvBase(srcT.SampleLevel(s0, suv - float2(0, tx.y), 0).rgb)) * 0.25;\n"
+"      c = saturate(c0 + (c0 - avg) * 0.9) + (n - 0.5) * 0.06;\n"
+"    } else if (tune.w > 0.5) {\n"                                         // night vision: smoothed, as before
+"      c = NvBase(s) + (n - 0.5) * 0.13;\n"
 "    } else {\n"                                                           // colour, as a camcorder screen shows it
 "      float3 g = pow(saturate(s * 1.5), 0.9);\n"
 "      c = lerp(g, dot(g, float3(0.30, 0.59, 0.11)).xxx, 0.15) + (n - 0.5) * 0.04;\n"
