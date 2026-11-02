@@ -4576,11 +4576,10 @@ static float g_docShoulderOff[3] = { 2.0f, 5.0f, -3.0f };   // up, forward, righ
 static float g_docShoulderRot[3] = { 0.0f, 0.0f, 0.0f };
 static float g_docHeldOff[3] = { 18.0f, -5.0f, 2.0f };       // in the left hand's bone frame (uu): forward, right, up
 static float g_docHeldRot[3] = { 122.0f, -28.0f, -32.0f };    // roll, pitch, yaw (deg)
-// [DOCUMENT] (Beta 1.1.9) The left WRIST turn while holding the document, in degrees. It twists the
-// forearm about its own long axis (pronation at the wrist) and undoes that twist on the hand, so only
-// the wrist turns: the hand and the paper stay exactly where they are. Tuned live from the menu and
-// saved to [Motion] DocumentWristTwist.
-static float g_docWristTwist = -15.0f;
+// [DOCUMENT] (Beta 1.1.9) The left WRIST lift while holding the document, in degrees. It bends the
+// wrist upward around the wrist joint, so the hand and the paper in it turn up together (the neutral
+// grip it has without the document is flat). Tuned live from the menu, saved to [Motion] DocumentWristLift.
+static float g_docWristTwist = 15.0f;
 extern "C" float OLUE3_GetDocumentWristTwist() { return g_docWristTwist; }
 extern "C" void OLUE3_SetDocumentWristTwist(float deg) {
     g_docWristTwist = deg < -180.0f ? -180.0f : (deg > 180.0f ? 180.0f : deg);
@@ -5293,16 +5292,19 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
-            // [DOCUMENT] the wrist turn is applied AFTER the arm solve, below, as a pure forearm
-            // twist: neither the hand nor the paper it holds is rotated.
+            // [DOCUMENT] the wrist turn is applied AFTER the arm solve, below: a wrist bend upward
+            // around the wrist joint, so the hand and the paper in it lift together.
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
             if (hand == 0 && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
-                VIk3 axis = IVSub(space.d[ha].t, space.d[fo].t);
-                if (IVLen(axis) > 0.1f) {
+                // bend the wrist UP around the wrist joint: the hand and the paper held in it turn
+                // up together with the forearm, instead of the flat neutral grip it has without it
+                VIk3 hf = IQRotate(space.d[ha].q, { 1.0f, 0.0f, 0.0f });
+                const VIk3 up = { 0.0f, 0.0f, 1.0f };
+                VIk3 axis = IVCross(hf, up);
+                if (IVLen(axis) > 1e-4f) {
                     const QIk4 q = IQAxis(IVNorm(axis), g_docWristTwist * 0.0174532925f);
-                    PoseTransformTree(space,mesh,fo,q);          // pronation: the forearm turns
-                    PoseTransformTree(space,mesh,ha,IQConj(q));  // hand (and paper) stay put
+                    PoseTransformTree(space,mesh,ha,q);
                 }
             }
         }

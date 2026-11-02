@@ -84,6 +84,7 @@ extern "C" void  OLSound_PostByName(const char* name, uint64_t obj);  // [DOOR] 
 extern "C" int   OLSound_PostFirstOf(const char* const* names, int n, uint64_t obj);   // [DOOR] first name this build has
 extern "C" void  OLSound_StopByName(const char* name, uint64_t obj);  // [DOOR] stop it early (the closing latch)
 extern "C" void  OLSound_SetRTPCByName(const char* name, float v);     // [DOOR] choose the slow/calm door sound
+extern "C" void  OLSound_SuppressCamStartup(int ms);                    // [CAMSTART] drop the camcorder take/put + NV switch one-shots
 extern "C" void  OLProxy_SetNvRequested(int on);                        // (Test43) [HANDNV] d3d9_proxy's night-vision state
 extern "C" void  OLProxy_SetHandleY(int on);                            // [RELOAD] the mod handles Y at the face
 extern "C" int   OLUE3_SceneScripted();                                  // (Test44) [ROOMWALK]
@@ -187,9 +188,9 @@ extern "C" void OLInteract_SetDocumentAdjust(const float off[3], const float rot
 extern "C" void OLInteract_ResetDocumentAdjust() {
     OLInteract_SetDocumentAdjust(kDocDefaultOff, kDocDefaultRot);
 }
-// [DOCUMENT] (V1) the left wrist's turn while it holds the document (deg). It is a pure forearm
-// twist at the wrist: the hand and the paper keep their placement, only the wrist turns.
-static const float kDocDefaultWristTwist = -15.0f;
+// [DOCUMENT] (V1) the left wrist's lift while it holds the document (deg): the wrist bends upward
+// around the wrist joint, lifting the hand and the paper together out of the flat neutral grip.
+static const float kDocDefaultWristTwist = 15.0f;
 extern "C" float OLInteract_GetDocumentWrist() { return OLUE3_GetDocumentWristTwist(); }
 extern "C" void  OLInteract_SetDocumentWrist(float deg) { OLUE3_SetDocumentWristTwist(deg); }
 extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristTwist(kDocDefaultWristTwist); }
@@ -278,8 +279,8 @@ void OLInteract_Init() {
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[4], L"-28", v, 32, ini); rot[1] = (float)_wtof(v);
         GetPrivateProfileStringW(L"Motion", kDocAdjKeys[5], L"-32", v, 32, ini); rot[2] = (float)_wtof(v);
         OLInteract_SetDocumentAdjust(off, rot);
-        float wr = -15.0f;
-        GetPrivateProfileStringW(L"Motion", L"DocumentWristTwist", L"-15", v, 32, ini); wr = (float)_wtof(v);
+        float wr = 15.0f;
+        GetPrivateProfileStringW(L"Motion", L"DocumentWristLift", L"15", v, 32, ini); wr = (float)_wtof(v);
         OLInteract_SetDocumentWrist(wr);
     }
     OLUE3_SetFlipScreenOn(g_on[ON_SCREEN]);
@@ -299,7 +300,7 @@ void OLInteract_Save(const wchar_t* ini) {
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_docAdjOff[i] : g_docAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kDocAdjKeys[i], b, ini); }
-    { swprintf_s(b, L"%.0f", OLInteract_GetDocumentWrist()); WritePrivateProfileStringW(L"Motion", L"DocumentWristTwist", b, ini); }
+    { swprintf_s(b, L"%.0f", OLInteract_GetDocumentWrist()); WritePrivateProfileStringW(L"Motion", L"DocumentWristLift", b, ini); }
     swprintf_s(b, L"%.2f", g_reloadStart); WritePrivateProfileStringW(L"Motion", L"ReloadAnimStart", b, ini);
     for (int i = 0; i < LN_COUNT; ++i) { swprintf_s(b, L"%d", g_learn[i]); WritePrivateProfileStringW(L"Motion", kLearnKeys[i], b, ini); }
 }
@@ -967,7 +968,8 @@ static ULONGLONG s_docMenuPulseUntil = 0;    // the ShowTabMenu press (Back) sen
 // The left shoulder in the torso frame: 15 cm left, 16 cm below the eyes, a touch forward.
 static const V3 kDocShoulderOff = { -0.15f, -0.16f, 0.02f };
 static const float kDocGrabM = 0.24f;        // how close the left hand must come to grab it
-static const float kDocLookCos = 0.90f;      // ~26 deg half-angle of "looking at" the document
+static const float kDocLookCos = 0.965f;     // ~15 deg half-angle of "looking at" the document (a small target)
+static const float kDocLookOffLeft = 0.05f;  // the look target sits this far left of the mesh origin so it is centred on the sheet
 static const ULONGLONG kDocLookMs = 800;     // how long to look before the notebook opens
 
 static void Document(ULONGLONG now, float dt, const OLXrFrameHands& fh, const OLXrPad& p) {
@@ -1018,6 +1020,7 @@ static void Document(ULONGLONG now, float dt, const OLXrFrameHands& fh, const OL
         V3 docPos = L;
         float dh[3];
         if (OLUE3_DocumentHandVisual(dh)) docPos = V3{ dh[0], dh[1], dh[2] };
+        docPos.x -= kDocLookOffLeft;   // centre the look target on the sheet (it sits left of the mesh origin)
         const V3 toDoc = Sub(docPos, s_headT);
         const float dLen = Len(toDoc);
         if (dLen > 0.05f) {
@@ -2627,6 +2630,9 @@ extern "C" void OLInteract_Tick() {
     const ULONGLONG now = GetTickCount64();
     if (!OLUE3_GameplayActive() || !Resolve()) {
         OLProxy_SetHandleY(0);   // [RELOAD] no gameplay: let the game see Y again
+        // [CAMSTART] Outlast raises the camcorder as its first playable frame; keep the take/put and
+        // night-vision switch one-shots silent through the load and the startup guard.
+        if (!OLUE3_GameplayActive()) OLSound_SuppressCamStartup(4000);
         if (!OLUE3_GameplayActive()) s_camUp = -1;   // (V1) not sampled now: the arm solver waits before freezing a reference
         // (Test43) a hand-carried climb rides out a moment of this (a hitch, a blink): the pad merge lets
         // go of him only after 1.5 s - zeroing the tick here dropped Miles off a ladder twice in testing
@@ -2656,6 +2662,7 @@ extern "C" void OLInteract_Tick() {
         ++s_camGuardTicks;
         if (s_camUp == 1 && s_camGuardTicks <= kCamGuardTicks) {
             s_camDownSince = 0;
+            OLSound_SuppressCamStartup(2000);          // [CAMSTART] our lower must not be heard
             if (now > s_camStartToggleAt) {            // the game's own lower (RB = OLA_ToggleCamcorder)
                 s_camStartToggleAt = now + 900;
                 RequestCamToggle(now, 150);
