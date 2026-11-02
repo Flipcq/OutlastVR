@@ -226,7 +226,8 @@ static bool g_blackTried = false;
 static bool g_blackAllowed = true;         // [XR] BlackSceneLayer=0 stands the placeholder down
 // [THEATER] the menu/loading screen is a flat panel in a black void (see the [THEATER] block).
 static volatile float g_cinemaDistanceM = 2.2f;
-static volatile float g_cinemaWidthDeg = 82.0f;
+static volatile float g_cinemaWidthDeg = 76.0f;   // (Beta 1.1.9) a touch smaller than the first 82: the
+                                                  // picture filled the whole lens and felt like a wall
 static volatile long  g_cinemaHeadLocked = 1;
 static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
 static long           g_thCurved = 1;           // [Cinema] Curved: cylinder screen when supported
@@ -1482,7 +1483,7 @@ static bool Init(UINT w, UINT h) {
                 g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
                 { wchar_t v[32];
                   GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"2.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
-                  GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"82.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v); }
+                  GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"76.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v); }
                 if (g_cinemaDistanceM < 1.6f) g_cinemaDistanceM = 1.6f;
                 if (g_cinemaDistanceM > 4.0f) g_cinemaDistanceM = 4.0f;
                 if (g_cinemaWidthDeg < 40.0f) g_cinemaWidthDeg = 40.0f;
@@ -3892,13 +3893,14 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
 
 // ---- [THEATER] the menu / loading presentation, rebuilt for VR (Test34) --------------------------
 // The menu, logos and loading screens play on a big flat screen in a pitch-black void, with a soft
-// gradient hugging the screen's edge so the picture melts into the black. The screen follows the
-// head (head-locked), so it is always right in front of you.
+// halo of the PICTURE'S OWN EDGE COLOURS hugging the screen, so the picture melts into the black in
+// its own colours rather than in a grey wash. The screen follows the head.
 //  - ANCHOR: built in front of where you face when it appears, upright (yaw only).
-//  - FOLLOW: with [Cinema] HeadLocked=1 (the default) the anchor tracks the head every frame, so the
-//    screen stays centred in view. HeadLocked=0 keeps the world-locked glide-back behavior.
+//  - FOLLOW: with [Cinema] HeadLocked=1 (the default) the anchor eases toward the head - it keeps a
+//    0.55 s lag and ignores ~1 deg / 1.5 cm of head noise, so the screen sits still instead of being
+//    welded to your face. HeadLocked=0 keeps the world-locked glide-back behavior.
 //  - ROOM: a projection layer under everything, drawn per eye from the runtime's own eye poses,
-//    so it is true stereo and head-tracked: pure black with a narrow halo at the screen's edge.
+//    so it is true stereo and head-tracked: pure black with the halo at the screen's edge.
 //  - SCREEN: a cylinder layer when the runtime offers XR_KHR_composition_layer_cylinder, else a
 //    flat quad. The image keeps its true aspect; height is capped inside the headset's view.
 //  - [Cinema] Environment=0 and Curved=0 each fall back to the plain presentation.
@@ -3910,6 +3912,7 @@ static ID3D11RenderTargetView* g_envRtv = nullptr;
 static ID3D11VertexShader* g_envVS = nullptr;
 static ID3D11PixelShader* g_envPS = nullptr;
 static ID3D11Buffer* g_envCB = nullptr;
+static ID3D11SamplerState* g_envSamp = nullptr;   // samples the menu picture for its edge colour
 static bool g_envTried = false, g_envReady = false;
 static XrVector3f g_thHead = { 0, 0, 0 };   // the viewpoint the theater is built around (LOCAL)
 static float g_thYaw = 0.0f;                 // facing, radians, same convention as the screen anchor
@@ -3917,7 +3920,9 @@ static DWORD g_thLastMs = 0, g_thAwaySince = 0;
 static bool  g_thFollowing = false;
 
 static const char* kEnvHlsl =
-"cbuffer EnvCB : register(b0) { float4 tanB; float4 eyeQ; float4 eyeP; float4 scrC; float4 scrB; };\n"
+"cbuffer EnvCB : register(b0) { float4 tanB; float4 eyeQ; float4 eyeP; float4 scrC; float4 scrB; float4 picR; };\n"
+"Texture2D pic : register(t0);\n"
+"SamplerState picSmp : register(s0);\n"
 "struct VOut { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
 "VOut vs(uint id : SV_VertexID) {\n"
 "  float2 t = float2((id << 1) & 2, id & 2);\n"
@@ -3936,8 +3941,15 @@ static const char* kEnvHlsl =
 "      float dx = max(abs(dot(q, rgt)) - scrC.w, 0.0);\n"
 "      float dy = max(abs(q.y) - scrB.z, 0.0);\n"
 "      float r2 = dx * dx + dy * dy;\n"
-"      // A narrow, soft gradient hugging the screen: everything else stays pure black.\n"
-"      col += float3(0.045, 0.050, 0.060) * exp(-r2 / 0.055);\n"
+"      // The halo takes the colour of the picture's own EDGE - the pixel nearest this point on\n"
+"      // the screen - so the picture melts into the black with its own colours, not a grey wash.\n"
+"      float2 e = float2(clamp(0.5 + dot(q, rgt) / max(2.0 * scrC.w, 0.001), 0.03, 0.97),\n"
+"                        clamp(0.5 - q.y / max(2.0 * scrB.z, 0.001), 0.03, 0.97));\n"
+"      float3 edge = pic.SampleLevel(picSmp, lerp(picR.xy, picR.zw, e), 0.0).rgb;\n"
+"      // The picture is stored sRGB-encoded and this target is *_SRGB, so hand the hardware the\n"
+"      // linear value: at the screen's edge the halo then equals the picture's own colour exactly\n"
+"      // and fades to black from there.\n"
+"      col += pow(max(edge, 0.0), 2.2) * exp(-r2 / 0.035);\n"
 "    }\n"
 "  }\n"
 "  float n = frac(sin(dot(i.p.xy, float2(12.9898, 78.233))) * 43758.5453);\n"
@@ -3950,16 +3962,39 @@ static float HeadYawLocal() {
 }
 static XrQuaternionf TheaterQ() { return { 0.0f, sinf(g_thYaw * 0.5f), 0.0f, cosf(g_thYaw * 0.5f) }; }
 
-// Once per frame while the theater is up. Head-locked: the anchor tracks the head every frame, so
-// the screen is always centred in view. Otherwise it anchors on first show (or after 1.5 s away),
-// on recenter, and glides back in front of you when you have looked well away for a while.
+// Once per frame while the theater is up. Head-locked: the anchor EASES toward the head instead of
+// snapping to it, with a small dead zone, so the screen sits still while you glance around and drifts
+// after you when you really turn - a screen welded to the face reads as jitter. Otherwise it anchors
+// on first show (or after 1.5 s away), on recenter, and glides back in front of you when you have
+// looked well away for a while.
 static void TheaterTick() {
     const DWORD now = GetTickCount();
     const float dt = g_thLastMs ? (float)(now - g_thLastMs) * 0.001f : 0.0f;
     if (g_cinemaHeadLocked) {
-        g_thYaw = HeadYawLocal();
-        g_thHead = g_lastLocalP;
-        g_thValid = 1;
+        // [HEADLOCK] Follow time constant and the two dead zones. The screen is 2.2 m away, so 1.5 cm
+        // of head drift is a quarter of a degree on the picture - below what you can see, and above
+        // the tracking noise that used to make the screen breathe with your pulse.
+        const float kTau = 0.55f;        // seconds to close ~63% of the gap (was: matched instantly)
+        const float kDeadYaw = 0.020f;   // ~1.1 deg of head yaw is ignored
+        const float kDeadPos = 0.015f;   // 1.5 cm of head movement is ignored
+        const float yaw = HeadYawLocal();
+        if (!g_thValid) {                // first frame: take the head as it is, no slide-in
+            g_thYaw = yaw; g_thHead = g_lastLocalP; g_thValid = 1;
+        } else {
+            const float step = (dt > 0.1f ? 0.1f : dt);
+            const float k = 1.0f - expf(-step / kTau);
+            const float dy = WrapPi(yaw - g_thYaw);
+            if (fabsf(dy) > kDeadYaw)
+                g_thYaw = WrapPi(g_thYaw + (dy - (dy > 0.0f ? kDeadYaw : -kDeadYaw)) * k);
+            const float dx = g_lastLocalP.x - g_thHead.x;
+            const float dyy = g_lastLocalP.y - g_thHead.y;
+            const float dz = g_lastLocalP.z - g_thHead.z;
+            const float dl = sqrtf(dx * dx + dyy * dyy + dz * dz);
+            if (dl > kDeadPos) {
+                const float s = ((dl - kDeadPos) / dl) * k;
+                g_thHead.x += dx * s; g_thHead.y += dyy * s; g_thHead.z += dz * s;
+            }
+        }
         g_thLastMs = now; g_thFollowing = false; g_thAwaySince = 0;
         return;
     }
@@ -4007,8 +4042,13 @@ static bool EnsureEnvironment() {
               SUCCEEDED(g_d3d11->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &g_envPS));
     vsb->Release(); psb->Release();
     if (!ok) return false;
-    D3D11_BUFFER_DESC bd = {}; bd.ByteWidth = 80; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_BUFFER_DESC bd = {}; bd.ByteWidth = 96; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     if (FAILED(g_d3d11->CreateBuffer(&bd, nullptr, &g_envCB))) return false;
+    D3D11_SAMPLER_DESC sd = {};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    if (FAILED(g_d3d11->CreateSamplerState(&sd, &g_envSamp))) return false;
     D3D11_TEXTURE2D_DESC td = {}; td.Width = kEnvW; td.Height = kEnvH; td.MipLevels = 1; td.ArraySize = 1;
     td.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET;
@@ -4042,22 +4082,32 @@ struct TheaterLayers {
     XrCompositionLayerCylinderKHR cyl[2];
 };
 
-static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh) {
+static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh,
+                              ID3D11Texture2D* pic, const float picU0[2], const float picU1[2]) {
     if (!g_thEnv || !g_rtEyeFovValid || !EnsureEnvironment()) return false;
+    // The picture the screen is showing, sampled by the room shader for its edge colour (the halo
+    // melts the picture into the black in the picture's own colours). Made per call: the upload
+    // texture is rebuilt whenever the backbuffer changes, so caching by pointer is a trap.
+    ID3D11ShaderResourceView* picSrv = nullptr;
+    if (pic) g_d3d11->CreateShaderResourceView(pic, nullptr, &picSrv);
     for (int e = 0; e < 2; ++e) {
         uint32_t idx = 0;
         XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
-        if (!XrSucceeded(g_fn.acquireSwapchainImage(g_envSc[e], &ai, &idx))) return false;
+        if (!XrSucceeded(g_fn.acquireSwapchainImage(g_envSc[e], &ai, &idx))) {
+            if (picSrv) picSrv->Release();
+            return false;
+        }
         XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
         g_fn.waitSwapchainImage(g_envSc[e], &wi);
         const XrPosef& ep = g_rtEyePose[e];
         const XrFovf& fv = g_rtEyeFov[e];
-        const float cb[20] = {
+        const float cb[24] = {
             tanf(fv.angleLeft), tanf(fv.angleRight), tanf(fv.angleUp), tanf(fv.angleDown),
             ep.orientation.x, ep.orientation.y, ep.orientation.z, ep.orientation.w,
             ep.position.x, ep.position.y, ep.position.z, g_presentFade,
             center.x, center.y, center.z, hw,
-            right.x, right.z, hh, g_thHead.y - 1.30f };
+            right.x, right.z, hh, g_thHead.y - 1.30f,
+            picU0[e], 0.0f, picU1[e], 1.0f };   // [HALO] the picture's uv window for this eye
         g_ctx->UpdateSubresource(g_envCB, 0, nullptr, cb, 0, 0);
         D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)kEnvW, (float)kEnvH, 0.0f, 1.0f };
         const float blendFactor[4] = { 0, 0, 0, 0 };
@@ -4066,12 +4116,16 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
         g_ctx->VSSetShader(g_envVS, nullptr, 0);
         g_ctx->PSSetShader(g_envPS, nullptr, 0);
         g_ctx->PSSetConstantBuffers(0, 1, &g_envCB);
+        g_ctx->PSSetShaderResources(0, 1, &picSrv);
+        g_ctx->PSSetSamplers(0, 1, &g_envSamp);
         g_ctx->OMSetBlendState(nullptr, blendFactor, 0xffffffff);
         g_ctx->OMSetDepthStencilState(g_blitDepth, 0);
         g_ctx->OMSetRenderTargets(1, &g_envRtv, nullptr);
         g_ctx->RSSetState(g_blitRaster);
         g_ctx->RSSetViewports(1, &vp);
         g_ctx->Draw(3, 0);
+        ID3D11ShaderResourceView* nopic = nullptr;
+        g_ctx->PSSetShaderResources(0, 1, &nopic);   // never leave the picture bound
         ID3D11RenderTargetView* nulrt = nullptr;
         g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
         if (idx < g_envImgs[e].size()) g_ctx->CopyResource(g_envImgs[e][idx], g_envTmp);
@@ -4088,6 +4142,7 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
     t.env = {};
     t.env.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VALUE;
     t.env.layerFlags = 0; t.env.space = g_localSpace; t.env.viewCount = 2; t.env.views = t.envPv;
+    if (picSrv) picSrv->Release();
     return true;
 }
 
@@ -4113,7 +4168,11 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
     const XrVector3f fwdOff = QRotate(yq, { 0.0f, up, -D });
     const XrVector3f center = { g_thHead.x + fwdOff.x, g_thHead.y + fwdOff.y, g_thHead.z + fwdOff.z };
 
-    if (RenderEnvironment(t, center, right, qw * 0.5f, halfH)) {
+    // [HALO] The halo is drawn from the picture's own edge colour. In the stereo presentation each
+    // eye shows its own half of the frame; the flat one shows the whole thing.
+    const float picU0[2] = { 0.0f, stereo ? 0.5f : 0.0f };
+    const float picU1[2] = { stereo ? 0.5f : 1.0f, 1.0f };
+    if (RenderEnvironment(t, center, right, qw * 0.5f, halfH, g_uploadTex, picU0, picU1)) {
         layers[n++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&t.env);
         *sceneLayer = true;
     }

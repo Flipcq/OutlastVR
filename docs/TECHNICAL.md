@@ -31,9 +31,10 @@ Licensed under [GPL-3.0](../LICENSE).
   animation ownership.
 - **Cutscene and menu handling** - narrow-FOV renders (menus, some cutscenes) fall back to a
   big screen in a pitch-black void rather than stretching a narrow frame across the whole
-  headset; the screen follows the head by default (`[Cinema] HeadLocked=1`, 82 deg at 2.2 m)
-  and a soft gradient hugs its edge so the picture melts into the black. Some cutscene cameras
-  render at full width like gameplay instead.
+  headset; the screen eases after the head (`[Cinema] HeadLocked=1`, 76 deg at 2.2 m, so it
+  lags instead of sitting welded to the face) and a soft halo samples the picture's *own edge
+  colours* so it melts into the black in its own palette. Some cutscene cameras render at full
+  width like gameplay instead.
 - **Color/gamma correction** - the game's own brightness calibration and its ~2.2-gamma
   authoring are reconciled with the sRGB frame the compositor expects.
 
