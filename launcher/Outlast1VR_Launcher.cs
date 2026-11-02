@@ -613,7 +613,7 @@ namespace Outlast1VR
                 }
                 if (!string.Equals(section, "SystemSettings", StringComparison.OrdinalIgnoreCase)) continue;
                 string o = l;
-                if (Regex.IsMatch(l, "^DepthOfField=", RX)) l = "DepthOfField=True";
+                if (Regex.IsMatch(l, "^DepthOfField=", RX)) l = "DepthOfField=False";   // the camcorder's lens blur is distracting in VR
                 else if (Regex.IsMatch(l, "^MotionBlur=", RX)) l = "MotionBlur=False";
                 else if (Regex.IsMatch(l, "^MotionBlurPause=", RX)) l = "MotionBlurPause=False";
                 else if (Regex.IsMatch(l, "^UpscaleScreenPercentage=", RX)) l = "UpscaleScreenPercentage=False";
