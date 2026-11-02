@@ -231,7 +231,13 @@ static volatile long  g_cinemaHeadLocked = 1;
 // [Cinema] MenuGlow: the edge gradient belongs to the front end, not to the menus inside a level.
 // 0 = never, 1 = only out of game (default), 2 = every theater screen.
 static volatile long  g_menuGlow = 1;
+// [Cinema] InGameScreenBrightness: percent. The notes and documents menus inside a level are a
+// sheet of white paper filling the screen, and at panel brightness that is a lamp in your face.
+static volatile long  g_ingameBright = 66;
 static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
+// [Cinema] ScreenOffsetX: metres added to the screen's horizontal position (positive = right).
+// Use this if the menu screen feels slightly off-centre in your headset.
+static volatile float g_cinemaOffsetX = 0.0f;
 static long           g_thCurved = 1;           // [Cinema] Curved: cylinder screen when supported
 static bool           g_cylinderExt = false;    // XR_KHR_composition_layer_cylinder enabled
 static bool g_perEyePose = false;          // resolved from g_perEyeMode once the runtime is known
@@ -1487,7 +1493,7 @@ static bool Init(UINT w, UINT h) {
                 // before this look": rewrite the section once, then never touch it again, so a hand-tuned
                 // ini keeps its tuning.
                 const int cinemaPreset = (int)GetPrivateProfileIntW(L"Cinema", L"Preset", 0, ini);
-                if (cinemaPreset < 3) {
+                if (cinemaPreset < 4) {
                     g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1; g_menuGlow = 1;
                     g_cinemaDistanceM = 3.2f; g_cinemaWidthDeg = 56.0f;
                     WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
@@ -1496,7 +1502,8 @@ static bool Init(UINT w, UINT h) {
                     WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
                     WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
                     WritePrivateProfileStringW(L"Cinema", L"MenuGlow", L"1", ini);
-                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"3", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"InGameScreenBrightness", L"66", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"4", ini);
                     XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
                          g_cinemaDistanceM, g_cinemaWidthDeg);
                 } else {
@@ -1504,9 +1511,13 @@ static bool Init(UINT w, UINT h) {
                     g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
                     g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
                     g_menuGlow = (long)GetPrivateProfileIntW(L"Cinema", L"MenuGlow", 1, ini);
+                    g_ingameBright = (long)GetPrivateProfileIntW(L"Cinema", L"InGameScreenBrightness", 66, ini);
+                    if (g_ingameBright < 20) g_ingameBright = 20;
+                    if (g_ingameBright > 100) g_ingameBright = 100;
                     wchar_t v[32];
                     GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
                     GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v);
+                    GetPrivateProfileStringW(L"Cinema", L"ScreenOffsetX", L"0.0", v, 32, ini); g_cinemaOffsetX = (float)_wtof(v);
                 }
                 if (g_cinemaDistanceM < 1.6f) g_cinemaDistanceM = 1.6f;
                 if (g_cinemaDistanceM > 4.0f) g_cinemaDistanceM = 4.0f;
@@ -3092,7 +3103,10 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
                            (clampLoPx + 0.5f) / (float)srcW, (clampHiPx - 0.5f) / (float)srcW,
                            1.0f / (float)srcW, 1.0f / (float)srcH,
                            scalingUp ? g_upscaleSharpness : 0.0f, g_upscaler ? 1.0f : 0.0f,
-                           1.0f - g_presentFade, scalingUp ? 1.0f : 0.0f };   // [FADE] tune.z = how dark, tune.w = resample
+                           // tune.z = how dark: the presentation fade, plus the in-game menu dim
+                           // (bright paper menus inside a level, never the front end).
+                           1.0f - g_presentFade * ((g_screenOn && OLUE3_HasHero()) ? (float)g_ingameBright * 0.01f : 1.0f),
+                           scalingUp ? 1.0f : 0.0f };   // tune.w = resample
     g_ctx->UpdateSubresource(g_blitCB, 0, nullptr, cb, 0, 0);
     const bool placed = (dstVpW > 0.5f && dstVpH > 0.5f);
     D3D11_VIEWPORT vp = placed ? D3D11_VIEWPORT{ dstVpX, dstVpY, dstVpW, dstVpH, 0.0f, 1.0f }
@@ -4020,7 +4034,8 @@ static const char* kEnvHlsl =
 "      // is *_SRGB too and encodes on write). scrB.w is the gain: 2x out of game, 0 in it.\n"
 "      float sx = max(0.0118 * scrC.w * scrC.w, 0.0001);\n"
 "      float sy = max(0.0118 * scrB.z * scrB.z, 0.0001);\n"
-"      float3 lin = min(max(edge, (float3)0.0) * scrB.w, (float3)1.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
+"      float3 tint = pow(max(edge, (float3)0.0), (float3)0.45);   // lifts a dark menu so it glows\n"
+"      float3 lin = min(tint * scrB.w, (float3)1.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
 "      float dg = VN(i.uv * 512.0) - 0.5;\n"
 "      col += max(lin * (1.0 + dg * 0.18) + dg * 0.0009, 0.0);\n"
 "    }\n"
@@ -4066,6 +4081,20 @@ static void TheaterTick() {
             if (dl > kDeadPos) {
                 const float s = ((dl - kDeadPos) / dl) * k;
                 g_thHead.x += dx * s; g_thHead.y += dyy * s; g_thHead.z += dz * s;
+            }
+            // [CENTRE] Close the last gap even if the head is never perfectly still: drift the screen
+            // toward the head with a slow leak, so it ends up centred in front of you instead of
+            // resting wherever the dead zone left it.
+            const float k2 = 1.0f - expf(-step / 1.2f);   // slow leak: ~1 s to close most of it
+            g_thYaw = WrapPi(g_thYaw + dy * k2);
+            g_thHead.x += dx * k2; g_thHead.y += dyy * k2; g_thHead.z += dz * k2;
+            static ULONGLONG s_resLog = 0;   // [CENTRE] the offset on the log, to tell a real one from a look
+            if (!s_resLog || GetTickCount64() - s_resLog > 5000) {
+                s_resLog = GetTickCount64();
+                char lr[128];
+                sprintf_s(lr, "[OLVR][THEATER] head-lock: yaw offset %.2f deg, %.1f cm off centre",
+                          dy * 57.2957795f, dl * 100.0f);
+                OLProxyLog(lr);
             }
         }
         g_thLastMs = now; g_thFollowing = false; g_thAwaySince = 0;
@@ -4210,11 +4239,14 @@ static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
     sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; sd.SampleDesc.Count = 1;
     sd.Usage = D3D11_USAGE_STAGING; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     ID3D11Texture2D* stage = nullptr;
-    if (FAILED(g_d3d11->CreateTexture2D(&sd, nullptr, &stage)) || !stage) return true;   // taken, unverified
+    if (FAILED(g_d3d11->CreateTexture2D(&sd, nullptr, &stage)) || !stage) {
+        XLOG("[OLVR][THEATER] palette staging texture FAILED - no edge gradient"); return false;
+    }
     g_ctx->CopyResource(stage, g_haloTex);
     D3D11_MAPPED_SUBRESOURCE m = {};
-    float sum = 0.0f;
+    float sum = 0.0f; bool mapped = false;
     if (SUCCEEDED(g_ctx->Map(stage, 0, D3D11_MAP_READ, 0, &m))) {
+        mapped = true;
         for (UINT y = 0; y < kHaloH; ++y) {
             const unsigned char* row = (const unsigned char*)m.pData + (size_t)y * m.RowPitch;
             for (UINT x = 0; x < kHaloW; ++x) {
@@ -4223,9 +4255,13 @@ static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
             }
         }
         g_ctx->Unmap(stage, 0);
+    } else {
+        XLOG("[OLVR][THEATER] palette Map FAILED - no edge gradient");
     }
     stage->Release();
+    if (!mapped) return false;
     if (average) *average = sum / (float)(kHaloW * kHaloH);
+    XLOG("[OLVR][THEATER] palette average %.3f (16x16 still)", *average);
     return true;
 }
 
@@ -4233,8 +4269,8 @@ static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
 // loaders get it, the pause/notes/documents menus inside a level do not), or everywhere.
 static float MenuGlowGain() {
     if (g_menuGlow <= 0) return 0.0f;
-    if (g_menuGlow >= 2) return 2.0f;
-    return OLUE3_HasHero() ? 0.0f : 2.0f;
+    if (g_menuGlow >= 2) return 0.6f;
+    return OLUE3_HasHero() ? 0.0f : 0.6f;   // out of a level: the glow; inside one: none
 }
 
 static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh) {
@@ -4315,8 +4351,8 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
         ++s_haloTries;
         if (taken && avg > 0.004f) {   // a black still is a loading screen: keep waiting for colour
             g_haloValid = true;
-            XLOG("[OLVR][THEATER] menu palette captured (%ux%u), average %.3f, after %d tries, hero=%d",
-                 kHaloW, kHaloH, avg, s_haloTries, OLUE3_HasHero());
+            XLOG("[OLVR][THEATER] menu palette captured (%ux%u), average %.3f, after %d tries | glow %.2f (MenuGlow=%ld hero=%d)",
+                 kHaloW, kHaloH, avg, s_haloTries, MenuGlowGain(), g_menuGlow, OLUE3_HasHero());
         } else {
             g_haloWantAt = nowMs + 250u;
         }
@@ -4334,7 +4370,8 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
     const XrQuaternionf yq = TheaterQ();
     const XrVector3f right = QRotate(yq, { 1.0f, 0.0f, 0.0f });
     const XrVector3f fwdOff = QRotate(yq, { 0.0f, up, -D });
-    const XrVector3f center = { g_thHead.x + fwdOff.x, g_thHead.y + fwdOff.y, g_thHead.z + fwdOff.z };
+    const XrVector3f offset = { right.x * g_cinemaOffsetX, right.y * g_cinemaOffsetX, right.z * g_cinemaOffsetX };   // [Cinema] ScreenOffsetX: shift the screen left/right
+    const XrVector3f center = { g_thHead.x + fwdOff.x + offset.x, g_thHead.y + fwdOff.y + offset.y, g_thHead.z + fwdOff.z + offset.z };
 
     if (RenderEnvironment(t, center, right, qw * 0.5f, halfH)) {
         layers[n++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&t.env);
