@@ -3189,6 +3189,15 @@ static void PoseTransformTree(IkArray& space, void* mesh, int root, QIk4 delta,
     }
 }
 
+// [DOCUMENT] Rotate one bone chain about an ARBITRARY point instead of about its own root. Outlast 1's
+// hand/forearm helpers (28, 29) are SIBLING skinning chains, not children of the arm bones: rotating the
+// arm drivers never moved them, which is why the document's wrist turn did nothing at all.
+static void PoseRollChain(IkArray& space, void* mesh, int root, VIk3 pivot, QIk4 delta) {
+    if (!space.d || root < 0 || root >= space.n) return;
+    const VIk3 d = IVSub(pivot, space.d[root].t);
+    PoseTransformTree(space, mesh, root, delta, IVSub(d, IQRotate(delta, d)));
+}
+
 // [ARMFIX] 8 (Test42): each twist helper bone (and its chain) relative to its arm driver, in the reference pose
 static QIk4 g_helperRefQ[73]; static VIk3 g_helperRefT[73]; static bool g_helperRefOk = false;
 static const int kTwistHelper[4][2] = { {29,11},{31,10},{53,35},{55,34} };   // helper root, driver
@@ -5292,17 +5301,8 @@ static bool PoseApplyVisible(void* comp) {
                 s_doorWristValid[hand] = false;
             }
             s_doorLockPrev[hand] = doorLock;
-            // [DOCUMENT] the wrist turn is applied AFTER the arm solve, below: a wrist bend upward
-            // around the wrist joint, so the hand and the paper in it lift together.
             PoseOrientArm(space,mesh,fo,ha,wristTarget,g_poseRamp[hand]);
             changed[hand]=true;
-            if (hand == 0 && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
-                // roll the whole arm about the shoulder->wrist line: the upper arm, forearm, hand and the
-                // paper all turn together, so the inside of the forearm faces the camera as when reading
-                const VIk3 axis = IVSub(space.d[ha].t, space.d[up].t);
-                if (IVLen(axis) > 0.1f)
-                    PoseTransformTree(space,mesh,up,IQAxis(IVNorm(axis), -g_docWristTwist * 0.0174532925f));
-            }
         }
         // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip.
         // (Beta 1.1.4) [FACECAM] Only while a held click pins it at his face does the game's own arm
@@ -5338,6 +5338,26 @@ static bool PoseApplyVisible(void* comp) {
                 PoseRebaseHelper(space,nativePose,mesh,55,34); // R upper-arm twist chain
             }
             if (camHold > 0.0f) GripApply(space, mesh, camHold);   // [NATIVEGRIP]
+        }
+        // [DOCUMENT] (Beta 1.1.9) Wrist turn with the document in the left hand. It has to come AFTER the
+        // helper rebase above: the helpers are sibling skinning chains, so a rotation of the arm drivers
+        // alone left the palm aux bone - the bone the paper hangs from - exactly where it was, which is
+        // why every earlier version of this looked identical. Here the forearm, hand, fingers, the forearm
+        // twist chain and the palm aux all roll about the forearm's own long axis (the elbow-wrist line),
+        // so the inside of the forearm turns toward the face and the paper turns with the hand. The wrist
+        // itself stays put: it lies on the rotation axis.
+        if (changed[0] && OLInteract_DocumentHeld() && fabsf(g_docWristTwist) > 0.01f) {
+            const int fo0 = g_poseBone[0][1], ha0 = g_poseBone[0][2];
+            if (fo0 >= 0 && fo0 < space.n && ha0 >= 0 && ha0 < space.n) {
+                const VIk3 pivot = space.d[fo0].t;
+                const VIk3 axis = IVSub(space.d[ha0].t, pivot);
+                if (IVLen(axis) > 0.1f) {
+                    const QIk4 roll = IQAxis(IVNorm(axis), -g_docWristTwist * 0.0174532925f);
+                    PoseRollChain(space, mesh, fo0, pivot, roll);   // forearm, hand, fingers
+                    PoseRollChain(space, mesh, 28,   pivot, roll);   // L hand auxiliary: the paper's bone
+                    PoseRollChain(space, mesh, 29,   pivot, roll);   // L forearm twist chain
+                }
+            }
         }
         {   // [DOORGRIP] a hand holding a door handle
             float dg[2] = { 0.0f, 0.0f };
@@ -6449,6 +6469,53 @@ static void GrainTick() {
     }
 }
 
+// [NVDUMP] (diagnostic, Beta 1.1.9) The camcorder's night vision blurs the whole picture (a scene
+// post-process, not the mod: the HUD stays sharp). Which property does it is not in any ini, so the
+// first time night vision comes up the mod writes the post-process / night-vision objects it can see,
+// with their float properties, to the log: one line per object, then one per float. Read-only.
+extern "C" int OLProxy_NightVisionActive();
+static bool NvNameHas(const char* s, const char* sub) { return s && strstr(s, sub) != nullptr; }
+static void NvPostDump() {
+    static int s_done = 0;
+    if (s_done || !OLProxy_NightVisionActive()) return;
+    if (!g_bpObjs || !g_bpObjNum || !g_bpNames || !g_bpUNameOff) return;
+    s_done = 1;
+    int hits = 0, lines = 0;
+    char nm[80], cn[80], pn[80], tn[80];
+    char l[240];
+    for (int i = 0; i < g_bpObjNum && hits < 24 && lines < 260; ++i) {
+        void* o = nullptr; uint32_t idx = 0;
+        if (!BP_Read(g_bpObjs + i, &o, 8) || !o) continue;
+        if (!BP_Read((char*)o + g_bpUNameOff, &idx, 4)) continue;
+        strcpy_s(nm, "?"); if (!BP_Name(idx, nm, sizeof(nm))) continue;
+        void* c = LS_ClassOf(o);
+        strcpy_s(cn, "?"); if (c) BP_ObjName(c, cn, sizeof(cn));
+        if (!NvNameHas(nm, "Night") && !NvNameHas(cn, "Night") &&
+            !NvNameHas(cn, "PostProcess") && !NvNameHas(nm, "PostProcess") &&
+            !NvNameHas(cn, "Blur") && !NvNameHas(nm, "Blur")) continue;
+        ++hits;
+        sprintf_s(l, "[OLVR][NVDUMP] object %s.%s", cn, nm); OLProxyLog(l); ++lines;
+        for (void* p = ProbeReadPtr((char*)c + 0x80); p && lines < 260; ) {
+            uint32_t pi = 0, off = 0;
+            if (!BP_Read((char*)p + g_bpUNameOff, &pi, 4) || !BP_Name(pi, pn, sizeof(pn))) break;
+            if (!BP_Read((char*)p + 0x8C, &off, 4)) break;
+            void* pc = LS_ClassOf(p);
+            strcpy_s(tn, "?"); if (pc) BP_ObjName(pc, tn, sizeof(tn));
+            if (!strcmp(tn, "FloatProperty") && off >= 0x40 && off < 0x4000) {
+                float v = 0.0f;
+                if (BP_Read((char*)o + off, &v, 4)) {
+                    sprintf_s(l, "[OLVR][NVDUMP]   %s = %.4f (+0x%X)", pn, v, off);
+                    OLProxyLog(l); ++lines;
+                }
+            }
+            void* nx = ProbeReadPtr((char*)p + 0x60);
+            if (nx == p) break;
+            p = nx;
+        }
+    }
+    sprintf_s(l, "[OLVR][NVDUMP] done: %d object(s)", hits); OLProxyLog(l);
+}
+
 // [FLARES] Suppress the decorative lens-flare components, including flashlight flares.
 // The user's runtime reflection dump confirms LensFlareComponent.SetIsActive and bIsActive.
 // Resolve the layout rather than hard-coding the observed +0x248 packed bool. Calling the
@@ -6601,6 +6668,7 @@ static void __fastcall Hook_NativePlayerMove(void* ctrl, float dt) {
     BodyTurnFollow(ctrl, dt);    // (Beta 1.1) [BODYTURN] Miles faces the way you face
     LS_Tick();                   // (Test46) [LIVESCREEN]
     __try { GrainTick(); } __except (EXCEPTION_EXECUTE_HANDLER) {}   // (Test47) [GRAIN]
+    __try { NvPostDump(); } __except (EXCEPTION_EXECUTE_HANDLER) {}   // [NVDUMP]
     if (mode && ctrl && OLUE3_GameplayActive() && g_olPoseValid && g_headTrack) {
         __try {
             char* hero = *(char**)((char*)ctrl + kCtrlHeroOff);

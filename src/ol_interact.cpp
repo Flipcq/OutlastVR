@@ -3032,7 +3032,9 @@ extern "C" int OLInteract_DocumentVisual(OLDocumentVisual* v) {
 // [DOCUMENT] The document is held in the left hand.
 extern "C" int OLInteract_DocumentHeld() {
     if (!s_tickMs || GetTickCount64() - s_tickMs > 250) return 0;
-    return (s_docState != DOC_NONE) ? 1 : 0;
+    // [DOCUMENT] only once it is really in the hand: while it slides off the shoulder (blend 0..1) the
+    // wrist turn must not pop in, and a document resting on the shoulder must never roll the arm.
+    return (s_docState == DOC_HELD && s_docBlend > 0.9f) ? 1 : 0;
 }
 // [BATTERY] The game's reload animation is playing: do not solve the arms from the controllers.
 extern "C" int OLInteract_ReloadNative() {
