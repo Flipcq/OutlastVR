@@ -1958,7 +1958,7 @@ namespace Outlast1VR
     {
         public const int W = 1280, H = 720;
         public const double BootEnd = 2.1;
-        public const int HitNone = -1, HitSpeaker = 10, HitMin = 11, HitClose = 12;
+        public const int HitNone = -1, HitSpeaker = 10, HitMin = 11, HitClose = 12, HitWindowMode = 14;
 
         // Test38: VR SETTINGS and QUEST 3 CONTROLS open their own tapes (Outlast1VR_Pages.cs); the log
         // folder moved onto the settings tape.
@@ -1979,7 +1979,8 @@ namespace Outlast1VR
             new Rectangle(56, 444, 468, 50), new Rectangle(56, 500, 468, 50), new Rectangle(56, 556, 468, 50),
         };
         static readonly Rectangle PanelR = new Rectangle(792, 392, 432, 242);
-        static readonly Rectangle SpeakerR = new Rectangle(1000, 36, 34, 28), MinR = new Rectangle(1204, 2, 34, 24), CloseR = new Rectangle(1240, 2, 36, 24);
+        static readonly Rectangle SpeakerR = new Rectangle(1000, 36, 34, 28), WindowModeR = new Rectangle(1168, 2, 34, 24), MinR = new Rectangle(1204, 2, 34, 24), CloseR = new Rectangle(1240, 2, 36, 24);
+        int windowModeCache = -1;   // [WINDOWED] the launcher's copy of [Render] WindowedMode (1 = window)
         const string TapeLabel = "TAPE 01 — MOUNT MASSIVE ASYLUM, LAKE COUNTY, COLORADO";
 
         static readonly Color Osd = Color.FromArgb(240, 228, 246, 228);
@@ -2252,6 +2253,7 @@ namespace Outlast1VR
         {
             if (CloseR.Contains(p)) return HitClose;
             if (MinR.Contains(p)) return HitMin;
+            if (WindowModeR.Contains(p)) return HitWindowMode;
             if (SpeakerR.Contains(p)) return HitSpeaker;
             if (page != PageMain) return T > 1.9 ? PageHitTest(p) : HitNone;
             if (T > 1.9) for (int i = 0; i < Btn.Length; i++) if (Btn[i].Contains(p)) return i;
@@ -2287,6 +2289,7 @@ namespace Outlast1VR
         {
             if (hit == HitClose) { BeginExit(); return; }
             if (hit == HitMin) { if (RequestMinimize != null) RequestMinimize(); return; }
+            if (hit == HitWindowMode) { ToggleWindowMode(); return; }
             if (hit == HitSpeaker) { ToggleMute(); return; }
             if (page != PageMain) { PageClick(hit); return; }
             if (hit >= 0 && hit < Btn.Length) { Select(hit); Activate(hit); }
@@ -3067,11 +3070,38 @@ namespace Outlast1VR
             Text(g, "AF", fOsdSm, U.A(Osd, 0.5), r + 6, tp - 2, true);
         }
 
+        // [WINDOWED] the window-mode button: on = Outlast stays in a window (the ini's WindowedMode).
+        bool WindowModeOn()
+        {
+            if (windowModeCache < 0)
+            {
+                string file = Path.Combine(gameDir, "outlastvr.ini");
+                windowModeCache = File.Exists(file) && ModIni.Read(file, "Render", "WindowedMode", "1").Trim() == "0" ? 0 : 1;
+            }
+            return windowModeCache == 1;
+        }
+
+        void ToggleWindowMode()
+        {
+            bool on = !WindowModeOn();
+            windowModeCache = on ? 1 : 0;
+            string file = Path.Combine(gameDir, "outlastvr.ini");
+            if (!preview && File.Exists(file)) ModIni.Write(file, "Render", "WindowedMode", on ? "1" : "0");
+            SetStatus(on ? "WINDOW MODE ON - APPLIES NEXT START" : "WINDOW MODE OFF - FULLSCREEN NEXT START", Tone.Info);
+            if (sfx != null) sfx.Tick();
+        }
+
         void DrawWindowButtons(Graphics g)
         {
-            bool hm = hover == HitMin, hc = hover == HitClose;
+            bool hm = hover == HitMin, hc = hover == HitClose, hw = hover == HitWindowMode;
             if (hm) Fill(g, Color.FromArgb(70, 140, 255, 160), MinR);
             if (hc) Fill(g, Color.FromArgb(150, 200, 30, 25), CloseR);
+            if (hw) Fill(g, Color.FromArgb(70, 140, 255, 160), WindowModeR);
+            pen.Width = 1.6f;
+            pen.Color = WindowModeOn() ? Hi : Color.FromArgb(170, 200, 230, 200);
+            Rectangle wr = new Rectangle(WindowModeR.X + 9, WindowModeR.Y + 6, 16, 12);
+            g.DrawRectangle(pen, wr);
+            g.DrawLine(pen, wr.X, wr.Y + 3, wr.Right, wr.Y + 3);
             pen.Width = 1.8f;
             pen.Color = hm ? Hi : Color.FromArgb(170, 200, 230, 200);
             g.DrawLine(pen, MinR.X + 11, MinR.Y + 15, MinR.Right - 11, MinR.Y + 15);
