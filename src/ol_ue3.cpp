@@ -266,6 +266,9 @@ static bool SceneWantsTheater() {
     return g_sMenu > 0 || g_sPaused > 0 || g_sHasHero == 0 || OLMenu_Visible();
 }
 extern "C" int OLUE3_GamePaused() { return g_sPaused > 0 ? 1 : 0; }
+// [HALO] 1 while a real level with a body is running. The menu gradient is for the front end and the
+// other out-of-game screens only, so this is what switches it off inside the game.
+extern "C" int OLUE3_HasHero() { return g_sHasHero > 0 ? 1 : 0; }
 // [MENUPRESS] (Test39) the game's own menus are up (pause, notebook, notes, documents, front end)
 extern "C" int OLUE3_InGameMenu() { return (g_sMenu > 0 || g_sPaused > 0 || g_sHasHero == 0) ? 1 : 0; }
 extern "C" int OLUE3_SceneScripted() { return SceneScripted() ? 1 : 0; }

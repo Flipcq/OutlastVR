@@ -32,10 +32,11 @@ Licensed under [GPL-3.0](../LICENSE).
 - **Cutscene and menu handling** - narrow-FOV renders (menus, some cutscenes) fall back to a
   big screen in a pitch-black void rather than stretching a narrow frame across the whole
   headset; the screen eases after the head (`[Cinema] HeadLocked=1`, 66 deg at 2.9 m, so it
-  lags instead of sitting welded to the face) and a soft halo drawn from a one-time **8x8 capture**
+  lags instead of sitting welded to the face; 1.1 s) and a soft halo drawn from a one-time **16x16 capture**
   of the menu - with value-noise wobble and grain on top, so it reads as brushed texture instead of
   streaks or 8-bit banding - melts the picture into the black in its own palette. Some cutscene
-  cameras render at full width like gameplay instead.
+  cameras render at full width like gameplay instead. The gradient itself is a front-end thing
+  (`[Cinema] MenuGlow=1`): the pause/notes/documents menus inside a level are drawn without it.
 - **Color/gamma correction** - the game's own brightness calibration and its ~2.2-gamma
   authoring are reconciled with the sRGB frame the compositor expects.
 

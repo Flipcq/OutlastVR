@@ -197,7 +197,8 @@ extern "C" void  OLInteract_ResetDocumentWrist() { OLUE3_SetDocumentWristTwist(k
 // applied at the wrist joint about the actor's own X (forward), Y (right) and Z (up). Set any of them
 // and the automatic lift above stands down, so what you dial is exactly what you get - this is how the
 // grip gets tuned in the headset instead of by guesswork.
-static float g_docWristRot[3] = { 0.0f, 0.0f, 0.0f };
+// Tuned in the headset (x 30, y 35, z 15): what the grip wants is now the default.
+static float g_docWristRot[3] = { 30.0f, 35.0f, 15.0f };
 extern "C" void OLInteract_GetDocumentWristRot(float out[3]) {
     out[0] = g_docWristRot[0]; out[1] = g_docWristRot[1]; out[2] = g_docWristRot[2];
 }
@@ -310,9 +311,9 @@ void OLInteract_Init() {
         OLInteract_SetDocumentWrist(wr);
         {   // [DOCWRIST] the live-tuned wrist angles
             float rot[3] = { 0.0f, 0.0f, 0.0f };
-            GetPrivateProfileStringW(L"Motion", L"DocumentWristX", L"0", v, 32, ini); rot[0] = (float)_wtof(v);
-            GetPrivateProfileStringW(L"Motion", L"DocumentWristY", L"0", v, 32, ini); rot[1] = (float)_wtof(v);
-            GetPrivateProfileStringW(L"Motion", L"DocumentWristZ", L"0", v, 32, ini); rot[2] = (float)_wtof(v);
+            GetPrivateProfileStringW(L"Motion", L"DocumentWristX", L"30", v, 32, ini); rot[0] = (float)_wtof(v);
+            GetPrivateProfileStringW(L"Motion", L"DocumentWristY", L"35", v, 32, ini); rot[1] = (float)_wtof(v);
+            GetPrivateProfileStringW(L"Motion", L"DocumentWristZ", L"15", v, 32, ini); rot[2] = (float)_wtof(v);
             OLInteract_SetDocumentWristRot(rot);
         }
     }

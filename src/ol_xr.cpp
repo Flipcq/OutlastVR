@@ -228,6 +228,9 @@ static bool g_blackAllowed = true;         // [XR] BlackSceneLayer=0 stands the 
 static volatile float g_cinemaDistanceM = 3.2f;   // (Beta 1.1.9) a screen ACROSS THE ROOM (2.2 -> 2.9 -> 3.2 m)
 static volatile float g_cinemaWidthDeg = 56.0f;    // ...and clearly smaller each time (82 -> 76 -> 66 -> 56)
 static volatile long  g_cinemaHeadLocked = 1;
+// [Cinema] MenuGlow: the edge gradient belongs to the front end, not to the menus inside a level.
+// 0 = never, 1 = only out of game (default), 2 = every theater screen.
+static volatile long  g_menuGlow = 1;
 static long           g_thEnv = 1;              // [Cinema] Environment: the black theater void
 static long           g_thCurved = 1;           // [Cinema] Curved: cylinder screen when supported
 static bool           g_cylinderExt = false;    // XR_KHR_composition_layer_cylinder enabled
@@ -1480,25 +1483,27 @@ static bool Init(UINT w, UINT h) {
                 // [CINEMA] The shipped look of the menu screen changed twice in 1.1.9 (a wall in your face,
                 // then 76 deg, now a screen across the room). An ini written by an older build still carries
                 // the old WidthDeg/DistanceM and silently overrode the new defaults - which is why asking
-                // for a smaller screen three times changed nothing on screen. "Preset < 2" means "written
+                // for a smaller screen three times changed nothing on screen. "Preset < 3" means "written
                 // before this look": rewrite the section once, then never touch it again, so a hand-tuned
                 // ini keeps its tuning.
                 const int cinemaPreset = (int)GetPrivateProfileIntW(L"Cinema", L"Preset", 0, ini);
-                if (cinemaPreset < 2) {
-                    g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1;
+                if (cinemaPreset < 3) {
+                    g_thEnv = 1; g_thCurved = 1; g_cinemaHeadLocked = 1; g_menuGlow = 1;
                     g_cinemaDistanceM = 3.2f; g_cinemaWidthDeg = 56.0f;
                     WritePrivateProfileStringW(L"Cinema", L"Environment", L"1", ini);
                     WritePrivateProfileStringW(L"Cinema", L"Curved", L"1", ini);
                     WritePrivateProfileStringW(L"Cinema", L"HeadLocked", L"1", ini);
                     WritePrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", ini);
                     WritePrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", ini);
-                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"2", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"MenuGlow", L"1", ini);
+                    WritePrivateProfileStringW(L"Cinema", L"Preset", L"3", ini);
                     XLOG("[OLVR][CINEMA] ini had the old menu-screen look - rewritten to %.1f m / %.1f deg",
                          g_cinemaDistanceM, g_cinemaWidthDeg);
                 } else {
                     g_cinemaHeadLocked = GetPrivateProfileIntW(L"Cinema", L"HeadLocked", 1, ini) ? 1 : 0;
                     g_thEnv    = GetPrivateProfileIntW(L"Cinema", L"Environment", 1, ini) ? 1 : 0;
                     g_thCurved = GetPrivateProfileIntW(L"Cinema", L"Curved", 1, ini) ? 1 : 0;
+                    g_menuGlow = (long)GetPrivateProfileIntW(L"Cinema", L"MenuGlow", 1, ini);
                     wchar_t v[32];
                     GetPrivateProfileStringW(L"Cinema", L"DistanceM", L"3.2", v, 32, ini); g_cinemaDistanceM = (float)_wtof(v);
                     GetPrivateProfileStringW(L"Cinema", L"WidthDeg", L"56.0", v, 32, ini); g_cinemaWidthDeg = (float)_wtof(v);
@@ -3794,6 +3799,7 @@ static bool EnsureFlip() {
 // instead of a crop of the eye picture. Point the camcorder behind you and the screen shows behind you.
 extern "C" IDirect3DTexture9* OLProxy_LensTex();
 extern "C" int OLUE3_LensLive();
+extern "C" int OLUE3_HasHero();   // [HALO] 1 = a level with a body is running
 struct LensSlot { IDirect3DTexture9* tex9; IDirect3DSurface9* surf9; IDirect3DQuery9* done9; HANDLE sh;
                   ID3D11Texture2D* tex11; ID3D11ShaderResourceView* srv; };
 static LensSlot g_lens[3] = {};
@@ -3917,7 +3923,7 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
 // follows the head.
 //  - ANCHOR: built in front of where you face when it appears, upright (yaw only).
 //  - FOLLOW: with [Cinema] HeadLocked=1 (the default) the anchor eases toward the head - it keeps a
-//    0.55 s lag and ignores ~1 deg / 1.5 cm of head noise, so the screen sits still instead of being
+//    1.1 s lag and ignores ~1 deg / 1.5 cm of head noise, so the screen sits still instead of being
 //    welded to your face. HeadLocked=0 keeps the world-locked glide-back behavior.
 //  - ROOM: a projection layer under everything, drawn per eye from the runtime's own eye poses,
 //    so it is true stereo and head-tracked: pure black with the halo at the screen's edge.
@@ -4011,10 +4017,10 @@ static const char* kEnvHlsl =
 "      dx = max(dx + wob, 0.0);\n"
 "      dy = max(dy + wob, 0.0);\n"
 "      // The capture is an *_SRGB texture, so the sampler already handed us LINEAR values (this target\n"
-"      // is *_SRGB too and encodes on write). A dark menu needs the 2x gain to read as a glow.\n"
+"      // is *_SRGB too and encodes on write). scrB.w is the gain: 2x out of game, 0 in it.\n"
 "      float sx = max(0.0118 * scrC.w * scrC.w, 0.0001);\n"
 "      float sy = max(0.0118 * scrB.z * scrB.z, 0.0001);\n"
-"      float3 lin = min(max(edge, (float3)0.0) * 2.0, (float3)1.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
+"      float3 lin = min(max(edge, (float3)0.0) * scrB.w, (float3)1.0) * exp(-(dx * dx / sx + dy * dy / sy));\n"
 "      float dg = VN(i.uv * 512.0) - 0.5;\n"
 "      col += max(lin * (1.0 + dg * 0.18) + dg * 0.0009, 0.0);\n"
 "    }\n"
@@ -4041,7 +4047,7 @@ static void TheaterTick() {
         // [HEADLOCK] Follow time constant and the two dead zones. The screen sits 2.9 m away, so 1.5 cm
         // of head drift is a third of a degree on the picture - below what you can see, and above the
         // tracking noise that used to make the screen breathe with your pulse.
-        const float kTau = 0.55f;        // seconds to close ~63% of the gap (was: matched instantly)
+        const float kTau = 1.10f;        // seconds to close ~63% of the gap (the user: slower)
         const float kDeadYaw = 0.020f;   // ~1.1 deg of head yaw is ignored
         const float kDeadPos = 0.015f;   // 1.5 cm of head movement is ignored
         const float yaw = HeadYawLocal();
@@ -4079,7 +4085,7 @@ static void TheaterTick() {
         } else g_thAwaySince = 0;
     }
     if (g_thFollowing) {
-        const float k = (dt > 0.1f ? 0.1f : dt) * 3.0f;
+        const float k = (dt > 0.1f ? 0.1f : dt) * 1.2f;   // the world-locked glide is slower too
         g_thYaw = WrapPi(g_thYaw + diff * k);
         g_thHead.x += (g_lastLocalP.x - g_thHead.x) * k;
         g_thHead.y += (g_lastLocalP.y - g_thHead.y) * k;
@@ -4223,6 +4229,14 @@ static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
     return true;
 }
 
+// Where the gradient may show: never, out of game only (the default - the front end, the logos and the
+// loaders get it, the pause/notes/documents menus inside a level do not), or everywhere.
+static float MenuGlowGain() {
+    if (g_menuGlow <= 0) return 0.0f;
+    if (g_menuGlow >= 2) return 2.0f;
+    return OLUE3_HasHero() ? 0.0f : 2.0f;
+}
+
 static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f right, float hw, float hh) {
     if (!g_thEnv || !g_rtEyeFovValid || !EnsureEnvironment()) return false;
     ID3D11ShaderResourceView* pal = g_haloSrv;   // the captured still; null means a black halo
@@ -4239,7 +4253,9 @@ static bool RenderEnvironment(TheaterLayers& t, XrVector3f center, XrVector3f ri
             ep.orientation.x, ep.orientation.y, ep.orientation.z, ep.orientation.w,
             ep.position.x, ep.position.y, ep.position.z, g_presentFade,
             center.x, center.y, center.z, hw,
-            right.x, right.z, hh, g_thHead.y - 1.30f };
+            // scrB.w used to carry the head height and nothing read it: it is the halo gain now -
+            // 2x for the front end, 0 (no gradient at all) once a level with a body is running.
+            right.x, right.z, hh, MenuGlowGain() };
         g_ctx->UpdateSubresource(g_envCB, 0, nullptr, cb, 0, 0);
         D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)kEnvW, (float)kEnvH, 0.0f, 1.0f };
         const float blendFactor[4] = { 0, 0, 0, 0 };
@@ -4297,10 +4313,10 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
         float avg = 0.0f;
         const bool taken = CaptureHaloPalette(g_uploadTex, &avg);
         ++s_haloTries;
-        if (taken && (avg > 0.004f || s_haloTries > 12)) {
+        if (taken && avg > 0.004f) {   // a black still is a loading screen: keep waiting for colour
             g_haloValid = true;
-            XLOG("[OLVR][THEATER] menu palette captured (%ux%u), average %.3f, after %d tries",
-                 kHaloW, kHaloH, avg, s_haloTries);
+            XLOG("[OLVR][THEATER] menu palette captured (%ux%u), average %.3f, after %d tries, hero=%d",
+                 kHaloW, kHaloH, avg, s_haloTries, OLUE3_HasHero());
         } else {
             g_haloWantAt = nowMs + 250u;
         }

@@ -685,60 +685,9 @@ static void BuildUI() {
       Help(
           "Right stick up/down zooms. Zoomed, the picture sits in a camcorder\n"
           "viewfinder in front of you, dark around it, like holding it to your eye."); }
-    // [BATTERY] (Beta 1.1.8) the spare cell's in-hand placement, tuned live
-    Section("BATTERY RELOAD");
-    { float off[3], rot[3]; OLInteract_GetBatteryAdjust(off, rot);
-      bool ch = false;
-      ch |= ImGui::SliderFloat("Battery forward", &off[0], -20.0f, 20.0f, "%.0f");
-      ch |= ImGui::SliderFloat("Battery right",   &off[1], -20.0f, 20.0f, "%.0f");
-      ch |= ImGui::SliderFloat("Battery up",      &off[2], -20.0f, 20.0f, "%.0f");
-      ch |= ImGui::SliderFloat("Battery roll",    &rot[0], -180.0f, 180.0f, "%.0f deg");
-      ch |= ImGui::SliderFloat("Battery pitch",   &rot[1], -180.0f, 180.0f, "%.0f deg");
-      ch |= ImGui::SliderFloat("Battery yaw",     &rot[2], -180.0f, 180.0f, "%.0f deg");
-      if (ch) OLInteract_SetBatteryAdjust(off, rot);
-      if (ImGui::Button("Reset the battery's position")) OLInteract_ResetBatteryAdjust();
-      Help(
-          "Where the spare battery sits in your left hand. Adjust it while you hold the\n"
-          "battery - it moves live as you drag the sliders, so you can find the right\n"
-          "spot without taking the headset off. It is saved to outlastvr.ini."); }
-
-    // [DOCUMENT] (Beta 1.1.9) the confidential document's in-hand placement, tuned live
-    Section("CONFIDENTIAL DOCUMENT");
-    { float off[3], rot[3]; OLInteract_GetDocumentAdjust(off, rot);
-      bool ch = false;
-      ch |= ImGui::SliderFloat("Document forward", &off[0], -20.0f, 20.0f, "%.0f");
-      ch |= ImGui::SliderFloat("Document right",   &off[1], -20.0f, 20.0f, "%.0f");
-      ch |= ImGui::SliderFloat("Document up",      &off[2], -20.0f, 20.0f, "%.0f");
-      ch |= ImGui::SliderFloat("Document roll",    &rot[0], -180.0f, 180.0f, "%.0f deg");
-      ch |= ImGui::SliderFloat("Document pitch",   &rot[1], -180.0f, 180.0f, "%.0f deg");
-      ch |= ImGui::SliderFloat("Document yaw",     &rot[2], -180.0f, 180.0f, "%.0f deg");
-      if (ch) OLInteract_SetDocumentAdjust(off, rot);
-      float wr = OLInteract_GetDocumentWrist();
-      if (ImGui::SliderFloat("Document wrist lift", &wr, -90.0f, 90.0f, "%.0f deg")) OLInteract_SetDocumentWrist(wr);
-      // [DOCWRIST] Live, axis by axis. Zero on all three = the automatic lift above; any non-zero
-      // value replaces it, so this is the "tune it in the headset" control.
-      {
-        float rot[3]; OLInteract_GetDocumentWristRot(rot);
-        bool rc = false;
-        rc |= ImGui::SliderFloat("Wrist turn X (fwd axis)", &rot[0], -180.0f, 180.0f, "%.0f deg");
-        rc |= ImGui::SliderFloat("Wrist turn Y (right axis)", &rot[1], -180.0f, 180.0f, "%.0f deg");
-        rc |= ImGui::SliderFloat("Wrist turn Z (up axis)", &rot[2], -180.0f, 180.0f, "%.0f deg");
-        if (rc) OLInteract_SetDocumentWristRot(rot);
-        if (ImGui::Button("Log these wrist values")) OLInteract_LogDocumentWrist();
-        ImGui::SameLine();
-        if (ImGui::Button("Back to the automatic lift")) { OLInteract_ResetDocumentWristRot(); }
-      }
-      if (ImGui::Button("Reset the document's position")) { OLInteract_ResetDocumentAdjust(); OLInteract_ResetDocumentWrist(); }
-      Help(
-          "Where the confidential document sits in your left hand. Grab it from your left\n"
-          "shoulder and keep holding it, then drag the sliders - it moves live so you can\n"
-          "find the right spot without taking the headset off. The paper is gripped RIGIDLY:\n"
-          "whatever your hand does, the paper does the same. 'Wrist turn X/Y/Z' rotate the\n"
-          "hand at the wrist joint around the body's forward, right and up axes; set any of\n"
-          "them and the automatic 'wrist lift' steps aside, so you dial it exactly. When it\n"
-          "looks right, press 'Log these wrist values' - the line goes to OutlastVR_Log.txt.\n"
-          "Saved to outlastvr.ini."); }
-
+    // [LIVEMENU] The battery placement, the document placement and the document wrist used to be
+    // dialled here. They are calibrated now (wrist 30/35/15) and baked in, and the live sliders are
+    // gone: the values still live in [Motion] in outlastvr.ini for anyone who wants to edit them.
     // [INTERACT] (Test37)
     Section("DOORS");
     { bool b = OLInteract_Get(0) != 0;
