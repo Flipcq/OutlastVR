@@ -637,18 +637,14 @@ static void BuildUI() {
           "the grip: the camcorder glides into your hand. Bring it to your eye to look\n"
           "through it. Let go and it goes back. Off: lift your right hand to your eye,\n"
           "or squeeze the right grip."); }
-    { bool b = OLInteract_GetCamcorderHud() != 0;
-      if (ImGui::Checkbox("Custom camcorder HUD", &b)) OLInteract_SetCamcorderHud(b);
-      Help("Reference-style HUD with the game's recording time, zoom and batteries."); }
-    // (Test43) [CAMHOLD] free hold, [FLIPSCREEN]
-    { int hold = OLInteract_CamHold() == 3 ? 1 : 0;
-      static const char* kHold[] = { "Free - moves with your controller", "The game's pose" };
-      if (ImGui::Combo("Camcorder in your hand", &hold, kHold, 2)) OLInteract_SetCamHold(hold ? 3 : 4);
+    { static const char* kHud[] = { "Reworked", "Focal square off", "Battery only" };
+      int hud = OLInteract_GetCamcorderHud() - 1;
+      if (hud < 0) hud = 0;
+      if (ImGui::Combo("Camcorder HUD", &hud, kHud, 3)) OLInteract_SetCamcorderHud(hud + 1);
       Help(
-          "Free: it moves and turns exactly with your controller, like holding a real\n"
-          "camcorder, its flip screen open toward you. The game's pose: held upright in\n"
-          "front of you with the lens ahead, the way Miles raises it; turning the\n"
-          "controller does not turn it."); }
+          "Reworked: the reference-style HUD with recording time, zoom, batteries and\n"
+          "the focusing square. Focal square off: the same HUD without the square.\n"
+          "Battery only: just the spare batteries and the charge gauge."); }
     // (Test45) [CAMADJUST] the player places it
     { float r[3], o[3]; OLInteract_GetCamAdjust(r, o);
       bool ch = false;
@@ -689,15 +685,6 @@ static void BuildUI() {
       Help(
           "Right stick up/down zooms. Zoomed, the picture sits in a camcorder\n"
           "viewfinder in front of you, dark around it, like holding it to your eye."); }
-    { bool b = OLInteract_Get(6) != 0;
-      if (ImGui::Checkbox("How-to labels", &b)) OLInteract_Set(7, b);
-      Help(
-          "Labels in front of you show what to do next (take the camcorder, pull out\n"
-          "the battery...). Each one stops after you have done it 3 times.");
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Show them again")) OLInteract_ResetHints();
-      Help("Every how-to label shows again until you have done that action 3 more times."); }
-
     // [BATTERY] (Beta 1.1.8) the spare cell's in-hand placement, tuned live
     Section("BATTERY RELOAD");
     { float off[3], rot[3]; OLInteract_GetBatteryAdjust(off, rot);

@@ -36,7 +36,7 @@ namespace Outlast1VR
         public double Min, Max, Step, Def;
         public string Unit;               // Number: "%" shows value*100, "cm" shows value*100 cm
         public string Off;                // Number: what 0 is called ("OFF"), or null
-        public int Action;                // Action: 1 reset how-to labels, 2 open the log folder
+        public int Action;                // Action: 2 open the log folder
     }
 
     // outlastvr.ini, read and written the way the mod itself does (GetPrivateProfileString).
@@ -60,7 +60,6 @@ namespace Outlast1VR
             catch { return false; }
         }
 
-        public static readonly string[] LearnedKeys = { "LearnedTakeCamcorder", "LearnedRaise", "LearnedEject", "LearnedInsert", "LearnedDoor", "LearnedClimb", "LearnedCoverMouth" };
     }
 
     // One slider scales both eye dimensions, preserving the saved pair's aspect ratio.
@@ -179,6 +178,10 @@ namespace Outlast1VR
                    "OFF: your head does all the looking up and down,\nlike a native VR game. ON: the old gamepad\nbehaviour."),
                 T_("MOVEMENT", "Motion", "BodyFollowsHead", "Body turns with you", 1,
                    "Turn your body or chair and Miles turns to face\nthe same way after a moment - arms and holster\nline up again without a recenter."),
+                N_("MOVEMENT", "Motion", "BodyAlignSeconds", "Body alignment speed", 3.0, 1.0, 10.0, 0.5, "s", null,
+                   "Seconds the body takes to turn a quarter circle\n(90 deg) into line with your head. Lower is faster.\nMin 1 s, max 10 s."),
+                T_("MOVEMENT", "Motion", "FreezeCameraRotation", "Freeze camera rotation", 0,
+                   "ON: the right stick turns Miles's body toward where\nyou want to go, and the camera does not move with it.\nOFF: the right stick turns the view as well."),
                 T_("MOVEMENT", "Motion", "RoomscaleWalk", "Walk around for real", 1,
                    "Step around your room and Miles's body walks\nwith you. Walls and shut doors stop him like the\nstick does. OFF: the body stays, your head leans."),
                 T_("MOVEMENT", "Input", "PhysicalCrouch", "Crouch when you duck", 0,
@@ -189,24 +192,20 @@ namespace Outlast1VR
                    "HANDS-ON: take it from your right hip, bring it\nto your eye. GRIP BUTTON: squeeze the right grip\nto raise it, again to lower - rest your hand."),
                 T_("HANDS", "Motion", "CamcorderHolster", "Camcorder on your hip", 1,
                    "Reach to your right hip and squeeze the grip: the\ncamcorder glides into your hand. Bring it to your\neye to look through it. Let go: it goes back."),
-                C_("HANDS", "Motion", "CamcorderHold", "Camcorder in your hand", 4, new[] { "FREE", "GAME POSE" }, new double[] { 4, 3 },
-                   "FREE: it moves and turns exactly with your\ncontroller, like a real camcorder. GAME POSE: held\nupright in front of you, lens ahead, the way Miles\nraises it (your hand still places it)."),
-                N_("HANDS", "Motion", "RaiseToEyeReachM", "Camcorder to eye distance", 0.14, 0.08, 0.25, 0.01, "cm", null,
+                N_("HANDS", "Motion", "RaiseToEyeReachM", "Camcorder to eye distance", 0.15, 0.08, 0.25, 0.01, "cm", null,
                    "How close the camcorder has to come to your eye\nbefore you are looking through it."),
                 T_("HANDS", "Motion", "DoorGrab", "Hands-on doors", 1,
                    "Doors are heavy: push one with your open hand\nand it swings as far as you push, or squeeze the\ngrip on its handle and swing it. X still works."),
                 C_("HANDS", "Motion", "ClimbMode", "Climbing", 2, new[] { "PHYSICAL", "GUIDED", "A BUTTON" }, new double[] { 2, 1, 0 },
                    "PHYSICAL: grab an edge or a rung and pull - your\nhands carry Miles, hand over hand. GUIDED: the\ngame's climb at your pace. A BUTTON: the old way."),
-                T_("HANDS", "Motion", "AutoLedgeGrab", "Auto ledge grab", 0,
+                T_("HANDS", "Motion", "AutoLedgeGrab", "Auto ledge grab", 1,
                    "ON: jump toward a ledge and Miles catches it\nhimself, like the original game. Pull down with\nboth grips or press A to climb up, B to drop."),
-                T_("HANDS", "Render", "CamcorderHud", "Custom camcorder HUD", 1,
-                   "Reference-style HUD with the game's recording\ntime, zoom, spare batteries and battery charge.\nOFF restores the original game display."),
+                C_("HANDS", "Render", "CamcorderHud", "Camcorder HUD", 1, new[] { "REWORKED", "FOCAL SQUARE OFF", "BATTERY ONLY" }, new double[] { 1, 2, 3 },
+                   "REWORKED: the reference-style HUD with recording\ntime, zoom, spare batteries, charge and the focus square.\nFOCAL SQUARE OFF: the same HUD without the square.\nBATTERY ONLY: just the spare batteries and the charge."),
                 T_("HANDS", "Motion", "ViewfinderFrame", "Zoom with black bars", 0,
                    "OFF: when you zoom, the zoomed picture fills\nyour view. ON: it sits in a camcorder-shaped\nwindow with black around it."),
                 T_("HANDS", "Motion", "CamcorderViewfinder", "Zoom in a viewfinder", 1,
                    "While you zoom, the zoomed picture sits in a\ncamcorder viewfinder in front of your eyes."),
-                T_("HANDS", "Motion", "HowToHints", "How-to labels", 1,
-                   "Labels in the headset show what to do next.\nEach one stops after you have done it 3 times."),
                 T_("HANDS", "Motion", "QuestPrompts", "Hints name Quest buttons", 1,
                    "The game's on-screen hints say what to do on the\nQuest 3 controllers instead of showing Xbox\nbuttons."),
                 T_("HANDS", "Input", "Haptics", "Controller vibration", 1,
@@ -223,18 +222,18 @@ namespace Outlast1VR
                     Help = "MANUAL mode: drag the circle left or right.\nBoth dimensions change together, per eye.\nCLICK THE WIDTH OR THE HEIGHT to type it:\none number each, ENTER applies, ESC cancels.\nArrow keys / D-pad also adjust. Restart game." },
                 N_("PICTURE", "Render", "RenderScale", "Render resolution", 1.0, 0.6, 1.0, 0.05, "%", null,
                    "AUTO mode only: 100% uses the OpenXR runtime's\nrecommended size. Lower it if Outlast stutters.\nMANUAL uses the chosen pixel size directly."),
-                N_("PICTURE", "XR", "Sharpness", "Sharpening", 0.5, 0.0, 1.0, 0.1, "%", "OFF",
+                N_("PICTURE", "XR", "Sharpness", "Sharpening", 0.0, 0.0, 1.0, 0.1, "%", "OFF",
                    "How much the picture is sharpened on its way to\nthe headset."),
                 T_("PICTURE", "Render", "LensFit", "Lens-shaped eyes", 1,
                    "Each eye is drawn in the Quest's own lens shape:\nsharper, same cost. Off by itself on Quest Link.\nTurn off if the picture looks off-centre."),
+                T_("PICTURE", "Render", "WindowedMode", "Windowed mode", 1,
+                   "ON: Outlast stays in a window and is not forced back\ninto exclusive fullscreen. OFF: the mod re-asserts\nfullscreen when Windows drops it."),
                 T_("PICTURE", "Render", "FilmGrain", "Film grain", 0,
                    "Outlast's film grain. OFF: a clean picture - in a\nheadset the grain reads as blur. ON: the game's\nown found-footage look."),
                 C_("PICTURE", "Render", "DesktopMirrorFps", "Monitor picture", 30, new[] { "15 FPS", "30 FPS", "60 FPS", "EVERY FRAME" }, new double[] { 15, 30, 60, 0 },
                    "What your monitor shows while you play - the\nheadset always gets every frame. EVERY FRAME on\nthe monitor too makes the game a lot slower."),
                 T_("PICTURE", "XR", "D3D9Ex", "Fast frame hand-over", 1,
                    "Hands every frame to the headset on the graphics\ncard (D3D9Ex). Turn off only if textures look wrong\nor Outlast crashes."),
-                A_("TOOLS", "Show the how-to labels again", 1,
-                   "Every how-to label in the headset shows again\nuntil you have done that action 3 more times."),
                 A_("TOOLS", "Open the log folder", 2,
                    "%LOCALAPPDATA%\\OutlastVR - the log to send with\na bug report is OutlastVR_Log.txt."),
             };
@@ -600,14 +599,7 @@ namespace Outlast1VR
 
         void RunSettingAction(SettingDef d)
         {
-            if (d.Action == 1)
-            {
-                if (!iniOk) { SetStatus("outlastvr.ini NOT FOUND NEXT TO THE LAUNCHER", Tone.Err); if (sfx != null) sfx.Error(); return; }
-                if (!preview) foreach (string k in ModIni.LearnedKeys) ModIni.Write(iniPath, "Motion", k, "0");
-                SetStatus("HOW-TO LABELS WILL SHOW AGAIN", Tone.Ok);
-                if (sfx != null) sfx.Success();
-            }
-            else if (d.Action == 2)
+            if (d.Action == 2)
             {
                 string dir = SysInfo.LogDir();
                 if (!Directory.Exists(dir)) { SetStatus("NO LOG FOLDER YET - PLAY IN VR ONCE", Tone.Warn); if (sfx != null) sfx.Error(); return; }

@@ -13,6 +13,7 @@ struct OLCamcorderHudState {
     int spares = 0, capacity = 10;
     bool nightVision = false;       // the camcorder's own night vision is running: the eye and speaker show
     bool visible = false;
+    int style = 1;                  // [Render] CamcorderHud: 1 reworked, 2 focal square off, 3 battery only
 };
 namespace OLCamHud {
 // ---- palette --------------------------------------------------------------------------------------
@@ -194,7 +195,7 @@ template<class Text> void Static(Canvas& c, Text& text) {
     // The focusing brackets used to be drawn here. They now ride their own quad, deeper than the
     // display (FocusDistance), so this texture is deliberately empty in the middle of the view - see
     // DrawBrackets/Focus above.
-    // Lens markings, bottom-left corner, in the same grey. The HD badge's perforations are HOLES:
+    // Lens markings, bottom-left corner, in the same grey (drawn for the reworked and focal-off styles). The HD badge's perforations are HOLES:
     // the display is transparent over the scene, so the squares were never meant to be black plates.
     c.RoundFill(149, 819, 108, 52, 4.0f, IconRed, IconGreen, IconBlue);
     for (int y = 823; y <= 855; y += 16) {
@@ -269,6 +270,8 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // 20 px up - because the quad fills less of the view (PanelWidth), so the display's corners land
     // nearer the middle of what you see. The clusters are pushed toward the edges and the top, which
     // keeps them reading as corners and leaves the focusing brackets below them clear.
+    // "Battery only" keeps just the spare count and the gauge below; everything else is left out.
+    if (s.style != 3) {
     // Record light and REC, top-left corner of the display, in the recording red (#A71000).
     for (int y = 60; y < 100; ++y) for (int x = 34; x < 75; ++x) {
         const float d = std::sqrt((x-54.5f)*(x-54.5f) + (y-79.5f)*(y-79.5f));
@@ -286,6 +289,7 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
     // The thumb is the game's own zoom factor: dark outline, grey body, so any move shows.
     const int tracker = 813 + int(ZoomUnit(s.zoom)*260);
     c.Fill(tracker,72,16,23,36,36,33); c.Fill(tracker+2,74,12,19,IconRed,IconGreen,IconBlue);
+    }
     // Spare batteries, then the charge gauge, top-right corner of the display.
     const int capacity = s.capacity > 0 ? s.capacity : 10;
     const int spares = s.spares < 0 ? 0 : (s.spares > capacity ? capacity : s.spares);
@@ -330,6 +334,6 @@ template<class Text> void Top(Canvas& c, const OLCamcorderHudState& s, Text& tex
         }
     }
     // Night vision is running: the eye and the speaker appear under the gauge's right end.
-    if (s.nightVision) NightVisionIcons(c);
+    if (s.nightVision && s.style != 3) NightVisionIcons(c);
 }
 }

@@ -118,7 +118,6 @@ extern "C" void OLInteract_SetCamHold(int m);
 // (Test49) [CAMBUTTON] 1 = the right grip is a camcorder button (raise / lower), the view stays the head's
 extern "C" int  OLInteract_CamButton();
 extern "C" void OLInteract_SetCamButton(int on);
-extern "C" void OLInteract_ResetHints();     // the how-to labels show again
 // (Test45) [CAMADJUST] the camcorder in your hand: rot = tilt, turn, roll (deg); off = forward, up, right (cm)
 extern "C" void OLInteract_GetCamAdjust(float rot[3], float off[3]);
 extern "C" void OLInteract_SetCamAdjust(const float rot[3], const float off[3]);

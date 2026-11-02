@@ -5301,7 +5301,7 @@ static bool PoseApplyVisible(void* comp) {
                 // inside of the forearm turns toward the camera, as when reading a document
                 const VIk3 axis = IVSub(space.d[ha].t, space.d[fo].t);
                 if (IVLen(axis) > 0.1f)
-                    PoseTransformTree(space,mesh,fo,IQAxis(IVNorm(axis), g_docWristTwist * 0.0174532925f));
+                    PoseTransformTree(space,mesh,fo,IQAxis(IVNorm(axis), -g_docWristTwist * 0.0174532925f));
             }
         }
         // [NATIVEGRIP] the camcorder up at your eye: the right arm is the game's - learn its grip.
@@ -6315,6 +6315,10 @@ extern "C" int OLUE3_DirectTurnReady() {
 }
 extern "C" void OLUE3_TurnRate(float degPerSec) { g_turnRate = degPerSec; g_turnRateMs = GetTickCount64(); }
 extern "C" void OLUE3_TurnStep(float deg) { InterlockedExchangeAdd(&g_turnStepMilli, (LONG)(deg * 1000.0f)); }
+// [FREEZECAM] [Motion] FreezeCameraRotation=1: the right stick turns Miles's body and the view stays where it
+// was - the same recenter-frame compensation the body-follow turn uses, so the camera does not move.
+extern "C" void OLXR_TurnBaseline(float rightDeg);
+static volatile long g_freezeCam = 0;
 static void TurnApply(void* ctrl, float dt) {
     float deg = (float)InterlockedExchange(&g_turnStepMilli, 0) * 0.001f;
     if (GetTickCount64() - g_turnRateMs < 150 && dt > 0.0f && dt < 0.2f) deg += g_turnRate * dt;
@@ -6338,6 +6342,7 @@ static void TurnApply(void* ctrl, float dt) {
         void* hero = OLUE3_Hero();
         if (hero) { int* hr = (int*)((char*)hero + g_ssRotation); hr[1] += whole; }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (g_freezeCam) OLXR_TurnBaseline((float)whole * (360.0f / 65536.0f));
     static long s_logged = 0;
     if (s_logged < 3 && fabsf(deg) > 5.0f) { ++s_logged; char l[120]; sprintf_s(l, "[OLVR][DIRECTTURN] turned %.1f deg in one step", deg); OLProxyLog(l); }
 }
@@ -6396,6 +6401,19 @@ static bool  g_grainTried = false;
 static float g_grainOrig = -1.0f;
 extern "C" int  OLUE3_GetFilmGrain() { return g_grainOn ? 1 : 0; }
 extern "C" void OLUE3_SetFilmGrain(int on) { g_grainOn = on ? 1 : 0; }
+// The grain is written through the game's own SetGrainOpacity: a direct write changes the property the
+// game reads on its game thread, but the render side keeps its own copy, which only the setter updates.
+// The direct write stays as the fallback when the setter is not in this build.
+static void* g_grainSetFn = nullptr;
+static int   g_grainArgOff = -1;
+static void GrainWrite(void* obj, float* p, float v) {
+    if (g_grainSetFn && g_grainArgOff >= 0) {
+        alignas(16) char args[0x80] = {};
+        *(float*)(args + g_grainArgOff) = v;
+        if (LS_Call(obj, g_grainSetFn, args)) return;
+    }
+    __try { *p = v; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
 static void GrainTick() {
     if (!g_grainTried) {
         if (!g_bpObjNum) return;
@@ -6403,7 +6421,16 @@ static void GrainTick() {
         if (!SP_FindPropAny("OLUberPostProcessEffect", "GrainOpacity", &g_grainOff, nullptr)) {
             g_grainOff = 0; OLProxyLog("[OLVR][GRAIN] OLUberPostProcessEffect.GrainOpacity not found - the film grain stays the game's");
         } else {
-            char l[120]; sprintf_s(l, "[OLVR][GRAIN] OLUberPostProcessEffect.GrainOpacity +0x%X, film grain %s", g_grainOff, g_grainOn ? "ON" : "OFF"); OLProxyLog(l);
+            g_grainSetFn = LS_FindFunction("OLUberPostProcessEffect", "SetGrainOpacity");
+            if (g_grainSetFn) {
+                void* p = ProbeReadPtr((char*)g_grainSetFn + 0x80);
+                char type[64]; unsigned off = 0;
+                if (p && BP_ObjName(LS_ClassOf(p), type, sizeof(type)) && !strcmp(type, "FloatProperty") &&
+                    BP_Read((char*)p + 0x8C, &off, 4) && off < 0x80) g_grainArgOff = (int)off;
+                else g_grainSetFn = nullptr;
+            }
+            char l[160]; sprintf_s(l, "[OLVR][GRAIN] OLUberPostProcessEffect.GrainOpacity +0x%X, setter %s, film grain %s", g_grainOff,
+                                   g_grainSetFn ? "SetGrainOpacity" : "direct write", g_grainOn ? "ON" : "OFF"); OLProxyLog(l);
         }
     }
     if (!g_grainOff) return;
@@ -6417,8 +6444,8 @@ static void GrainTick() {
             g_grainOrig = v;
             char l[100]; sprintf_s(l, "[OLVR][GRAIN] the game's grain opacity is %.3f", v); OLProxyLog(l);
         }
-        if (!g_grainOn) { if (v != 0.0f) __try { *p = 0.0f; } __except (EXCEPTION_EXECUTE_HANDLER) {} }
-        else if (v == 0.0f && g_grainOrig > 0.0f) __try { *p = g_grainOrig; } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!g_grainOn) { if (v != 0.0f) GrainWrite(fx[i], p, 0.0f); }
+        else if (v == 0.0f && g_grainOrig > 0.0f) GrainWrite(fx[i], p, g_grainOrig);
     }
 }
 
@@ -6511,8 +6538,11 @@ extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);
 static volatile long g_bodyTurn = 1;
 extern "C" int  OLUE3_GetBodyTurn() { return g_bodyTurn ? 1 : 0; }
 extern "C" void OLUE3_SetBodyTurn(int on) { g_bodyTurn = on ? 1 : 0; }
+// [Motion] BodyAlignSeconds: how long the body takes to turn 90 deg into line with your head (1 - 10 s).
+static volatile float g_bodyAlignSec = 3.0f;
 static void BodyTurnFollow(void* ctrl, float dt) {
-    static const float kStartDeg = 20.0f, kRateDegPerSec = 30.0f, kDoneDeg = 2.0f;
+    static const float kStartDeg = 20.0f, kDoneDeg = 2.0f;
+    const float kRateDegPerSec = 90.0f / g_bodyAlignSec;
     static const ULONGLONG kDwellMs = 2000;
     static ULONGLONG s_offSince = 0;
     static bool s_turning = false;
@@ -7539,6 +7569,13 @@ static void ReadConfig() {
     g_headRoll  = GetPrivateProfileIntW(L"Stage3", L"HeadRoll", 0, ini) ? 1 : 0;
     g_headPos   = GetPrivateProfileIntW(L"Stage3", L"HeadPosition", 1, ini) ? 1 : 0;
     g_bodyTurn  = GetPrivateProfileIntW(L"Motion", L"BodyFollowsHead", 1, ini) ? 1 : 0;   // (Beta 1.1) [BODYTURN]
+    {
+        wchar_t sb[32] = {};
+        GetPrivateProfileStringW(L"Motion", L"BodyAlignSeconds", L"3", sb, 32, ini);
+        float s = (float)_wtof(sb);
+        g_bodyAlignSec = s < 1.0f ? 1.0f : (s > 10.0f ? 10.0f : s);
+        g_freezeCam = GetPrivateProfileIntW(L"Motion", L"FreezeCameraRotation", 0, ini) ? 1 : 0;   // [FREEZECAM]
+    }
     g_camProbe  = GetPrivateProfileIntW(L"Stage3", L"CamProbe", 0, ini) ? 1 : 0;   // [CAMPROBE] dev only
     g_boneProbe = GetPrivateProfileIntW(L"Stage3", L"BoneProbe", 0, ini) ? 1 : 0;  // [BONEPROBE] dev only
     g_boneWiggle = GetPrivateProfileIntW(L"Stage3", L"BoneWiggle", 0, ini);        // [WIGGLE] dev only

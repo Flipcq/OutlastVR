@@ -1500,7 +1500,7 @@ static bool Init(UINT w, UINT h) {
                 g_fitMode    = (int)GetPrivateProfileIntW(L"XR", L"FitRuntimeFrustum", (UINT)-1, ini);
                 g_nativeEyeResolution = GetPrivateProfileIntW(L"XR", L"NativeEyeResolution", 1, ini) != 0;
                 { wchar_t sv[32];
-                  GetPrivateProfileStringW(L"XR", L"Sharpness", L"0.35", sv, 32, ini);
+                  GetPrivateProfileStringW(L"XR", L"Sharpness", L"0", sv, 32, ini);
                   g_upscaleSharpness = (float)_wtof(sv);
                   if (!isfinite(g_upscaleSharpness)) g_upscaleSharpness = 0.35f;
                   if (g_upscaleSharpness < 0.0f) g_upscaleSharpness = 0.0f;
@@ -3512,8 +3512,16 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
         if (!XrSucceeded(g_fn.enumerateSwapchainImages(g_hudSc,n,&n,
             (XrSwapchainImageBaseHeader*)g_hudImages.data()))) { g_hudFailed = true; return false; }
         g_hudInitialized.assign(n,false);
-        OLCamHud::Static(g_hudCanvas,g_hudText);
         XLOG("[OLVR][CAMHUD] procedural 1920x1080 HUD ready");
+    }
+    {   // the HUD style ([Render] CamcorderHud): the artwork is drawn again whenever it changes
+        static int s_hudStyle = 0;
+        if (state.style != s_hudStyle) {
+            s_hudStyle = state.style;
+            std::fill(g_hudCanvas.pixels.begin(), g_hudCanvas.pixels.end(), uint8_t(0));
+            if (state.style != 3) OLCamHud::Static(g_hudCanvas,g_hudText);
+            g_hudInitialized.assign(g_hudInitialized.size(),false);
+        }
     }
     OLCamHud::Top(g_hudCanvas,state,g_hudText);
     if (!g_hudText.ok) { g_hudFailed = true; return false; }
@@ -5518,7 +5526,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         camcorderShown = true;
         // The focusing brackets go over it on a quad of their own, FocusDistance out. If that layer
         // cannot be prepared the display is still correct, it just carries no box this frame.
-        if (layerCount < 20 && CamcorderFocusLayer(camcorderFocusQuad))
+        if (camcorderState.style == 1 && layerCount < 20 && CamcorderFocusLayer(camcorderFocusQuad))
             layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&camcorderFocusQuad);
     }
 

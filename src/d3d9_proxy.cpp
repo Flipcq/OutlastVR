@@ -2539,7 +2539,9 @@ static void InstallDisplayHooks() {
     wchar_t ini[MAX_PATH]; swprintf_s(ini, L"%soutlastvr.ini", exe);
     g_reqW = (LONG)GetPrivateProfileIntW(L"Render", L"ResX", 0, ini);
     g_reqH = (LONG)GetPrivateProfileIntW(L"Render", L"ResY", 0, ini);
-    g_autoFs = GetPrivateProfileIntW(L"Render", L"AutoFullscreen", 1, ini) ? 1 : 0;   // [FSFIX]
+    // [WINDOWED] WindowedMode=1 (default): the game stays in a window; no fullscreen re-assert.
+    const bool windowedMode = GetPrivateProfileIntW(L"Render", L"WindowedMode", 1, ini) != 0;
+    g_autoFs = (!windowedMode && GetPrivateProfileIntW(L"Render", L"AutoFullscreen", 1, ini)) ? 1 : 0;   // [FSFIX]
     g_highResWindow = GetPrivateProfileIntW(L"Render", L"HighResWindow", 1, ini) ? 1 : 0;
     Log("[OLVR][FSFIX] AutoFullscreen %s (re-assert exclusive-fullscreen after the compositor "
         "drops it)", g_autoFs ? "ON" : "off");

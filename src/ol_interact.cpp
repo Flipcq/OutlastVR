@@ -106,8 +106,8 @@ enum { ON_DOORS, ON_RAISE, ON_VIEWFINDER, ON_MARKERS, ON_PROMPTS, ON_HOLSTER, ON
 // [LENSCAM] ol_xr), a second camera that runs only while the camcorder is in your hand facing you.
 // (Test46c) the user: "remove the live screen for now" - off by default and out of the menus again.
 // (Beta 1.1.8) guide markers/rings/glows and how-to/Quest hint labels are OFF by default (a clean view).
-static const int kOnDefault[ON_COUNT] = { 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0 };
-static volatile long g_on[ON_COUNT] = { 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0 };
+static const int kOnDefault[ON_COUNT] = { 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1 };
+static volatile long g_on[ON_COUNT] = { 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1 };
 static const wchar_t* kKeys[ON_COUNT] = { L"DoorGrab", L"CamcorderRaiseGesture",
                                           L"CamcorderViewfinder", L"DevMarkers", L"QuestPrompts",
                                           L"CamcorderHolster", L"HowToHints", L"ClimbWithHands",
@@ -203,7 +203,7 @@ extern "C" void  OLInteract_SetReloadStart(float s) {
 // How close (m) the right controller has to come to the eye zone to raise the camcorder. The grip
 // pose sits in the handle, so a controller held against the headset is ~5 cm from the zone and one
 // held a hand's width out ~12 cm.
-static float g_eyeReach = 0.14f;
+static float g_eyeReach = 0.15f;
 // [HOWTO] how often each action has been done; its label stops at kLearnDone
 enum { LN_TAKECAM, LN_RAISE, LN_EJECT, LN_INSERT, LN_DOOR, LN_CLIMB, LN_BREATH, LN_RECENTER, LN_COUNT };
 static const wchar_t* kLearnKeys[LN_COUNT] = { L"LearnedTakeCamcorder", L"LearnedRaise", L"LearnedEject",
@@ -237,11 +237,12 @@ void OLInteract_Init() {
     wchar_t ini[MAX_PATH];
     if (!IniPath(ini, MAX_PATH)) return;
     for (int i = 0; i < ON_COUNT; ++i) g_on[i] = GetPrivateProfileIntW(L"Motion", kKeys[i], kOnDefault[i], ini) ? 1 : 0;
+    g_on[ON_HOWTO] = 0;   // the how-to labels are removed
     for (int i = 0; i < LN_COUNT; ++i) g_learn[i] = GetPrivateProfileIntW(L"Motion", kLearnKeys[i], 0, ini);
     wchar_t v[32];
-    GetPrivateProfileStringW(L"Motion", L"RaiseToEyeReachM", L"0.14", v, 32, ini);
+    GetPrivateProfileStringW(L"Motion", L"RaiseToEyeReachM", L"0.15", v, 32, ini);
     g_eyeReach = (float)_wtof(v);
-    if (!(g_eyeReach >= 0.05f && g_eyeReach <= 0.25f)) g_eyeReach = 0.14f;
+    if (!(g_eyeReach >= 0.05f && g_eyeReach <= 0.25f)) g_eyeReach = 0.15f;
     // ClimbMode, when there, decides (the launcher writes it); an older ini only has ClimbWithHands
     const int cm = GetPrivateProfileIntW(L"Motion", L"ClimbMode", -1, ini);
     if (cm == 0) g_on[ON_CLIMB] = 0;
@@ -294,7 +295,7 @@ void OLInteract_Save(const wchar_t* ini) {
     wchar_t b[32]; swprintf_s(b, L"%.3f", g_eyeReach); WritePrivateProfileStringW(L"Motion", L"RaiseToEyeReachM", b, ini);
     swprintf_s(b, L"%ld", g_on[ON_CLIMB] ? g_climbMode : 0L); WritePrivateProfileStringW(L"Motion", L"ClimbMode", b, ini);
     swprintf_s(b, L"%ld", g_camHold); WritePrivateProfileStringW(L"Motion", L"CamcorderHold", b, ini);
-    WritePrivateProfileStringW(L"Render", L"CamcorderHud", g_camHud ? L"1" : L"0", ini);   // (Beta 1.1)
+    { wchar_t hb[8]; swprintf_s(hb, L"%ld", g_camHud); WritePrivateProfileStringW(L"Render", L"CamcorderHud", hb, ini); }   // (Beta 1.1)
     WritePrivateProfileStringW(L"Motion", L"CamcorderControl", g_camButton ? L"1" : L"0", ini);   // (Test49)
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_camAdjRot[i] : g_camAdjOff[i - 3]); WritePrivateProfileStringW(L"Motion", kCamAdjKeys[i], b, ini); }
     for (int i = 0; i < 6; ++i) { swprintf_s(b, L"%.0f", i < 3 ? g_batAdjOff[i] : g_batAdjRot[i - 3]); WritePrivateProfileStringW(L"Motion", kBatAdjKeys[i], b, ini); }
@@ -310,13 +311,8 @@ static void Learn(int what) {
     if (IniPath(ini, MAX_PATH)) { swprintf_s(b, L"%d", g_learn[what]); WritePrivateProfileStringW(L"Motion", kLearnKeys[what], b, ini); }
     if (g_learn[what] == kLearnDone) ILog("[OLVR][HOWTO] '%ls' learned - its label is hidden from now on", kLearnKeys[what]);
 }
-static bool Teach(int what) { return g_on[ON_HOWTO] && g_learn[what] < kLearnDone; }
-extern "C" void OLInteract_ResetHints() {
-    for (int i = 0; i < LN_COUNT; ++i) g_learn[i] = 0;
-    wchar_t ini[MAX_PATH];
-    if (IniPath(ini, MAX_PATH)) for (int i = 0; i < LN_COUNT; ++i) WritePrivateProfileStringW(L"Motion", kLearnKeys[i], L"0", ini);
-    OLProxyLog("[OLVR][HOWTO] how-to labels reset - they show again until each action is done 3 times");
-}
+// How-to labels were removed: nothing is taught, so no label is ever drawn.
+static bool Teach(int what) { (void)what; return false; }
 
 // ---- small maths ---------------------------------------------------------------------------------
 struct V3 { float x, y, z; };
@@ -444,6 +440,8 @@ static const ULONGLONG kCamGuardSettleMs = 1500;   // down this long = the start
 static bool GameReloading() { return s_camRaw == 4 || s_camRaw == 5; }
 static float s_zoom = 0.0f, s_energy = 1.0f;
 static volatile float s_vfZoom = 0.0f;
+static volatile float s_vfShown = 0.0f;     // s_vfZoom eased over ~0.35 s: the zoom glides instead of jumping
+static ULONGLONG s_vfShownMs = 0;
 static volatile ULONGLONG s_vfMs = 0;
 static int   s_numBat = 0, s_prevNumBat = -1;
 // [CAMHUD] XR and gameplay may run on different threads. Publish the whole snapshot together.
@@ -462,10 +460,11 @@ extern "C" int OLInteract_CamcorderHud(OLCamcorderHudState* state) {
     ReleaseSRWLockShared(&s_hudLock);
     return g_camHud && fresh;
 }
-extern "C" int OLInteract_GetCamcorderHud() { return g_camHud ? 1 : 0; }
-extern "C" void OLInteract_SetCamcorderHud(int on) {
-    g_camHud = on ? 1 : 0;
-    OLProxyLog(g_camHud ? "[OLVR][CAMHUD] custom HUD enabled" : "[OLVR][CAMHUD] custom HUD disabled");
+// [Render] CamcorderHud: 1 reworked (default), 2 focal square off, 3 battery only.
+extern "C" int OLInteract_GetCamcorderHud() { return g_camHud; }
+extern "C" void OLInteract_SetCamcorderHud(int style) {
+    g_camHud = style < 1 ? 1 : (style > 3 ? 3 : style);
+    char l[80]; sprintf_s(l, "[OLVR][CAMHUD] custom HUD style %ld", g_camHud); OLProxyLog(l);
 }
 extern "C" void OLInteract_CamcorderHudSubmitted(int shown) {
     InterlockedExchange64(&s_hudSubmitted, shown ? (LONG64)GetTickCount64() : 0);
@@ -476,7 +475,7 @@ static void CamcorderHudTick(bool active) {
     const bool wanted = g_camHud && active && s_camUp == 1 && !OLUE3_InGameMenu() && !OLMenu_Visible();
     const bool ready = OLUE3_CamcorderHudRead(&state.recordingSeconds, &state.capacity,
         wanted && submitted && GetTickCount64() - submitted < 500);
-    state.energy = s_energy; state.zoom = s_zoom; state.spares = s_numBat;
+    state.energy = s_energy; state.zoom = s_zoom; state.spares = s_numBat; state.style = (int)g_camHud;
     state.nightVision = OLProxy_NightVisionActive() != 0;
     state.visible = wanted && ready;
     const int status = !g_camHud ? 0 : !active ? 1 : s_camUp != 1 ? 2 : !wanted ? 3 : !ready ? 4 : 5;
@@ -2374,17 +2373,9 @@ static void HandNV(ULONGLONG now, const OLXrPad& p, void* hero) {
     const bool modeOk = F.camMode && Rd(hero, F.camMode, &mode);
     if (s_handNV < 0 && modeOk) s_handNV = mode != 0 ? 1 : 0;
     if (s_camUp == 1) {
-        if (!s_nvUpMs) { s_nvUpMs = now; s_nvSynced = false; }
-        // once per raise: the game's night vision takes the hand's setting (one click if they differ) ...
-        if (!s_nvSynced && modeOk && s_handNV >= 0 && now - s_nvUpMs > 450) {
-            s_nvSynced = true;
-            if ((mode != 0) != (s_handNV > 0)) {
-                s_nvPulseUntil = now + 120; s_nvAdoptAt = now + 800;
-                ILog("[OLVR][HANDNV] camcorder at your eye: night vision %s, as it was in your hand", s_handNV > 0 ? "on" : "off");
-            } else s_nvAdoptAt = now;
-        }
-        // ... after that the game's own switch (your clicks at the eye, a flat battery) is the truth
-        if (s_nvSynced && modeOk && now >= s_nvAdoptAt) { s_handNV = mode != 0 ? 1 : 0; OLProxy_SetNvRequested(s_handNV); }
+        // The game's night vision is left exactly as the game starts it: no click is sent at the eye.
+        // Its state is only read, so the flip screen and the hand setting follow what is shown.
+        if (modeOk) { s_handNV = mode != 0 ? 1 : 0; OLProxy_SetNvRequested(s_handNV); }
         return;
     }
     s_nvUpMs = 0;
@@ -2724,6 +2715,11 @@ extern "C" void OLInteract_Tick() {
         const bool on = g_on[ON_VIEWFINDER] && s_camUp == 1 && (s_vfZoom > 0.0f ? s_zoom > 0.01f : s_zoom > 0.03f);
         s_vfZoom = on ? (s_zoom < 1.0f ? s_zoom : 1.0f) : 0.0f;
         s_vfMs = now;
+        const float ease = s_vfShownMs ? std::fmin((float)(now - s_vfShownMs) * 0.001f, 0.1f) : 0.0f;
+        s_vfShownMs = now;
+        float shown = s_vfShown + (s_vfZoom - s_vfShown) * (1.0f - std::exp(-ease / 0.35f));
+        if (s_vfZoom <= 0.0f && shown < 0.002f) shown = 0.0f;
+        s_vfShown = shown;
     }
     float hw[3] = {}, yaw = 0.0f;
     OLXrFrameHands fh = {}; OLXrPose head = {}; OLXrPad p = {};
@@ -2888,8 +2884,9 @@ extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out) {
 }
 
 extern "C" float OLInteract_ViewfinderZoom() {
+    // The eased zoom (s_vfShown) is what the eye's field of view follows, so a W-T move glides.
     if (!s_vfMs || GetTickCount64() - s_vfMs > 250) return 0.0f;
-    return s_vfZoom;
+    return s_vfShown;
 }
 // While the camcorder is up and the right hand is at the eye - or it is pinned at his face by a
 // held right stick click - the right arm is the game's.
