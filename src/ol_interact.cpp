@@ -113,8 +113,8 @@ static const wchar_t* kKeys[ON_COUNT] = { L"DoorGrab", L"CamcorderRaiseGesture",
                                           L"CamcorderHolster", L"HowToHints", L"ClimbWithHands",
                                           L"CamcorderLiveScreen", L"CoverMouth", L"RoomscaleWalk", L"ViewfinderFrame",
                                           L"AutoLedgeGrab" };
-// (Test43) [Motion] ClimbMode: 2 = physical (your hands carry Miles, default), 1 = guided (Test41: the
-// game's climb, paced by your pull). ClimbWithHands=0 still means the A button. [Motion] CamcorderHold:
+// (Test43) [Motion] ClimbMode: 2 = physical (your hands carry Miles, default). The guided climb (1) was
+// removed. ClimbWithHands=0 still means the A button. [Motion] CamcorderHold:
 // 4 = free hold (default), 3 = the game's raise pose (Test42).
 static volatile long g_climbMode = 2, g_camHold = 4;   // (Beta 1.1) back to 4: the real-camcorder hold (5) was broken
 static volatile long g_camHud = 1;        // [CAMHUD] [Render] CamcorderHud

@@ -104,8 +104,8 @@ extern "C" void OLInteract_FilterMoveStick(float* x, float* y);
 // 12 (Beta 1.1) auto ledge grab: in the air the game catches the edge (physical climbing steps aside)
 extern "C" int  OLInteract_Get(int which);
 extern "C" void OLInteract_Set(int which, int on);
-// (Test43) climbing: 0 the A button, 1 guided (the game's climb at your pace), 2 physical (your hands
-// carry Miles). The camcorder in your hand: 4 free hold, 3 the game's raise pose.
+// (Test43) climbing: 0 the A button, 2 physical (your hands carry Miles). The guided climb (1) was
+// removed - a saved 1 reads as physical. The camcorder in your hand: 4 free hold, 3 the game's raise pose.
 extern "C" int  OLInteract_ClimbMode();
 extern "C" void OLInteract_SetClimbMode(int m);
 extern "C" int  OLInteract_CamHold();
