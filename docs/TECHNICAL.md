@@ -48,8 +48,7 @@ Licensed under [GPL-3.0](../LICENSE).
   or the frame has to be pre-warped into the runtime's own asymmetric lens frustum (Meta's PC
   runtime: Quest Link / Air Link). The margin the fit leaves is filled with the picture's own edge
   rather than black, so the compositor's reprojection has pixels to pull in when the head turns
-  quickly (per axis, and with `[Stream] EdgeFillMargin` giving up a few percent of the picture's own
-  size to buy margin on the sides where the lens ends where the picture ends). A recenter done in
+  quickly (per axis). A recenter done in
   the headset's own menu is folded into the pose baseline instead of moving the world, and the
   eye-image format is negotiated with the runtime (BGRA8 sRGB wherever it
   is offered - every runtime so far - with the pre-encoded-LUT path for one that has only the

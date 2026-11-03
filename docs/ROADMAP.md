@@ -57,22 +57,13 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
     covers only what the game rendered; the margin used to be cleared to black, and that black is
     what the warp brings into view. The blit now extends the picture's own edge over the margin
     with the same affine map, so the margin is a stretched continuation of the world instead of a
-    bar. `OLR_EdgeFill()`, `[Stream] EdgeFill` (default 1). Polishing pass, after the corners still
-    flashed black on the fastest turns: the decision is **per axis** (an asymmetric lens leaves a
-    wide margin on one side and none on the other; one narrow axis used to throw the free margin
-    away), and the side with no margin at all is **bought** with `[Stream] EdgeFillMargin=4` (the
-    picture is drawn 4 % smaller, centred, and the fill covers the rest - 2 % of the lens on every
-    side of margin for 4 % of FOV, the world reading 4 % smaller). **Not a fit-mode setting:** the
-    runtimes that honour the declared frustum (SteamVR, VDXR) have no fit at all and their eye image
-    *is* the picture, so the same margin is taken in the plain blit path (`BlitHalfToEye`, plus the
-    held frames in `BlitHoldToEye`) with the declared frustum untouched - the correction is the same
-    on every runtime, only the geometry it is taken from differs. The theater screen and the
-    camcorder viewfinder are quads and are left alone. A skipped fill now says why in
-    the log, four times at most: `[OLVR][STREAMEDGE] kept black around the picture: ...`.
-  - **`[STREAMPOSE]`** The pose lead is now `[Stream] PoseLeadPeriods` (default `2` after the Beta
-  1.2.1 polish; `1` was the shipped behaviour before). A deeper link queue needs more lead so the
-  picture keeps up with the head, and `[STREAMEDGE]` covers the margin the extra prediction
-  exposes. `tests/stream_edge_fill_test.py`, `docs/STREAMING.md`.
+    bar. `OLR_EdgeFill()`, `[Stream] EdgeFill` (default 1). Polishing pass: the decision is
+    **per axis** (an asymmetric lens leaves a wide margin on one side and none on the other; one
+    narrow axis used to throw the free margin away). A skipped fill now says why in the log, four
+    times at most: `[OLVR][STREAMEDGE] kept black around the picture: ...`.
+  - **`[STREAMPOSE]`** The pose lead is now `[Stream] PoseLeadPeriods` (default `1`, the shipped
+    behaviour). `0` removes the lead entirely; `2` suits a runtime with a deep queue over a link.
+    `tests/stream_edge_fill_test.py`, `docs/STREAMING.md`.
 
 - **Running well on SteamVR alone and on Quest Link / Air Link** (the runtime-integration half,
   separate from streaming quality). Two gaps closed:

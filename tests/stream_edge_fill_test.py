@@ -47,8 +47,7 @@ def block(signature):
 
 
 # The real quaternion helpers, so the re-anchor check is the code that ships, not a re-implementation.
-funcs = (block('static int OLR_ClampEdgeFillMargin')
-         + '\n' + block('static const float kEdgeFillMinCoverage')   # the constant, then OLR_EdgeFill
+funcs = ('\n' + block('static const float kEdgeFillMinCoverage')   # the constant, then OLR_EdgeFill
          + '\n' + block('static int OLR_DecideFitFrustum')
          + '\n' + block('static int OLR_ClampPoseLeadPeriods')
          + '\n' + block('static XrQuaternionf QNormalize(XrQuaternionf q) {')
@@ -92,8 +91,7 @@ int main() {
     // checks stay the shipped ones.
     float x0 = 100.0f, y0 = 50.0f, x1 = 900.0f, y1 = 950.0f;
     assert(OLR_EdgeFill(&x0, &y0, &x1, &y1,
-                        0.0f, 0.0f, 640.0f, 900.0f, 1000.0f, 1000.0f, 0,
-                        &sX, &sY, &sW, &sH) == 3);
+                        0.0f, 0.0f, 640.0f, 900.0f, 1000.0f, 1000.0f, &sX, &sY, &sW, &sH) == 3);
     // Both axes filled and no bought margin: the picture keeps its own box (the caller then blits
     // it over the whole eye image, see BlitFitToEyeTan).
     assert(near(x0, 100.0f) && near(y0, 50.0f) && near(x1, 900.0f) && near(y1, 950.0f));
@@ -117,7 +115,7 @@ int main() {
     // black bars at the sides during a turn.
     x0 = 20.0f; y0 = 200.0f; x1 = 980.0f; y1 = 800.0f;
     assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0.0f, 0.0f, 960.0f, 600.0f,
-                        1000.0f, 1000.0f, 0, &sX, &sY, &sW, &sH) == 1);
+                        1000.0f, 1000.0f, &sX, &sY, &sW, &sH) == 1);
     assert(near(x0, 20.0f) && near(x1, 980.0f));           // X keeps its own box...
     assert(near(y0, 200.0f) && near(y1, 800.0f));          // ...and Y is left exactly where it was
     assert(near(sY, 0.0f) && near(sH, 600.0f));            // ...so is the source map
@@ -127,78 +125,19 @@ int main() {
     // -- a render that already covers the whole eye: the fill changes nothing ----------------
     x0 = 0.0f; y0 = 0.0f; x1 = 1000.0f; y1 = 1000.0f;
     assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0.0f, 0.0f, 800.0f, 1000.0f,
-                        1000.0f, 1000.0f, 0, &sX, &sY, &sW, &sH) == 3);
+                        1000.0f, 1000.0f, &sX, &sY, &sW, &sH) == 3);
     assert(near(sX, 0.0f) && near(sW, 800.0f) && near(sY, 0.0f) && near(sH, 1000.0f));
-
-    // -- the bought margin: the picture is drawn (1/(1+pct)) of its size, still centred --------
-    // 4 % of 800 px = the picture keeps 769.2 px, 15.4 px of margin on each side, and the same
-    // affine map inside the picture - the FOV cost, spent where there was no margin at all.
-    x0 = 100.0f; y0 = 0.0f; x1 = 900.0f; y1 = 1000.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0.0f, 0.0f, 640.0f, 1000.0f,
-                        1000.0f, 1000.0f, 4, &sX, &sY, &sW, &sH) == 3);
-    const float s = 1.04f;
-    assert(near(x0, 500.0f - 400.0f / s) && near(x1, 500.0f + 400.0f / s));
-    assert(x1 - x0 < 800.0f && x0 > 0.0f);                  // a real band on both sides
-    assert(near(mapX(x0, 0.0f, 1000.0f, sX, sW), 0.0f));    // the picture's edges still match
-    assert(near(mapX(x1, 0.0f, 1000.0f, sX, sW), 640.0f));
-    // The knob is bounded: 0 is off (identical to no margin at all), 15 is the most allowed.
-    assert(OLR_ClampEdgeFillMargin(-5) == 0 && OLR_ClampEdgeFillMargin(0) == 0);
-    assert(OLR_ClampEdgeFillMargin(4) == 4 && OLR_ClampEdgeFillMargin(99) == 15);
-    {
-        float a0 = 100.0f, b0 = 0.0f, a1 = 900.0f, b1 = 1000.0f;
-        assert(OLR_EdgeFill(&a0, &b0, &a1, &b1, 0.0f, 0.0f, 640.0f, 1000.0f,
-                            1000.0f, 1000.0f, -5, &sX, &sY, &sW, &sH) == 3);
-        assert(near(a0, 100.0f) && near(a1, 900.0f));       // 0 (or a negative) = no shrink
-    }
 
     // -- a deliberately narrow frame (a menu, a scripted camera) keeps its honest black field -
     // 58 deg rendered inside a 100 deg lens: stretching that edge would be a smear, not overscan.
     x0 = 210.0f; y0 = 210.0f; x1 = 790.0f; y1 = 790.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 640, 900, 1000.0f, 1000.0f, 0,
-                        &sX, &sY, &sW, &sH) == 0);
+    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 640, 900, 1000.0f, 1000.0f, &sX, &sY, &sW, &sH) == 0);
     // Just over three quarters of the eye is gameplay's worst case and IS filled.
     x0 = 120.0f; y0 = 120.0f; x1 = 880.0f; y1 = 880.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 640, 900, 1000.0f, 1000.0f, 0,
-                        &sX, &sY, &sW, &sH) == 3);
+    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 640, 900, 1000.0f, 1000.0f, &sX, &sY, &sW, &sH) == 3);
     // -- a picture that fills one axis and is narrow on the other: that axis still gets its margin.
     x0 = 0.0f; y0 = 300.0f; x1 = 1000.0f; y1 = 700.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 640, 400, 1000.0f, 1000.0f, 0,
-                        &sX, &sY, &sW, &sH) == 1);
-
-    // -- THE RUNTIME-INDEPENDENT CASE: a runtime that honours the declared FOV has no fit at all,
-    // so the eye image IS the picture (dest = the whole image, 100 % coverage). The bought margin is
-    // the only margin that exists there, and it has to come off all four edges alike.
-    {
-        float a0 = 0.0f, b0 = 0.0f, a1 = 1000.0f, b1 = 1000.0f;   // the whole eye image
-        assert(OLR_EdgeFill(&a0, &b0, &a1, &b1, 0.0f, 0.0f, 800.0f, 1000.0f,
-                            1000.0f, 1000.0f, 4, &sX, &sY, &sW, &sH) == 3);
-        // The source box is the picture widened by the margin on every side: 800 px * 1.04 wide,
-        // 1000 px * 1.04 tall, starting half a margin before the picture does.
-        assert(near(sW, 800.0f * 1.04f) && near(sH, 1000.0f * 1.04f));
-        assert(near(sX, -0.5f * 800.0f * 0.04f) && near(sY, -0.5f * 1000.0f * 0.04f));
-        // ...and the picture's own edges still land exactly on the shrunk box inside the image.
-        const float c = 500.0f, h = 500.0f / 1.04f;             // dest x0/x1 about the centre
-        assert(near(mapX(c - h, 0.0f, 1000.0f, sX, sW), 0.0f));
-        assert(near(mapX(c + h, 0.0f, 1000.0f, sX, sW), 800.0f));
-        // Zero margin there is exactly the shipped blit: dest untouched, source untouched.
-        a0 = 0.0f; b0 = 0.0f; a1 = 1000.0f; b1 = 1000.0f;
-        assert(OLR_EdgeFill(&a0, &b0, &a1, &b1, 0.0f, 0.0f, 800.0f, 1000.0f,
-                            1000.0f, 1000.0f, 0, &sX, &sY, &sW, &sH) == 3);
-        assert(near(sX, 0.0f) && near(sW, 800.0f) && near(sY, 0.0f) && near(sH, 1000.0f));
-        assert(near(a0, 0.0f) && near(a1, 1000.0f) && near(b0, 0.0f) && near(b1, 1000.0f));
-    }
-
-    // -- degenerate geometry never reaches the blit as a NaN or a negative box --------------
-    x0 = 100.0f; y0 = 0.0f; x1 = 100.0f; y1 = 100.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 10, 10, 100, 100, 0, &sX, &sY, &sW, &sH) == 0);
-    x0 = 0.0f; y0 = 0.0f; x1 = 100.0f; y1 = 0.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 10, 10, 100, 100, 0, &sX, &sY, &sW, &sH) == 0);
-    x0 = 0.0f; y0 = 0.0f; x1 = 100.0f; y1 = 100.0f;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 10, 10, 0.0f, 100, 0, &sX, &sY, &sW, &sH) == 0);
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 50, 50, 50, 50, 100, 100, 0, &sX, &sY, &sW, &sH) == 0);
-    assert(OLR_EdgeFill(nullptr, &y0, &x1, &y1, 0, 0, 10, 10, 100, 100, 0, &sX, &sY, &sW, &sH) == 0);
-    float* nul = nullptr;
-    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 10, 10, 100, 100, 0, nul, &sY, &sW, &sH) == 0);
+    assert(OLR_EdgeFill(&x0, &y0, &x1, &y1, 0, 0, 640, 400, 1000.0f, 1000.0f, &sX, &sY, &sW, &sH) == 1);
 
     // -- which runtime gets the pre-warp ----------------------------------------------------
     // AUTO, the runtime answered: mutable means the declared FOV is honoured (SteamVR, VDXR).
@@ -326,11 +265,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # ---- the wiring: none of the maths matters if the source never calls it ---------------------
 assert 'static bool g_edgeFill = true;' in source, 'edge fill must default ON'
 assert 'GetPrivateProfileIntW(L"Stream", L"EdgeFill", 1, ini)' in source, '[Stream] EdgeFill must be read'
-assert 'static int  g_edgeFillMargin = 4;' in source, 'the bought margin must ship at 4 %'
-assert 'GetPrivateProfileIntW(L"Stream", L"EdgeFillMargin", 4, ini)' in source, \
-    '[Stream] EdgeFillMargin must be read'
-assert 'OLR_ClampEdgeFillMargin(' in source, 'the margin knob must be bounded'
-assert 'GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"2", pl, 32, ini)' in source, \
+assert 'GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"1", pl, 32, ini)' in source, \
     '[Stream] PoseLeadPeriods must be read'
 assert '? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, sx0, sy0, sx1, sy1,' in source, \
     'the fitted blit must use the fill'
@@ -340,7 +275,7 @@ assert 'const float dX = (fill & 1) ? 0.0f : dX0;' in source and \
 # ---- and the SAME margin on the runtimes that honour the declared FOV (no fit at all) ----------
 plain = source[source.index('static bool BlitHalfToEye('):]
 plain = plain[:plain.index('// [STREAMEDGE] (Beta 1.2.1) OVERS CAN')]
-assert 'margin && g_edgeFill && g_edgeFillMargin > 0' in plain, \
+assert 'g_edgeFill' in plain, \
     'the plain blit path must take the bought margin too (SteamVR / VD have no fit)'
 assert '? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, srcX, 0.0f, srcX + (float)g_srcEyeW,' in plain, \
     'the plain blit must hand the fill the whole eye image as the picture'
@@ -397,7 +332,7 @@ assert '[OLVR][SWAPFMT]' in source, 'the format list must be logged'
 # place, so the FIRST mention of "name(" has to be its definition or its forward declaration - both
 # of which start a line with "static".
 for helper in ('OLR_PickEyeFormat', 'OLR_FormatIsSrgb', 'OLR_DecideFitFrustum',
-               'OLR_ClampPoseLeadPeriods', 'OLR_ClampEdgeFillMargin', 'OLR_EdgeFill',
+               'OLR_ClampPoseLeadPeriods', 'OLR_EdgeFill',
                'OLR_ReanchorOnSpaceChange'):
     at = source.index(helper + '(')
     line_start = source.rindex('\n', 0, at) + 1
@@ -417,6 +352,6 @@ assert 'RuntimeFormat=1' in ini, 'RuntimeFormat must be documented in the shippe
 # ---- the shipped ini: documented, on, and matching the code defaults -------------------------
 section = ini[ini.index('[Stream]'):]
 assert 'EdgeFill=1' in section, 'EdgeFill ships ON'
-assert 'PoseLeadPeriods=2' in section, 'PoseLeadPeriods ships at the shipped behaviour'
+assert 'PoseLeadPeriods=1' in section, 'PoseLeadPeriods ships at the shipped behaviour'
 assert 'docs/STREAMING.md' in section, 'the section must point at the explanation'
 print('Runtimes: overscan fill, spec-driven fit, pose lead, runtime recenter and eye-format negotiation verified.')
