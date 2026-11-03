@@ -226,6 +226,12 @@ IF SOMETHING LOOKS WRONG
                                       but very compatible path).
   The picture looks off-centre or     outlastvr.ini -> [Render] LensFit=0.
   each eye shows a distorted screen   (Quest Link sets this by itself.)
+  Black bars at the sides of the      The headset is filling in frames the PC
+  picture when you turn your head     did not deliver. Set the headset refresh
+  quickly                             to 72 Hz (or 60/80), turn ASW (Quest Link)
+                                      or motion smoothing (SteamVR) off, and lower
+                                      the render resolution. Keep
+                                      [Stream] EdgeFill=1 for the best picture.
   The camcorder, doors, climbing or   VR SETTINGS -> HANDS: switch any of them
   labels get in the way               off (Camcorder on your hip off = raise it
                                       by lifting your hand to your eye, or the

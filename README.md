@@ -125,6 +125,8 @@ can differ from the physical headset panel resolution. See [launcher instruction
 | It stutters | VR SETTINGS: set "Monitor picture" to 30 FPS, and AUTO render resolution to 85-90%, or lower the manual eye dimensions. |
 | Textures look wrong, or the game crashes | In `outlastvr.ini`, set `[XR] D3D9Ex=0` (slower, but very compatible). |
 | Each eye shows a distorted screen | In `outlastvr.ini`, set `[Render] LensFit=0` (Quest Link does this by itself). |
+| Black bars appear at the sides of the view when you turn your head quickly | The headset is filling in frames the PC did not deliver. Set the headset refresh to 72 Hz (or 60/80), turn ASW (Quest Link) or motion smoothing (SteamVR) off, and lower the eye resolution. Best-quality option: keep `[Stream] EdgeFill=1`. See [docs/STREAMING.md](docs/STREAMING.md). |
+| The mod looks wrong on SteamVR alone, or on Quest Link / Air Link | The runtimes differ in what they do with the picture this mod submits; the log now says which path ran (`[FOVMUTABLE]`, `[FITFRUSTUM]`, `[SWAPFMT]`). A recenter from the headset's own menu no longer moves the world (`[REFCENTER]`). See [docs/STREAMING.md](docs/STREAMING.md). |
 | The camcorder, doors, climbing or labels get in the way | VR SETTINGS, HANDS: switch any of them off. |
 
 ## Reporting a bug

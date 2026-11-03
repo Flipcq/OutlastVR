@@ -133,6 +133,16 @@ static volatile long g_centered = 0;
 //     headset at launch never crosses it either and simply waits for G, as before.
 // Rotation is untouched by all of this: yaw/pitch keep the shipped behaviour exactly.
 static volatile long g_recenterManual = 0;   // the pending recenter was asked for by the player
+// [REFCENTER] The RUNTIME moved its own origin (SteamVR "Recenter", the Oculus menu's "Reset
+// View"). PollEvents stores what it said; the frame loop folds it into the baseline at changeTime.
+// Separate from g_recenterReq on purpose: that one means "re-zero the world", this one means "the
+// world must NOT move" - a very different answer, and conflating them was the old behaviour.
+// PollEvents and the frame loop always run on the SAME thread (the worker, or the game's Present
+// with [XR] SubmitThread=0), so these need no lock.
+static bool    g_refChangePend = false;      // an event is waiting to be applied
+static bool    g_refChangeValid = false;     // poseInPreviousSpace is usable
+static XrTime  g_refChangeAt = 0;            // XrTime the runtime switches spaces (0 = now)
+static XrPosef g_refChangePose = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 static volatile long g_posArmed = 0;         // position baseline trusted: lean/duck may apply
 static long          g_posAutoDone = 0;      // the automatic arm happens once per session
 static long          g_posPickedUp = 0;      // moved > kPickupM from the boot baseline
@@ -204,6 +214,52 @@ static float g_rtFovX = 0.0f, g_rtFovY = 0.0f;   // the HEADSET's own FOV, as re
 // it no-ops.
 static bool g_isOculusRuntime = false;
 static bool g_isSteamVrRuntime = false;
+// [FOVMUTABLE] The one runtime question that decides HOW a projection layer has to be built.
+// XrViewConfigurationProperties::fovMutable (core OpenXR 1.0) says whether a submitted FOV that
+// differs from the one xrLocateViews returned is honoured. SteamVR and VDXR answer XR_TRUE; Meta's
+// PC runtime (Quest Link / Air Link) answers XR_FALSE, and then it composites the submitted image
+// into ITS OWN per-eye frustum - which is the whole reason [FITFRUSTUM] exists. Asking the spec
+// flag is better than sniffing the runtime name: any runtime that reports "not mutable" needs the
+// same pre-warp, including ones this mod has never been tested on.
+static bool g_fovMutableKnown = false;
+static bool g_fovMutable = true;
+// Almost every runtime that reprojects (all of the PC streaming ones do) can be handed a pose
+// predicted for a display time later than the one xrWaitFrame reported. How much later is
+// [Stream] PoseLeadPeriods display periods; 1 is what every released build has done.
+static int  g_poseLeadPeriods = 1;
+// [STREAMEDGE] Fill the eye image's margin instead of clearing it to black - the overscan the
+// reprojection warp pulls from when you turn your head quickly. See OLR_EdgeFillBox.
+static bool g_edgeFill = true;
+// [SWAPFMT] The eye-image format asked of the runtime, decided once from its own list (see
+// OLR_PickEyeFormat). BGRA8_SRGB is the shipped value; BGRA8_UNORM only replaces it on a runtime
+// that does not offer sRGB, and then the gamma LUT carries sRGB-encoded values instead of linear
+// ones. g_eyeFmtSrgb says which, and NOTHING on the two formats' shared path differs.
+static int64_t g_eyeFmt = (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+static bool    g_eyeFmtSrgb = true;
+// [XR] RuntimeFormat=0 keeps the shipped BGRA8_SRGB request even where the runtime does not offer
+// it (i.e. restores the pre-1.2.1 behaviour exactly). An escape hatch, not a setting.
+static bool    g_useRuntimeFmt = true;
+
+// [FITFRUSTUM] The decision, as one pure function so its truth table can be tested without a
+// headset (tests/stream_edge_fill_test.py). fitMode is the ini value (-1 auto, 0 off, 1 on),
+// isOculus the runtime-name guess, known/fovHonoured what XrViewConfigurationProperties answered
+// (`mutable` is a C++ keyword, so the parameter cannot be called that).
+// AUTO trusts the spec answer first and only falls back to the name when the runtime said nothing.
+static int OLR_DecideFitFrustum(int fitMode, bool isOculus, bool known, bool fovHonoured)
+{
+    if (fitMode > 0) return 1;
+    if (fitMode == 0) return 0;
+    if (known) return fovHonoured ? 0 : 1;
+    return isOculus ? 1 : 0;
+}
+// [STREAMPOSE] Bounds for the ini knob: a lead of 0 is "the frame is shown where the pose says",
+// 2 is a full extra display period for runtimes with a long queue (Air Link).
+static int OLR_ClampPoseLeadPeriods(int v)
+{
+    if (v < 0) return 0;
+    if (v > 2) return 2;
+    return v;
+}
 static XrFovf g_rtEyeFov[2] = {};          // the runtime's own per-eye frustum, from xrLocateViews
 static bool   g_rtEyeFovValid = false;
 static XrPosef g_rtEyePose[2] = {};        // [XRSUBMIT] the runtime's own per-eye viewpoints
@@ -1399,6 +1455,38 @@ static float ClampRange(float v, float lo, float hi) {
     if (v > hi) return hi;
     return v;
 }
+
+// [REFCENTER] (Beta 1.2.1) A runtime that moves its own origin must not move this mod's world.
+//
+// SteamVR's "Recenter" (dashboard) and the Oculus menu's "Reset View" do not change anything in the
+// application: the runtime redefines the LOCAL space and sends XR_TYPE_EVENT_DATA_REFERENCE_SPACE_
+// CHANGE_PENDING with `poseInPreviousSpace` - the pose of the NEW origin, expressed in the OLD
+// space. Everything this mod renders is relative to a baseline it captured once (g_baseQ/g_baseP),
+// so before this was handled a runtime recenter changed the RAW pose, the relative pose changed
+// with it, and the whole asylum rotated/slid around the player instead of the player being turned
+// to face the way they wanted. On a Quest that reads as "the mod fights my reset view"; on
+// SteamVR alone as "recenter does nothing / head tracking is broken", because SteamVR's own
+// recenter is the only one a player there has.
+//
+// The fix is exact, not a re-zero: fold the runtime's new origin into the baseline, so every
+// relative pose is IDENTICAL before and after (the player keeps their world and their facing, the
+// runtime has merely moved their chair). For a point c in the new space, the old space sees
+// c_old = Rot(q, c_new) + t, so
+//     baseQ' = conj(q) * baseQ        baseP' = Rot(conj(q), baseP - t)
+// and conj(baseQ')*(c_new - baseP') == conj(baseQ)*(c_old - baseP) for every c. The test
+// (tests/stream_edge_fill_test.py) checks that identity numerically.
+static void OLR_ReanchorOnSpaceChange(XrQuaternionf* baseQ, XrVector3f* baseP,
+                                      const XrPosef& newOriginInOldSpace)
+{
+    if (!baseQ || !baseP) return;
+    const XrQuaternionf q = QNormalize(newOriginInOldSpace.orientation);
+    const XrQuaternionf qInv = QConj(q);
+    const XrVector3f t = newOriginInOldSpace.position;
+    const XrVector3f shifted = { baseP->x - t.x, baseP->y - t.y, baseP->z - t.z };
+    *baseP = QRotate(qInv, shifted);
+    *baseQ = QNormalize(QMul(qInv, *baseQ));
+}
+
 static XrVector3f ClampBodyPose(XrVector3f p) {
     if (!g_bodyAnchor) return p;
     const float side = g_bodySideM > 0.0f ? g_bodySideM : 0.0f;
@@ -1555,6 +1643,19 @@ static bool Init(UINT w, UINT h) {
                 g_asyncReadback = GetPrivateProfileIntW(L"XR", L"AsyncReadback", 1, ini) != 0;
                 g_zeroCopy = GetPrivateProfileIntW(L"XR", L"ZeroCopy", 1, ini) != 0;
                 g_latchOn = GetPrivateProfileIntW(L"XR", L"FramePoseLatch", 1, ini) ? 1 : 0;      // [FRAMETAG]
+                // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
+                // EdgeFill: fill the fitted eye image's margin with the picture's own edge instead
+                // of black, so the runtime's reprojection has something to pull in when the head
+                // turns quickly. PoseLeadPeriods: how many display periods ahead of the compositor's
+                // display time the camera pose is predicted (1 = every released build).
+                g_edgeFill = GetPrivateProfileIntW(L"Stream", L"EdgeFill", 1, ini) != 0;
+                { wchar_t pl[32]; GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"1", pl, 32, ini);
+                  g_poseLeadPeriods = OLR_ClampPoseLeadPeriods((int)_wtof(pl)); }
+                XLOG("[OLVR][STREAM] edge fill %s, pose lead %d display period(s)",
+                     g_edgeFill ? "on (the fitted eye's margin is stretched, not black)" : "off",
+                     g_poseLeadPeriods);
+                // [SWAPFMT] 0 = always ask for BGRA8_SRGB, whatever the runtime lists.
+                g_useRuntimeFmt = GetPrivateProfileIntW(L"XR", L"RuntimeFormat", 1, ini) != 0;
                 g_lensFitIni = (long)GetPrivateProfileIntW(L"Render", L"LensFit", 1, ini);
                 g_lensFitOn = g_lensFitIni ? 1 : 0;                                              // [LENSFIT]
                 g_fakeEyeFov = GetPrivateProfileIntW(L"Debug", L"FakeEyeFov", 0, ini) ? 1 : 0;
@@ -1734,26 +1835,24 @@ static bool Init(UINT w, UINT h) {
             g_isSteamVrRuntime = strstr(props.runtimeName, "SteamVR") != nullptr;
             XLOG("[OLVR][XRRUNTIME] name='%s' metaFovCrop=%d steamVrFovCrop=%d",
                  props.runtimeName, g_isOculusRuntime ? 1 : 0, g_isSteamVrRuntime ? 1 : 0);
+            // [FOVMUTABLE] Whether a declared FOV is honoured is asked of the runtime itself, a few
+            // lines below (it needs the XrSystemId that xrGetSystem returns). Everything here is
+            // only the name-based part, which stays as the fallback.
             // Per-eye pose was MEASURED to change nothing on Quest (2026-08-05), so it goes back
             // to off by default everywhere - one variable at a time. The ini can still force it.
             g_perEyePose = (g_perEyeMode > 0);
-            // [FITFRUSTUM] auto-on for Oculus: the runtime that ignores the declared FOV.
-            g_fitFrustum = (g_fitMode < 0) ? g_isOculusRuntime : (g_fitMode != 0);
             // (Test46e) Quest Link / Air Link (Meta's runtime): with the lens-shaped eyes a tester saw "a screen on
             // each eye, really distorting"; [Render] LensFit=0 fixed it. Off by itself there; LensFit=2 keeps it.
             if (g_isOculusRuntime && g_lensFitIni == 1 && g_lensFitOn) {
                 InterlockedExchange(&g_lensFitOn, 0);
                 XLOG("[OLVR][LENSFIT] off on Meta's runtime (Quest Link) - the centred render ([Render] LensFit=2 forces it on)");
             }
-            XLOG("[OLVR][FITFRUSTUM] %s (%s), perEyePose=%s",
-                 g_fitFrustum ? "ON - the picture is placed inside the runtime's own frustum" : "off",
-                 g_fitMode < 0 ? "auto, by runtime" : "forced by ini",
-                 g_perEyePose ? "on" : "off");
         } else {
             XLOG("[OLVR][XRRUNTIME] could not read the runtime name - both quirk fixes stay off");
         }
     }
     RES("xrGetSystem", getSystem); RES("xrEnumerateViewConfigurationViews", enumerateViewConfigurationViews);
+    RESOPT("xrGetViewConfigurationProperties", getViewConfigurationProperties);   // [FOVMUTABLE] optional
     RES("xrGetD3D11GraphicsRequirementsKHR", getD3D11GraphicsRequirements);
     RES("xrCreateSession", createSession); RES("xrDestroySession", destroySession);
     RES("xrCreateSwapchain", createSwapchain); RES("xrDestroySwapchain", destroySwapchain); RES("xrEnumerateSwapchainImages", enumerateSwapchainImages);
@@ -1779,6 +1878,34 @@ static bool Init(UINT w, UINT h) {
     XrSystemGetInfo sgi = {}; sgi.type = XR_TYPE_SYSTEM_GET_INFO_VALUE; sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY_VALUE;
     r = g_fn.getSystem(g_instance, &sgi, &g_system);
     if (!XrSucceeded(r)) { XLOG("[OLVR][XR] xrGetSystem r=%d (headset off?)", r); g_dead = true; return false; }
+
+    // [FOVMUTABLE] Now that there is a system: does this runtime honour a declared projection FOV?
+    // VDXR and SteamVR do; Meta's PC runtime (Quest Link / Air Link) does not, and composes the
+    // submitted image into its own per-eye frustum instead. That single flag decides whether each
+    // eye has to be pre-warped into the runtime's frustum ([FITFRUSTUM]) or handed over as drawn.
+    if (g_fn.getViewConfigurationProperties) {
+        XrViewConfigurationProperties vcp = {}; vcp.type = XR_TYPE_VIEW_CONFIGURATION_PROPERTIES_VALUE;
+        if (XrSucceeded(g_fn.getViewConfigurationProperties(
+                g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO_VALUE, &vcp))) {
+            g_fovMutable = (vcp.fovMutable != 0);
+            g_fovMutableKnown = true;
+            XLOG("[OLVR][FOVMUTABLE] the runtime says the projection FOV is %s - %s",
+                 g_fovMutable ? "mutable (a declared FOV is honoured)"
+                              : "NOT mutable (the declared FOV is discarded)",
+                 g_fovMutable ? "declaring exactly what was rendered is correct"
+                              : "each eye is pre-warped into the runtime's own frustum");
+        } else {
+            XLOG("[OLVR][FOVMUTABLE] the runtime could not answer - falling back to the runtime name");
+        }
+    } else {
+        XLOG("[OLVR][FOVMUTABLE] xrGetViewConfigurationProperties unavailable - using the runtime name");
+    }
+    g_fitFrustum = OLR_DecideFitFrustum(g_fitMode, g_isOculusRuntime, g_fovMutableKnown, g_fovMutable);
+    XLOG("[OLVR][FITFRUSTUM] %s (%s), perEyePose=%s",
+         g_fitFrustum ? "ON - the picture is placed inside the runtime's own frustum" : "off",
+         g_fitMode < 0 ? (g_fovMutableKnown ? "auto, by the runtime's fovMutable flag" : "auto, by runtime name")
+                       : "forced by ini",
+         g_perEyePose ? "on" : "off");
 
     // The runtime's recommended dimensions are the proper final target and do not depend on the
     // desktop/game backbuffer size.
@@ -1818,6 +1945,47 @@ static bool Init(UINT w, UINT h) {
     r = g_fn.createSession(g_instance, &sci, &g_session);
     if (!XrSucceeded(r)) { XLOG("[OLVR][XR] xrCreateSession r=%d", r); g_dead = true; return false; }
     XLOG("[OLVR][XR] session created");
+
+    // [SWAPFMT] What the runtime PREFERS to be handed, in its own order. OpenXR's own performance
+    // guidance is to use the first colour format the runtime lists, because anything else makes the
+    // compositor run a conversion pass over every eye every frame - frame time, and therefore
+    // latency, spent outside the game's control. This mod has always asked for BGRA8_SRGB (it
+    // matches the game's D3D9 A8R8G8B8 readback bit for bit), which is accepted by VDXR, SteamVR
+    // and Meta's runtime; this line is what tells the three apart when a report says "the picture
+    // is soft / the frame rate is lower in X than in Y". Diagnostic only: nothing is created here.
+    if (g_fn.enumerateSwapchainFormats) {
+        uint32_t nf = 0;
+        if (XrSucceeded(g_fn.enumerateSwapchainFormats(g_session, 0, &nf, nullptr)) && nf > 0 && nf < 64) {
+            std::vector<int64_t> fm(nf);
+            if (XrSucceeded(g_fn.enumerateSwapchainFormats(g_session, nf, &nf, fm.data()))) {
+                bool hasSrgbBgra = false, hasBgra = false;
+                char list[220]; int at = 0; list[0] = '\0';
+                for (uint32_t i = 0; i < nf; ++i) {
+                    if (fm[i] == (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) hasSrgbBgra = true;
+                    if (fm[i] == (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM) hasBgra = true;
+                    if (i < 6 && at < 190)
+                        at += sprintf_s(list + at, sizeof(list) - at, "%s%d", i ? "," : "", (int)fm[i]);
+                }
+                XLOG("[OLVR][SWAPFMT] the runtime offers %u swapchain formats, first: %s | BGRA8_SRGB %s, BGRA8 %s",
+                     nf, list, hasSrgbBgra ? "offered" : "NOT offered", hasBgra ? "offered" : "not offered");
+                // And ACT on it: ask for a format the runtime actually offers, so the compositor
+                // has nothing to convert and every copy in this pipeline stays format-legal.
+                if (g_useRuntimeFmt) {
+                    g_eyeFmt = OLR_PickEyeFormat(fm.data(), nf, (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+                    g_eyeFmtSrgb = OLR_FormatIsSrgb(g_eyeFmt);
+                } else {
+                    XLOG("[OLVR][SWAPFMT] [XR] RuntimeFormat=0 - keeping the shipped request whatever this runtime offers");
+                }
+                if (!g_eyeFmtSrgb)
+                    XLOG("[OLVR][SWAPFMT] eye images will be B8G8R8A8_UNORM, not sRGB: the blit writes "
+                         "sRGB-encoded bytes itself instead of relying on the render target, which is what "
+                         "keeps the picture identical and removes the runtime's conversion pass");
+                else if (!hasSrgbBgra)
+                    XLOG("[OLVR][SWAPFMT] this runtime offers neither BGRA8 format - keeping the shipped "
+                         "request and letting it substitute, as every build before this one did");
+            }
+        }
+    }
 
     XrReferenceSpaceCreateInfo rsci = {}; rsci.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO_VALUE;
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW_VALUE; rsci.poseInReferenceSpace = IdentityPose();
@@ -1917,10 +2085,36 @@ static void PollEvents() {
             }
         } else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED_VALUE) {
             LogInteractionProfiles("controller layout changed");   // (Test48)
+        } else if (ev.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING_VALUE) {
+            // [REFCENTER] The RUNTIME moved its own origin: SteamVR's dashboard "Recenter", the
+            // Oculus menu's "Reset View", or a floor/gravity re-detect. Nothing in the application
+            // is supposed to change - but everything this mod renders is relative to a baseline it
+            // captured once, so before this was handled the raw pose changed, the relative pose
+            // changed with it, and the world rotated/slid around the player instead of the player
+            // being turned. The frame loop folds the new origin into the baseline at changeTime
+            // (OLR_ReanchorOnSpaceChange), which is exact: every relative pose is unchanged.
+            auto* rc = reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&ev);
+            const bool ours = (rc->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL_VALUE);
+            g_refChangePend  = true;
+            g_refChangeValid = ours && (rc->poseValid != 0);
+            g_refChangeAt    = rc->changeTime;
+            g_refChangePose  = rc->poseInPreviousSpace;
+            XLOG("[OLVR][REFCENTER] the runtime recentred its space (type=%d, pose %s): %s",
+                 (int)rc->referenceSpaceType, rc->poseValid ? "given" : "not given",
+                 !ours ? "not the space this mod holds - ignored"
+                       : (rc->poseValid ? "the world stays where it is"
+                                        : "no pose to compensate with - re-zeroing instead"));
+        } else if (ev.type == XR_TYPE_EVENT_DATA_EVENTS_LOST_VALUE) {
+            static bool s_lostLogged = false;
+            if (!s_lostLogged) {
+                s_lostLogged = true;
+                XLOG("[OLVR][XRSTATE] the runtime dropped some events - a session-state change or a "
+                     "runtime recenter may have been missed");
+            }
         } else {
             // Anything else the runtime says was previously dropped on the floor. Log each
-            // distinct event type once - if SteamVR is trying to signal something about this
-            // session (overlay demotion, reference-space change), this is where it would appear.
+            // distinct event type once, so a runtime signalling something about this session
+            // (overlay demotion, and the like) at least leaves a trace in the log.
             static uint32_t s_seenTypes[8] = {};
             static int s_seenCount = 0;
             bool seen = false;
@@ -2897,7 +3091,9 @@ static bool EnsureEyeSwapchains() {
     g_eyeH = (g_nativeEyeResolution && g_runtimeEyeH) ? g_runtimeEyeH : g_srcEyeH;
     XrSwapchainCreateInfo ci = {}; ci.type = XR_TYPE_SWAPCHAIN_CREATE_INFO_VALUE;
     ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT_VALUE | XR_SWAPCHAIN_USAGE_SAMPLED_BIT_VALUE;
-    ci.format = (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    // [SWAPFMT] The format the runtime actually offers (BGRA8_SRGB wherever it exists, which is
+    // every runtime this has been run on; see OLR_PickEyeFormat).
+    ci.format = g_eyeFmt;
     ci.sampleCount = 1; ci.width = g_eyeW; ci.height = g_eyeH;
     ci.faceCount = 1; ci.arraySize = 1; ci.mipCount = 1;
     XrSwapchain* scs[2] = { &g_scL, &g_scR };
@@ -2921,9 +3117,9 @@ static bool EnsureEyeSwapchains() {
         // dark" report. This line is the ground truth for that comparison.
         if (e == 0 && !imgs.empty() && imgs[0].texture) {
             D3D11_TEXTURE2D_DESC dd; imgs[0].texture->GetDesc(&dd);
-            XLOG("[OLVR][GAMMAFMT] eye swapchain: asked fmt=%d B8G8R8A8_UNORM_SRGB, runtime allocated fmt=%d%s",
-                 (int)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, (int)dd.Format,
-                 dd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? " (exact match)" : " (substituted)");
+            XLOG("[OLVR][GAMMAFMT] eye swapchain: asked fmt=%d (%s), runtime allocated fmt=%d%s",
+                 (int)g_eyeFmt, g_eyeFmtSrgb ? "B8G8R8A8_UNORM_SRGB" : "B8G8R8A8_UNORM",
+                 (int)dd.Format, dd.Format == (UINT)g_eyeFmt ? " (exact match)" : " (substituted)");
         }
     }
     XLOG("[OLVR][XR] per-eye swapchains ready %ux%u from %ux%u source (SBS split detected)",
@@ -2972,6 +3168,11 @@ static ID3D11Buffer*             g_blitCB = nullptr;
 static ID3D11SamplerState*       g_blitSamp = nullptr;
 static ID3D11Texture2D*          g_lutTex = nullptr;
 static ID3D11ShaderResourceView* g_lutSRV = nullptr;
+// [SWAPFMT] The sRGB-encoded twin of the LUT: identical table, but carrying the byte the display
+// wants instead of the linear value, for the case where the eye image is UNORM (nothing downstream
+// would encode it). Built alongside the linear one; almost always unused.
+static ID3D11Texture2D*          g_lutTexSrgbEnc = nullptr;
+static ID3D11ShaderResourceView* g_lutSRVSrgbEnc = nullptr;
 static int   g_lutGen = -1;
 static float g_lutGamma = -999.0f;
 static int   g_lutNightVision = -1;
@@ -2986,6 +3187,13 @@ static ID3D11RasterizerState*    g_blitRaster = nullptr;
 static ID3D11Texture2D*          g_blitTmp = nullptr;
 static ID3D11RenderTargetView*   g_blitTmpRtv = nullptr;
 static UINT g_blitTmpW = 0, g_blitTmpH = 0;
+// [SWAPFMT] The same scratch target in B8G8R8A8_UNORM, used only when the destination is a non-sRGB
+// eye image. Two separate sets on purpose: an eye blit and a HUD/camcorder/theater blit happen in
+// the SAME frame with different destination formats, and recreating one shared texture between them
+// would allocate twice per frame.
+static ID3D11Texture2D*          g_blitTmpNs = nullptr;
+static ID3D11RenderTargetView*   g_blitTmpNsRtv = nullptr;
+static UINT g_blitTmpNsW = 0, g_blitTmpNsH = 0;
 
 static bool GammaActive() {
     return fabsf(g_gamma - 1.0f) > 0.005f || OLProxy_GammaRampGen() != 0 ||
@@ -3122,6 +3330,43 @@ static bool EnsureGammaPipeline() {
 static float SrgbToLinear(float s) {
     return (s <= 0.04045f) ? s / 12.92f : powf((s + 0.055f) / 1.055f, 2.4f);
 }
+// [SWAPFMT] The other half, used only when the eye image is NOT an sRGB format: the LUT then has to
+// carry the sRGB-ENCODED byte instead of the linear value, because nothing downstream will encode
+// it (an UNORM render target writes the shader's output through untouched).
+static float SrgbFromLinear(float v) {
+    if (!(v > 0.0f)) return 0.0f;
+    if (v >= 1.0f) return 1.0f;
+    return (v <= 0.0031308f) ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
+}
+
+// [SWAPFMT] Which eye-image format to ask the runtime for, given its own list in its own order.
+//
+// The shipped request is BGRA8_SRGB: it matches the game's D3D9 A8R8G8B8 readback bit for bit, and
+// the gamma LUT stores LINEAR values because the sRGB render target encodes on write. Some runtimes
+// do not offer it. Rather than let them substitute something arbitrary - which makes the compositor
+// convert every eye every frame, and leaves CopyResource between two different formats, which D3D11
+// says must not work - fall back to BGRA8_UNORM: the SAME byte layout, so the copies stay legal and
+// the only thing that changes is that the pipeline wrote sRGB-encoded bytes itself (BuildGammaLut
+// switches the LUT to the encoded table for exactly this case).
+//
+// Nothing else is ever chosen: R8G8B8A8 would swap red and blue in the non-shader fallback copy,
+// 10-bit formats would need a different readback, and a runtime that offers neither of ours keeps
+// the shipped request and substitutes as it always did. Every runtime this mod has been run on
+// offers BGRA8_SRGB, so on them this function returns `want` and NOTHING below changes.
+static bool OLR_FormatIsSrgb(int64_t f) {
+    return f == (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+}
+static int64_t OLR_PickEyeFormat(const int64_t* fmts, uint32_t n, int64_t want)
+{
+    if (!fmts || n == 0) return want;                       // runtime would not say: as shipped
+    for (uint32_t i = 0; i < n; ++i)
+        if (fmts[i] == want) return want;                   // offered: no change at all
+    if (want == (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+        for (uint32_t i = 0; i < n; ++i)
+            if (fmts[i] == (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM)
+                return (int64_t)DXGI_FORMAT_B8G8R8A8_UNORM; // byte-identical, no transfer on write
+    return want;                                            // nothing usable: let it substitute
+}
 
 // LUT[i] = linear( pow(ramp[i], gamma) ). Rebuilt only when the slider or the game ramp moves.
 static bool BuildGammaLut() {
@@ -3133,17 +3378,27 @@ static bool BuildGammaLut() {
         fabsf(gam - g_lutGamma) < 0.001f) return true;
     const float nvScale = nv ? g_nightVisionBrightness : 1.0f;
     float data[256 * 4];
+    float dataSrgb[256 * 4];   // [SWAPFMT] the same table, sRGB-ENCODED (used when the eye image is UNORM)
     for (int i = 0; i < 256; ++i) {
         const float br = gen ? rr[i] / 65535.0f : i / 255.0f;
         const float bg = gen ? rg[i] / 65535.0f : i / 255.0f;
         const float bb = gen ? rb[i] / 65535.0f : i / 255.0f;
-        data[i * 4 + 0] = SrgbToLinear(powf(br, gam)) * nvScale;
-        data[i * 4 + 1] = SrgbToLinear(powf(bg, gam)) * nvScale;
-        data[i * 4 + 2] = SrgbToLinear(powf(bb, gam)) * nvScale;
+        const float lr = SrgbToLinear(powf(br, gam)) * nvScale;
+        const float lg = SrgbToLinear(powf(bg, gam)) * nvScale;
+        const float lb = SrgbToLinear(powf(bb, gam)) * nvScale;
+        data[i * 4 + 0] = lr;
+        data[i * 4 + 1] = lg;
+        data[i * 4 + 2] = lb;
         data[i * 4 + 3] = 1.0f;
+        dataSrgb[i * 4 + 0] = SrgbFromLinear(lr);
+        dataSrgb[i * 4 + 1] = SrgbFromLinear(lg);
+        dataSrgb[i * 4 + 2] = SrgbFromLinear(lb);
+        dataSrgb[i * 4 + 3] = 1.0f;
     }
     if (g_lutSRV) { g_lutSRV->Release(); g_lutSRV = nullptr; }
     if (g_lutTex) { g_lutTex->Release(); g_lutTex = nullptr; }
+    if (g_lutSRVSrgbEnc) { g_lutSRVSrgbEnc->Release(); g_lutSRVSrgbEnc = nullptr; }
+    if (g_lutTexSrgbEnc) { g_lutTexSrgbEnc->Release(); g_lutTexSrgbEnc = nullptr; }
     D3D11_TEXTURE2D_DESC td = {}; td.Width = 256; td.Height = 1; td.MipLevels = 1; td.ArraySize = 1;
     td.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -3152,6 +3407,17 @@ static bool BuildGammaLut() {
         FAILED(g_d3d11->CreateShaderResourceView(g_lutTex, nullptr, &g_lutSRV))) {
         XLOG("[OLVR][GAMMA] LUT create FAILED"); return false;
     }
+    // [SWAPFMT] The encoded twin, for a runtime whose eye images are not sRGB. Its failure is not
+    // fatal: GammaDraw falls back to the linear table and only such a runtime would notice.
+    {
+        D3D11_SUBRESOURCE_DATA sde = { dataSrgb, 256 * 16, 0 };
+        if (FAILED(g_d3d11->CreateTexture2D(&td, &sde, &g_lutTexSrgbEnc)) ||
+            FAILED(g_d3d11->CreateShaderResourceView(g_lutTexSrgbEnc, nullptr, &g_lutSRVSrgbEnc))) {
+            if (g_lutSRVSrgbEnc) { g_lutSRVSrgbEnc->Release(); g_lutSRVSrgbEnc = nullptr; }
+            if (g_lutTexSrgbEnc) { g_lutTexSrgbEnc->Release(); g_lutTexSrgbEnc = nullptr; }
+            XLOG("[OLVR][GAMMA] sRGB-encoded LUT create FAILED (only matters on a non-sRGB eye format)");
+        }
+    }
     g_lutGen = gen; g_lutGamma = gam; g_lutNightVision = nv;
     XLOG("[OLVR][GAMMA] LUT rebuilt: gamma=%.2f ramp=%s nightVision=%s scale=%.2f",
          gam, gen ? "game" : "none", nv ? "on" : "off", nvScale);
@@ -3159,18 +3425,35 @@ static bool BuildGammaLut() {
 }
 
 // The blit draw's private render target, recreated only when the requested size changes.
-static bool EnsureBlitTmp(UINT w, UINT h) {
-    if (g_blitTmp && g_blitTmpRtv && g_blitTmpW == w && g_blitTmpH == h) return true;
-    if (g_blitTmpRtv) { g_blitTmpRtv->Release(); g_blitTmpRtv = nullptr; }
-    if (g_blitTmp)    { g_blitTmp->Release();    g_blitTmp = nullptr; }
-    D3D11_TEXTURE2D_DESC td = {}; td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB; td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET;
-    if (FAILED(g_d3d11->CreateTexture2D(&td, nullptr, &g_blitTmp))) { g_blitTmp = nullptr; return false; }
-    if (FAILED(g_d3d11->CreateRenderTargetView(g_blitTmp, nullptr, &g_blitTmpRtv))) {
-        g_blitTmp->Release(); g_blitTmp = nullptr; g_blitTmpRtv = nullptr; return false;
+static bool EnsureBlitTmp(UINT w, UINT h, bool srgb) {
+    if (srgb) {
+        if (g_blitTmp && g_blitTmpRtv && g_blitTmpW == w && g_blitTmpH == h) return true;
+        if (g_blitTmpRtv) { g_blitTmpRtv->Release(); g_blitTmpRtv = nullptr; }
+        if (g_blitTmp)    { g_blitTmp->Release();    g_blitTmp = nullptr; }
+    } else {
+        if (g_blitTmpNs && g_blitTmpNsRtv && g_blitTmpNsW == w && g_blitTmpNsH == h) return true;
+        if (g_blitTmpNsRtv) { g_blitTmpNsRtv->Release(); g_blitTmpNsRtv = nullptr; }
+        if (g_blitTmpNs)    { g_blitTmpNs->Release();    g_blitTmpNs = nullptr; }
     }
-    g_blitTmpW = w; g_blitTmpH = h;
+    D3D11_TEXTURE2D_DESC td = {}; td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+    // [SWAPFMT] The scratch target must carry EXACTLY the destination's format: the last step is a
+    // CopyResource, and D3D11 requires the two resources to agree on it.
+    td.Format = srgb ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (srgb) {
+        if (FAILED(g_d3d11->CreateTexture2D(&td, nullptr, &g_blitTmp))) { g_blitTmp = nullptr; return false; }
+        if (FAILED(g_d3d11->CreateRenderTargetView(g_blitTmp, nullptr, &g_blitTmpRtv))) {
+            g_blitTmp->Release(); g_blitTmp = nullptr; g_blitTmpRtv = nullptr; return false;
+        }
+        g_blitTmpW = w; g_blitTmpH = h;
+    } else {
+        if (FAILED(g_d3d11->CreateTexture2D(&td, nullptr, &g_blitTmpNs))) { g_blitTmpNs = nullptr; return false; }
+        if (FAILED(g_d3d11->CreateRenderTargetView(g_blitTmpNs, nullptr, &g_blitTmpNsRtv))) {
+            g_blitTmpNs->Release(); g_blitTmpNs = nullptr; g_blitTmpNsRtv = nullptr; return false;
+        }
+        g_blitTmpNsW = w; g_blitTmpNsH = h;
+    }
     return true;
 }
 
@@ -3189,8 +3472,17 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
                       ID3D11Texture2D* dst, UINT dstW, UINT dstH,
                       float boxY = 0.0f,
                       float dstVpX = 0.0f, float dstVpY = 0.0f,
-                      float dstVpW = 0.0f, float dstVpH = 0.0f) {
-    if (!EnsureBlitTmp(dstW, dstH)) return false;
+                      float dstVpW = 0.0f, float dstVpH = 0.0f,
+                      bool dstSrgb = true) {
+    if (!EnsureBlitTmp(dstW, dstH, dstSrgb)) return false;
+    // [SWAPFMT] Which table and which scratch target: an sRGB destination encodes on write, so it
+    // takes the LINEAR table and the sRGB scratch; a UNORM destination encodes nothing, so it takes
+    // the pre-encoded table and the UNORM scratch. With dstSrgb = true (every call but a non-sRGB
+    // eye image) this is byte-for-byte the shipped path.
+    ID3D11Texture2D*        tmp    = dstSrgb ? g_blitTmp    : g_blitTmpNs;
+    ID3D11RenderTargetView* tmpRtv = dstSrgb ? g_blitTmpRtv : g_blitTmpNsRtv;
+    ID3D11ShaderResourceView* lut  = dstSrgb ? g_lutSRV     : g_lutSRVSrgbEnc;
+    if (!lut) lut = g_lutSRV;                 // encoded twin missing: better a gamma step than nothing
     ID3D11ShaderResourceView* srv = nullptr;
     if (FAILED(g_d3d11->CreateShaderResourceView(src, nullptr, &srv))) return false;
     // Half-texel inset so linear filtering can never blend across the SBS seam.
@@ -3210,10 +3502,10 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
     if (placed) {
         // Everything outside the placed picture must be opaque black, not last frame's pixels.
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-        g_ctx->ClearRenderTargetView(g_blitTmpRtv, black);
+        g_ctx->ClearRenderTargetView(tmpRtv, black);
     }
     const float blendFactor[4] = { 0, 0, 0, 0 };
-    ID3D11ShaderResourceView* srvs[2] = { srv, g_lutSRV };
+    ID3D11ShaderResourceView* srvs[2] = { srv, lut };
     g_ctx->IASetInputLayout(nullptr);
     g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     g_ctx->VSSetShader(g_blitVS, nullptr, 0);
@@ -3227,7 +3519,7 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
     g_ctx->PSSetSamplers(0, 1, &g_blitSamp);
     g_ctx->OMSetBlendState(g_blitBlend, blendFactor, 0xffffffff);
     g_ctx->OMSetDepthStencilState(g_blitDepth, 0);
-    g_ctx->OMSetRenderTargets(1, &g_blitTmpRtv, nullptr);
+    g_ctx->OMSetRenderTargets(1, &tmpRtv, nullptr);
     g_ctx->RSSetState(g_blitRaster);
     g_ctx->RSSetViewports(1, &vp);
     g_ctx->Draw(3, 0);
@@ -3236,7 +3528,7 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
     g_ctx->PSSetShaderResources(0, 2, nul);
     g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
     srv->Release();
-    g_ctx->CopyResource(dst, g_blitTmp);
+    g_ctx->CopyResource(dst, tmp);
     return true;
 }
 
@@ -3268,7 +3560,8 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
         // that and composites the whole game as a see-through overlay on its own environment.
         if (ShaderBlitReady()) {
             ok = GammaDraw(g_uploadTex, g_w, g_h, srcX, g_srcEyeW, g_srcEyeH,
-                           clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH);
+                           clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
+                           0.0f, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb);   // [SWAPFMT]
         }
         if (!ok) {
             // Degrade locally, never silently: drop the shift for this eye rather than failing
@@ -3279,7 +3572,7 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
                     XLOG("[OLVR][XR] convergence shift needs the shader blit - unavailable, "
                          "copying the unshifted window instead"); }
             }
-            if (g_eyeW == g_srcEyeW && g_eyeH == g_srcEyeH) {
+            if (g_eyeW == g_srcEyeW && g_eyeH == g_srcEyeH && g_eyeFmtSrgb) {   // [SWAPFMT]
                 const UINT x0 = (UINT)clampLoPx;
                 D3D11_BOX box = { x0, 0, 0, x0 + g_srcEyeW, g_srcEyeH, 1 };
                 g_ctx->CopySubresourceRegion(imgs[idx], 0, 0, 0, 0, g_uploadTex, 0, &box);
@@ -3290,6 +3583,50 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
     g_fn.releaseSwapchainImage(sc, &ri);
     return ok;
+}
+
+// [STREAMEDGE] (Beta 1.2.1) OVERS CAN, for the eye image that [FITFRUSTUM] builds.
+//
+// What the black vertical bars are: every PC runtime reprojects the frame you submitted to where
+// your head actually is at scan-out (SteamVR "reprojection"/motion smoothing, Meta ASW, VD's
+// SSW). Reprojection cannot invent what was never drawn, so pixels outside the submitted frustum
+// come out black - the faster you turn, the wider the black wedge, and it closes again when you
+// stop. The Khronos frame-submission guide states it plainly: rendering for the pose you submit
+// "will result in just black pulled in on the sides". The cure real engines use is a margin of
+// rendered pixels beyond the visible frustum (FOV padding / overscan) for the warp to pull from.
+//
+// This mod cannot ask the game for a wider camera on every runtime, but in [FITFRUSTUM] mode the
+// eye image we hand over already spans the RUNTIME's frustum while the picture only covers the
+// part the engine rendered - the rest used to be cleared to black, and THAT black is what the
+// compositor smears into view when you turn your head. So: draw the picture into the whole eye
+// image instead, with the source box extended by the same affine amount. The sampler is
+// D3D11_TEXTURE_ADDRESS_CLAMP and the shader clamps u to the eye's own half, so the margin
+// samples the picture's edge texels - a stretched, plausible continuation of the world rather
+// than a black bar. The visible picture is untouched: same pixels, same angles.
+//
+// Returns false when there is nothing sensible to fill (degenerate rect, or a picture so much
+// narrower than the lens that stretching it would be a smear rather than an overscan margin -
+// a menu or a scripted camera below kEdgeFillMinCoverage keeps the honest black field), and the
+// caller then blits exactly as every earlier build did.
+static const float kEdgeFillMinCoverage = 0.75f;
+static bool OLR_EdgeFillBox(float dx0, float dy0, float dx1, float dy1,
+                            float sx0, float sy0, float sx1, float sy1,
+                            float eyeW, float eyeH,
+                            float* outSX, float* outSY, float* outSW, float* outSH)
+{
+    if (!outSX || !outSY || !outSW || !outSH) return false;
+    const float dw = dx1 - dx0, dh = dy1 - dy0;
+    if (!(dw > 0.5f) || !(dh > 0.5f) || !(eyeW > 0.5f) || !(eyeH > 0.5f)) return false;
+    // How much of the eye the game's own picture covers. Gameplay is 85-95 % on Quest; a menu or
+    // a deliberately narrow camera is far below that and is left alone.
+    if (dw < eyeW * kEdgeFillMinCoverage || dh < eyeH * kEdgeFillMinCoverage) return false;
+    const float kx = (sx1 - sx0) / dw;              // source pixels per destination pixel
+    const float ky = (sy1 - sy0) / dh;
+    if (!(kx > 1e-6f) || !(ky > 1e-6f)) return false;
+    // The SAME affine map, extended to a destination that starts at the eye image's own origin.
+    *outSX = sx0 - dx0 * kx;  *outSW = eyeW * kx;
+    *outSY = sy0 - dy0 * ky;  *outSH = eyeH * ky;
+    return true;
 }
 
 // [LINKPOSE] (Beta 1.1) A projection layer's declared pose has to be where the head REALLY was, in the
@@ -3362,12 +3699,23 @@ static bool BlitFitToEyeTan(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
     if (!XrSucceeded(g_fn.acquireSwapchainImage(sc, &ai, &idx))) return false;
+    // [STREAMEDGE] Extend the picture over the eye image's own margin (see OLR_EdgeFillBox).
+    // Everything that is NOT filled is still cleared to black by GammaDraw below, so the frame
+    // looks exactly as it always did when the render already covers the runtime's frustum.
+    float dX = dx0, dY = dy0, dW = dx1 - dx0, dH = dy1 - dy0;
+    float sX = sx0, sY = sy0, sW = sx1 - sx0, sH = sy1 - sy0;
+    if (g_edgeFill && OLR_EdgeFillBox(dx0, dy0, dx1, dy1, sx0, sy0, sx1, sy1,
+                                      (float)g_eyeW, (float)g_eyeH, &sX, &sY, &sW, &sH)) {
+        dX = 0.0f; dY = 0.0f; dW = (float)g_eyeW; dH = (float)g_eyeH;
+    } else {
+        sX = sx0; sY = sy0; sW = sx1 - sx0; sH = sy1 - sy0;   // unfilled: the shipped rect
+    }
     bool ok = false;
     XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
     if (XrSucceeded(g_fn.waitSwapchainImage(sc, &wi)) && ShaderBlitReady()) {
-        ok = GammaDraw(g_uploadTex, g_w, g_h, sx0, (UINT)(sx1 - sx0), (UINT)(sy1 - sy0),
+        ok = GammaDraw(g_uploadTex, g_w, g_h, sX, (UINT)sW, (UINT)sH,
                        clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
-                       sy0, dx0, dy0, dx1 - dx0, dy1 - dy0);
+                       sY, dX, dY, dW, dH, g_eyeFmtSrgb);   // [SWAPFMT]
     }
     XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
     g_fn.releaseSwapchainImage(sc, &ri);
@@ -4518,9 +4866,10 @@ static bool BlitHoldToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs, I
     if (XrSucceeded(g_fn.waitSwapchainImage(sc, &wi))) {
         if (ShaderBlitReady())
             ok = GammaDraw(src, g_srcEyeW, g_srcEyeH, 0.0f, g_srcEyeW, g_srcEyeH,
-                           0.0f, (float)g_srcEyeW, imgs[idx], g_eyeW, g_eyeH);   // opaque alpha
-        else if (g_eyeW == g_srcEyeW && g_eyeH == g_srcEyeH) {
-            g_ctx->CopyResource(imgs[idx], src); ok = true;
+                           0.0f, (float)g_srcEyeW, imgs[idx], g_eyeW, g_eyeH,
+                           0.0f, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb);   // opaque alpha, [SWAPFMT]
+        else if (g_eyeW == g_srcEyeW && g_eyeH == g_srcEyeH && g_eyeFmtSrgb) {
+            g_ctx->CopyResource(imgs[idx], src); ok = true;   // [SWAPFMT] both sRGB or neither copy
         }
     }
     XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
@@ -4764,6 +5113,28 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
     const long    poseValidForThisImage = dev ? g_olPoseValid : g_conPoseValid;
 
     // ---- head pose: software baseline from LOCAL, current-minus-baseline thereafter ----
+    // [REFCENTER] A runtime recenter (SteamVR dashboard "Recenter", Oculus menu "Reset View") is
+    // folded into the baseline the moment the compositor reaches the time the runtime named. The
+    // maths is in OLR_ReanchorOnSpaceChange: every relative pose comes out identical, so the world
+    // does not move under the player and the player is not turned either - which is exactly what a
+    // recenter in the headset's own menu is meant to do here, because this mod has its own.
+    if (g_refChangePend && fs.predictedDisplayTime >= g_refChangeAt) {
+        g_refChangePend = false;
+        if (g_refChangeValid) {
+            OLR_ReanchorOnSpaceChange(&g_baseQ, &g_baseP, g_refChangePose);
+            // NOTHING is invalidated: the relative pose is identical by construction, and the
+            // published pose is stored relative, so one more frame of it is still correct in the
+            // runtime's new space. Clearing g_olPoseValid here would cost a frame of head tracking
+            // for a change the player is not supposed to see at all.
+            XLOG("[OLVR][REFCENTER] baseline folded into the runtime's new origin - the world stayed put");
+        } else {
+            // No pose to compensate with: fall back to the player's own recenter, which re-zeros
+            // the yaw and the position baseline on the spot.
+            g_recenterManual = 1;
+            g_recenterReq = 1; g_centered = 0; g_olPoseValid = 0;
+            XLOG("[OLVR][REFCENTER] re-zeroing the baseline instead (the runtime gave no pose)");
+        }
+    }
     if (g_recenterReq) {
         XrViewLocateInfo li = {}; li.type = XR_TYPE_VIEW_LOCATE_INFO_VALUE;
         li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO_VALUE;
@@ -4823,7 +5194,16 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO_VALUE;
         // One period AHEAD: this pose is consumed by the camera for the frame rendered during
         // the NEXT interval, displayed at roughly the next Present. See the pose note above.
-        vli.displayTime = fs.predictedDisplayTime + fs.predictedDisplayPeriod;
+        // [STREAMPOSE] How many periods is [Stream] PoseLeadPeriods (default 1, every released
+        // build). It is the one number that trades "the world lags behind my head" against "the
+        // runtime has to warp further, which is what pulls black in at the edges of view" - a
+        // streaming runtime with a deep queue (Quest Air Link) can want 2, a native 90 Hz
+        // headset wants 1 and nothing else. The lead is also what the compositor is told,
+        // because the declared pose is the render pose, so a wrong value shows as swimming.
+        XrTime leadNs = 0;
+        if (g_poseLeadPeriods > 0 && fs.predictedDisplayPeriod > 0)
+            leadNs = (XrTime)g_poseLeadPeriods * (XrTime)fs.predictedDisplayPeriod;
+        vli.displayTime = fs.predictedDisplayTime + leadNs;
         vli.space = g_localSpace;
         XrViewState vs = {}; vs.type = XR_TYPE_VIEW_STATE_VALUE;
         XrView av[2] = {}; av[0].type = XR_TYPE_VIEW_VALUE; av[1].type = XR_TYPE_VIEW_VALUE; uint32_t nv = 0;
@@ -5771,6 +6151,33 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
              fx * 57.2957795f, fy * 57.2957795f,
              SessionStateName(g_sessionState), (long)g_lastEndFrame,
              (unsigned long long)(dev ? 0 : g_conSeq));
+        // [STREAM] The measurement that explains "black bars at the edge of view when I turn my
+        // head quickly". Every PC runtime reprojects: it warps the frame you submitted to where
+        // the head is at scan-out, and a warp reveals whatever was not rendered. When the game
+        // presents well below the headset's refresh (a 60 fps game on a 90/120 Hz display), most
+        // displayed frames are the runtime's own synthesis and the warps are large. Reported at
+        // most every 30 s and five times, so a log stays readable.
+        {
+            static unsigned long long s_prevSeq = 0;
+            static DWORD s_prevMs = 0, s_lastHint = 0;
+            static int s_hints = 0;
+            const unsigned long long seq = dev ? 0 : g_conSeq;
+            const LONG periodUs = g_displayPeriodUs;
+            const double hz = periodUs > 0 ? 1000000.0 / (double)periodUs : 0.0;
+            if (s_prevMs && now > s_prevMs && seq > s_prevSeq && hz > 1.0) {
+                const double gameFps = (double)(seq - s_prevSeq) * 1000.0 / (double)(now - s_prevMs);
+                if (gameFps > 1.0 && gameFps < hz * 0.8 && s_hints < 5 && now - s_lastHint > 30000) {
+                    ++s_hints; s_lastHint = now;
+                    XLOG("[OLVR][STREAM] the game is handing over %.0f fps to a %.0f Hz headset, so most "
+                         "displayed frames are the runtime's own reprojection - that is what shows as black "
+                         "bars at the edges when the head turns quickly. Setting the headset to %s Hz (or "
+                         "lowering the eye resolution) removes it",
+                         gameFps, hz,
+                         gameFps > 78.0 ? "80 or 90" : (gameFps > 68.0 ? "72" : "60 or 72"));
+                }
+            }
+            s_prevSeq = seq; s_prevMs = now;
+        }
         // [XRSUBMIT] The full submitted truth, ME1's shape. Reads the doubling question
         // directly: rtEyeSep is the separation the RUNTIME expects between the two eye
         // viewpoints; this mod declares ONE pose for both (declSep is therefore 0 by construction).
@@ -5837,6 +6244,11 @@ void OLXR_Shutdown() {
     if (g_uploadTex) { g_uploadTex->Release(); g_uploadTex = nullptr; }
     if (g_blitTmpRtv) { g_blitTmpRtv->Release(); g_blitTmpRtv = nullptr; }
     if (g_blitTmp)    { g_blitTmp->Release();    g_blitTmp = nullptr; }
+    // [SWAPFMT] the non-sRGB scratch and the encoded LUT twin
+    if (g_blitTmpNsRtv) { g_blitTmpNsRtv->Release(); g_blitTmpNsRtv = nullptr; }
+    if (g_blitTmpNs)    { g_blitTmpNs->Release();    g_blitTmpNs = nullptr; }
+    if (g_lutSRVSrgbEnc) { g_lutSRVSrgbEnc->Release(); g_lutSRVSrgbEnc = nullptr; }
+    if (g_lutTexSrgbEnc) { g_lutTexSrgbEnc->Release(); g_lutTexSrgbEnc = nullptr; }
     if (g_blitBlend)  { g_blitBlend->Release();  g_blitBlend = nullptr; }
     if (g_blitDepth)  { g_blitDepth->Release();  g_blitDepth = nullptr; }
     if (g_blitRaster) { g_blitRaster->Release(); g_blitRaster = nullptr; }

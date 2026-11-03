@@ -43,6 +43,16 @@ Licensed under [GPL-3.0](../LICENSE).
   (`[Cinema] MenuGlow=1`): the pause/notes/documents menus inside a level are drawn without it.
 - **Color/gamma correction** - the game's own brightness calibration and its ~2.2-gamma
   authoring are reconciled with the sRGB frame the compositor expects.
+- **Each runtime gets the picture it actually wants** - the projection FOV is declared exactly as
+  rendered, and the `fovMutable` flag decides whether that declaration is honoured (SteamVR, VDXR)
+  or the frame has to be pre-warped into the runtime's own asymmetric lens frustum (Meta's PC
+  runtime: Quest Link / Air Link). The margin the fit leaves is filled with the picture's own edge
+  rather than black, so the compositor's reprojection has pixels to pull in when the head turns
+  quickly. A recenter done in the headset's own menu is folded into the pose baseline instead of
+  moving the world, and the eye-image format is negotiated with the runtime (BGRA8 sRGB wherever it
+  is offered - every runtime so far - with the pre-encoded-LUT path for one that has only the
+  non-sRGB variant). `[FOVMUTABLE]`, `[STREAMEDGE]`, `[STREAMPOSE]`, `[REFCENTER]`, `[SWAPFMT]` in
+  `src/ol_xr.cpp`, explained in [STREAMING.md](STREAMING.md).
 
 ## Experimental areas
 

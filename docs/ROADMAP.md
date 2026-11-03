@@ -36,6 +36,45 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
     trackpad force). `tests/xr_valve_bindings_test.py` also checks every bound path against the OpenXR 1.1
     interaction-profile allowlists, and pins the Oculus Touch table so the Quest bindings cannot move.
 
+- **Streaming: the black bars at the edge of view when turning the head quickly** (SteamVR,
+  Quest Link / Air Link). Not a capture bug: every PC runtime reprojects the submitted frame to
+  where the head is at scan-out, and a warp can only pull black where nothing was rendered
+  (Khronos frame-submission guide). Three changes, all in `src/ol_xr.cpp`:
+  - **`[FOVMUTABLE]`** In Beta 1.2.1 the `[FITFRUSTUM]` decision comes from the runtime's own
+    `XrViewConfigurationProperties::fovMutable` instead of its name: a runtime that discards the
+    declared FOV (Meta's PC runtime - Quest Link / Air Link) gets each eye pre-warped into its own
+    frustum, one that honours it (SteamVR, VDXR) gets the image as drawn. `OLR_DecideFitFrustum()`.
+  - **`[STREAMEDGE]`** In fit mode the eye image spans the runtime's lens frustum while the picture
+    covers only what the game rendered; the margin used to be cleared to black, and that black is
+    what the warp brings into view. The blit now extends the picture's own edge over the margin
+    with the same affine map, so the margin is a stretched continuation of the world instead of a
+    bar. `OLR_EdgeFillBox()`, `[Stream] EdgeFill` (default 1).
+  - **`[STREAMPOSE]`** The pose lead is now `[Stream] PoseLeadPeriods` (default 1, the shipped
+    behaviour; 2 for a deep link queue), and a `[OLVR][STREAM]` line reports the game's frame rate
+    against the headset's refresh whenever the runtime is synthesising most frames - which is the
+    dominant cause of the artifact. `tests/stream_edge_fill_test.py`, `docs/STREAMING.md`.
+
+- **Running well on SteamVR alone and on Quest Link / Air Link** (the runtime-integration half,
+  separate from streaming quality). Two gaps closed:
+  - **A recenter done in the headset's own menu** (SteamVR dashboard "Recenter", the Oculus menu's
+    "Reset View"). `XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING` was in the "log each unknown
+    event once" branch, i.e. dropped: the runtime redefined its origin, this mod's baseline did not
+    follow, and the world rotated/slid around the player. On SteamVR alone that dashboard recenter
+    is the only recenter a player has, so it read as broken head tracking. `[REFCENTER]` now folds
+    the new origin into the baseline at the `changeTime` the runtime named, which leaves every
+    relative pose *identical* (the runtime moves the chair, not the asylum); a runtime that sends no
+    pose falls back to a plain re-zero. `OLR_ReanchorOnSpaceChange()`.
+  - **Which swapchain format the runtime prefers** is now asked (`[SWAPFMT]`) instead of assumed:
+    OpenXR's guidance is to use the first colour format the runtime lists, and anything else costs a
+    compositor conversion pass on every eye every frame. `OLR_PickEyeFormat()` requests the shipped
+    BGRA8 sRGB wherever it is offered (every runtime this mod has run on - so no change there), falls
+    back to the byte-identical BGRA8 UNORM only when it is not, and otherwise keeps the old request.
+    The non-sRGB path re-encodes the gamma LUT (`SrgbFromLinear`) instead of relying on the render
+    target, so the picture is identical; `[XR] RuntimeFormat=0` restores the old behaviour.
+  - Both are in `src/ol_xr.cpp`; `tests/stream_edge_fill_test.py` checks the re-anchor against its
+    invariance property (including the orientation transform) and that neither event nor format
+    query can be dropped again.
+
 ## Done in Beta 1.1.9 (document menu enhancement)
 
 - **A confidential document on Miles's left shoulder.** A `Document-01` StaticMesh hangs from the

@@ -39,6 +39,12 @@ constexpr uint32_t XR_TYPE_FRAME_END_INFO_VALUE = 12;
 constexpr uint32_t XR_TYPE_EVENT_DATA_BUFFER_VALUE = 16;
 constexpr uint32_t XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED_VALUE = 18;
 constexpr uint32_t XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED_VALUE = 52;   // (Test48)
+// [REFCENTER] XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING. Sent whenever the RUNTIME itself
+// moves the origin of a space this session holds - SteamVR's "Recenter", the Oculus menu's
+// "Reset View". Dropping it is why an in-runtime recenter used to shift this mod's world instead
+// of doing nothing.
+constexpr uint32_t XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING_VALUE = 40;
+constexpr uint32_t XR_TYPE_EVENT_DATA_EVENTS_LOST_VALUE = 49;
 constexpr uint32_t XR_TYPE_INTERACTION_PROFILE_STATE_VALUE = 53;
 constexpr uint32_t XR_TYPE_INSTANCE_PROPERTIES_VALUE = 32;
 constexpr uint32_t XR_TYPE_FRAME_WAIT_INFO_VALUE = 33;
@@ -47,6 +53,8 @@ constexpr uint32_t XR_TYPE_REFERENCE_SPACE_CREATE_INFO_VALUE = 37;
 constexpr uint32_t XR_TYPE_VIEW_CONFIGURATION_VIEW_VALUE = 41;
 constexpr uint32_t XR_TYPE_FRAME_STATE_VALUE = 44;
 constexpr uint32_t XR_TYPE_FRAME_BEGIN_INFO_VALUE = 46;
+// [FOVMUTABLE] XrStructureType::XR_TYPE_VIEW_CONFIGURATION_PROPERTIES (OpenXR 1.0 header value 45).
+constexpr uint32_t XR_TYPE_VIEW_CONFIGURATION_PROPERTIES_VALUE = 45;
 constexpr uint32_t XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW_VALUE = 48;
 constexpr uint32_t XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE = 55;
 constexpr uint32_t XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE = 56;
@@ -164,6 +172,9 @@ struct XrQuaternionf { float x; float y; float z; float w; };
 struct XrPosef { XrQuaternionf orientation; XrVector3f position; };
 struct XrReferenceSpaceCreateInfo { XrStructureType type; const void* next; XrReferenceSpaceType referenceSpaceType; XrPosef poseInReferenceSpace; };
 struct XrViewConfigurationView { XrStructureType type; void* next; uint32_t recommendedImageRectWidth; uint32_t maxImageRectWidth; uint32_t recommendedImageRectHeight; uint32_t maxImageRectHeight; uint32_t recommendedSwapchainSampleCount; uint32_t maxSwapchainSampleCount; };
+// [FOVMUTABLE] XR_FALSE means the runtime composites the projection layer into ITS OWN frustum and
+// the FOV this mod declares is discarded - the Quest Link / Air Link behaviour.
+struct XrViewConfigurationProperties { XrStructureType type; void* next; XrViewConfigurationType viewConfigurationType; XrBool32 fovMutable; };
 struct XrGraphicsRequirementsD3D11KHR { XrStructureType type; void* next; LUID adapterLuid; D3D_FEATURE_LEVEL minFeatureLevel; };
 struct XrGraphicsBindingD3D11KHR { XrStructureType type; const void* next; ID3D11Device* device; };
 struct XrSessionCreateInfo { XrStructureType type; const void* next; XrSessionCreateFlags createFlags; XrSystemId systemId; };
@@ -172,6 +183,9 @@ struct XrSwapchainImageBaseHeader { XrStructureType type; void* next; };
 struct XrSwapchainImageD3D11KHR { XrStructureType type; void* next; ID3D11Texture2D* texture; };
 struct XrEventDataBuffer { XrStructureType type; const void* next; uint8_t varying[XR_MAX_EVENT_DATA_SIZE_VALUE]; };
 struct XrEventDataSessionStateChanged { XrStructureType type; const void* next; XrSession session; XrSessionState state; XrTime time; };
+// [REFCENTER] poseInPreviousSpace is the pose of the NEW space's origin, expressed in the OLD
+// space: a point p_new maps to the old space as Rot(q, p_new) + t.
+struct XrEventDataReferenceSpaceChangePending { XrStructureType type; const void* next; XrSession session; XrReferenceSpaceType referenceSpaceType; XrTime changeTime; XrBool32 poseValid; XrPosef poseInPreviousSpace; };
 struct XrSessionBeginInfo { XrStructureType type; const void* next; XrViewConfigurationType primaryViewConfigurationType; };
 struct XrFrameWaitInfo { XrStructureType type; const void* next; };
 struct XrFrameState { XrStructureType type; void* next; XrTime predictedDisplayTime; XrDuration predictedDisplayPeriod; XrBool32 shouldRender; };
@@ -232,6 +246,7 @@ using PFN_xrGetInstanceProperties = XrResult (OL_XRAPI *)(XrInstance, XrInstance
 using PFN_xrPollEvent = XrResult (OL_XRAPI *)(XrInstance, XrEventDataBuffer*);
 using PFN_xrGetSystem = XrResult (OL_XRAPI *)(XrInstance, const XrSystemGetInfo*, XrSystemId*);
 using PFN_xrEnumerateViewConfigurationViews = XrResult (OL_XRAPI *)(XrInstance, XrSystemId, XrViewConfigurationType, uint32_t, uint32_t*, XrViewConfigurationView*);
+using PFN_xrGetViewConfigurationProperties = XrResult (OL_XRAPI *)(XrInstance, XrSystemId, XrViewConfigurationType, XrViewConfigurationProperties*);
 using PFN_xrGetD3D11GraphicsRequirementsKHR = XrResult (OL_XRAPI *)(XrInstance, XrSystemId, XrGraphicsRequirementsD3D11KHR*);
 using PFN_xrCreateSession = XrResult (OL_XRAPI *)(XrInstance, const XrSessionCreateInfo*, XrSession*);
 using PFN_xrDestroySession = XrResult (OL_XRAPI *)(XrSession);
@@ -276,6 +291,7 @@ struct Functions
     PFN_xrPollEvent pollEvent = nullptr;
     PFN_xrGetSystem getSystem = nullptr;
     PFN_xrEnumerateViewConfigurationViews enumerateViewConfigurationViews = nullptr;
+    PFN_xrGetViewConfigurationProperties getViewConfigurationProperties = nullptr;   // [FOVMUTABLE] optional
     PFN_xrGetD3D11GraphicsRequirementsKHR getD3D11GraphicsRequirements = nullptr;
     PFN_xrCreateSession createSession = nullptr;
     PFN_xrDestroySession destroySession = nullptr;
