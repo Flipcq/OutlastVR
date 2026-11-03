@@ -351,6 +351,18 @@ assert 'OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, 0.0f, 0.0f' in hold, \
 assert 'kEdgeFillMinCoverage = 0.75f' in source, 'the narrow-frame cutoff is part of the contract'
 assert '[OLVR][STREAMEDGE] kept black around the picture' in source, \
     'a frame the fill skipped must say why, once'
+# ---- the projection layer must declare the full runtime FOV (not the intersection) ----------
+# when EdgeFill already spans the eye image, so SteamVR / Meta do not crop it to black bars.
+proj = source[source.index('// [XRRUNTIME] Meta and SteamVR only:'):]
+proj = proj[:proj.index('pv[0].subImage.swapchain = g_scL;')]
+assert 'if (fittedToRuntime || g_edgeFill)' in proj, \
+    'the projection layer must declare full runtime FOV when EdgeFill spans the eye'
+assert 'pv[e].fov = g_rtEyeFov[e];' in proj, \
+    'declare the runtime\'s own frustum, not the intersection'
+assert 'pv[e].subImage.imageRect.offset = { 0, 0 };' in proj, \
+    'submit the whole image, not a cropped sub-rect'
+assert 'pv[e].subImage.imageRect.extent = { (int32_t)g_eyeW, (int32_t)g_eyeH };' in proj, \
+    'submit the whole image, not a cropped sub-rect'
 assert 'OLR_DecideFitFrustum(g_fitMode, g_isOculusRuntime, g_fovMutableKnown, g_fovMutable)' in source, \
     'the fit decision must come from the shared helper'
 assert 'vli.displayTime = fs.predictedDisplayTime + leadNs;' in source, 'the pose lead must be applied'

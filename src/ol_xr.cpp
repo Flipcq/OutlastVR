@@ -5966,9 +5966,16 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                     // declared FOV still describes precisely the pixels being handed over, because
                     // the rect shrinks along with it. Ported from ME1's [LINKFOV]/[STEAMVRFOV].
                     // On Virtual Desktop and every other runtime this never runs.
-                    if (fittedToRuntime) {
-                        // [FITFRUSTUM] The image already spans this eye exactly, so declare the
-                        // runtime's own frustum and hand over the whole thing. Nothing here can
+                    //
+                    // When the image already spans the runtime's frustum - either because [FITFRUSTUM]
+                    // pre-warped it (fittedToRuntime) or because [STREAMEDGE] EdgeFill stretched the
+                    // picture's edge over the whole eye image (BlitHalfToEye / BlitHoldToEye) - declare
+                    // the runtime's full FOV and hand over the whole image. Cropping to the intersection
+                    // would leave black bars around a narrower declared FOV on runtimes that honour it
+                    // (SteamVR), and would waste the EdgeFill margin on Meta.
+                    if (fittedToRuntime || g_edgeFill) {
+                        // [FITFRUSTUM] / [STREAMEDGE] The image already spans this eye exactly, so declare
+                        // the runtime's own frustum and hand over the whole thing. Nothing here can
                         // disagree with the pixels, which is the entire point - a runtime that
                         // ignores the declaration lands on the same answer as one that honours it.
                         pv[e].fov = g_rtEyeFov[e];
