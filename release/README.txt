@@ -136,18 +136,38 @@ HANDS
     the game too: whatever waits behind it happens, just as with B.
 
   CLIMBING
-    Your hands carry Miles. Squeeze a grip on an edge you can climb or on a
-    ladder rung and that hand holds on: pull it down and Miles rises with it,
-    pull it in and he comes closer, move it sideways and he shimmies along.
-    Hand over hand: take a new hold higher up, let go of the old one. Get the
-    edge to your chest and he hauls himself over onto the top. At the top of
-    a ladder, keep pulling and he steps off onto the floor. Let go of
-    everything and he drops - except on a ladder: let go part-way up and Miles
-    holds on until you take a rung again (X drops him). Walk right up to a
-    ladder and take its rungs, or walk into it and the game climbs it its own
-    way. A still climbs the game's way.
-    (VR SETTINGS: "Climbing" GUIDED = the game's own climb, played only as
-    fast as you pull; A BUTTON = the old way.)
+    Pick how you climb in VR SETTINGS -> "Climbing": A BUTTON (the default,
+    the game's own climb), HYBRID or PHYSICAL.
+
+    A BUTTON  A climbs and vaults, the walk stick climbs a ladder. Nothing
+              about climbing changes from the game.
+    HYBRID    Both. Your hands carry Miles - squeeze a grip on an edge you
+              can climb or on a ladder rung and that hand holds on: pull it
+              down and Miles rises with it, pull it in and he comes closer,
+              move it sideways and he shimmies along. Hand over hand: take a
+              new hold higher up, let go of the old one. At the top of a
+              ladder, keep pulling and he steps off onto the floor. Let go of
+              everything and he drops - except on a ladder: let go part-way up
+              and Miles holds on until you take a rung again (crouch drops
+              him). A still climbs and vaults.
+    PHYSICAL  Only your hands, driving the game's own climb. A ladder is taken
+              rung by rung: squeeze a rung and pull down - Miles climbs a rung
+              with the game's own animation - push up and he goes back down.
+              Going down, the game plays its own descent animation with its
+              own arm. The walk stick does not climb it for you any more, but it
+              still walks you up to it (so the game mounts it), backs you down
+              it, and at its top it finishes the step off onto the floor. A only
+              jumps at a ledge - it never finishes a climb: press A at a
+              platform taller than Miles, jump at it, and his LEFT hand catches
+              the edge by itself while your right hand stays free. Squeeze the
+              left grip on that hand and it becomes yours, like the right one:
+              pull either hand DOWN and he climbs up (the game's own animation,
+              going forward onto the platform); push it UP and he lets go / goes
+              back; let the left hand go and he drops, unless the right hand is
+              still holding the ledge. Crouch still drops you. Only a platform
+              higher than his head counts as a climb: a low wall or table he
+              jumps or vaults over with A, the game's own way. While he hangs on
+              an edge the walk stick does nothing.
     Vaulting: run at a low wall or a table and press A - Miles vaults it at
     the game's own speed, whatever your hands are doing.
 

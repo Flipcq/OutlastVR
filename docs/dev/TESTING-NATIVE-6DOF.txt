@@ -116,7 +116,9 @@ lockers etc.").
   lip); a ladder's top steps him off; let go of everything and he drops with the push of your hands.
   Verified on the scaffold ladder: the whole climb hand over hand, ~48 uu per pull, over the platform
   edge, standing on the scaffold (5 uu drop). A hitch no longer drops him (1.5 s grace).
-  ClimbMode=1 is the Test41 guided climb, 0 the A button.
+  Beta 1.2.0: ClimbMode 0 = A button (the default), 1 = HYBRID (this and the button), 2 = PHYSICAL
+  (hands only - the stick never climbs, A only jumps at a ledge, the game finishes the climb near the top,
+  and only an edge over his head counts as a climb).
 - Camcorder (CamcorderHold=4, free): the controller's own angle, the game's grip as its resting angle -
   the lens where the controller points, the back of the camcorder toward you, the flip screen open on its
   left facing you. Its flip screen is live: a quad over the model's screen showing the part of the frame
@@ -193,3 +195,33 @@ myself; the framerate is horrible during fast movement and later sections."
   spikes: a full object-table walk (93-103k objects, 1-3 ms) for doors every 2 s and ledges / ladders every
   4 s. Now [OBJSCAN]: one sliced pass (4000 objects a frame) serves every class. The "GObjObjects refreshed"
   line no longer fires on every spawn.
+
+== Test 46 (2026-11-03): Beta 1.2.0 physical climb, driven by the game ==
+User: "on the ladder the hand that is holding still goes to the next rung by itself"; "there is still a
+delay in the left hand's autograb; pushing up makes Miles jump up instead of going forward"; "let me push
+up with only the right hand, the left one stays in autograb"; "pushing down / going back does not work".
+- PHYSICAL no longer carries Miles with its hands: it drives the game's own jump / hang / climb / ladder.
+  PhysAutoCatch holds his left hand on the ledge from the jump on (the climb special moves and the fall; the
+  edge is measured against the eye height he took off from), so the grab is there when the game hangs him -
+  nothing is frozen. The right hand climbs: pull down = A + the walk stick forward (A alone was seen to hop
+  him in place and slide him off the ledge), push up = B + the stick back, and the same push reverses the
+  climb while the game plays it. The forward stick is kept alive only while the game's climb runs and the
+  hand still holds it.
+- Ladder strokes are measured hand-against-head in the recenter frame (12 cm = one rung, re-armed within
+  4 cm), so the game lifting Miles moves his hand and head together and can never fire a rung by itself; a
+  rung held from the floor survives the mount, re-anchored to where the hand is at that moment.
+- HYBRID keeps the physics-off carry and the near-the-top hand-off; A BUTTON is untouched.
+- Left-hand takeover ([CLIMBGRAB]): after the auto-grab, squeezing the left grip makes that hand the player's
+  (it climbs like the right one); letting it go drops him unless the right hand holds the ledge. Either hand
+  drives the climb (pull down = A + the walk stick forward), and a pull while the game climbs asks it to keep
+  going. Nothing re-grabs a hand the player took or just released.
+- Ladder descent is the game's own descent animation: the stick back or a hand's push up sets
+  `s_ladderDownUntil`, and `OLInteract_ClimbHold` then hands both arms to the game (no open-hand override).
+- Haptics: the left grip buzzes on taking over the auto-grabbed hand; a pull buzzes the pulling hand (both
+  controllers when both hands hold the ledge); releasing with nothing holding drops him after 150 ms with two
+  buzzes in a row.
+- The hip grab zone is tighter horizontally (camcorder/battery), and the confidential document's shoulder grab
+  is a smaller sphere, so a hand held out in front no longer takes them.
+- Build OK; tests/climb_modes_test.py and tests/climb_phys_test.py pass (the latter now drives the HYBRID
+  carry and the PHYSICAL catch / stroke / takeover / ladder-descent rules separately). Not tested in a headset
+  yet.

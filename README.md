@@ -42,6 +42,8 @@ Also included:
 - Comfort options: keep the horizon level, and crouch for real when you duck.
 - World size: 100% is true size, with your own eye spacing read from the headset. Lower it if things look too big.
 - Your body turns with you: turn your real body or chair and Miles turns to match, so his arms stay lined up.
+- Climbing your way: A BUTTON (the game's own climb), HYBRID (your hands and the button) or PHYSICAL (your
+  hands drive the game's own climb - his left hand catches the ledge, then either hand pulls him up).
 - A film grain on/off switch.
 - VR settings in the launcher and in the game (hold the left grip and press Menu).
 - A launcher that installs and uninstalls everything for you.

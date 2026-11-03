@@ -62,7 +62,7 @@ static const ActionWord kActions[] = {
 };
 
 // ---- whole hints the hands now do (English text, OLGame.int) -----------------------------------------
-enum Gate { G_ALWAYS, G_DOORS, G_RAISE, G_DUCK, G_HOLSTER, G_CLIMB };
+enum Gate { G_ALWAYS, G_DOORS, G_RAISE, G_DUCK, G_HOLSTER, G_CLIMB, G_CLIMB_PHY };
 struct Sentence { Gate gate; const wchar_t* game; const wchar_t* quest; const wchar_t* mouseQuest = nullptr; };
 static const Sentence kSentences[] = {
     // [DOOR] the game's door hints are removed (the game text is matched, the hint shown is empty):
@@ -80,6 +80,17 @@ static const Sentence kSentences[] = {
     { G_DUCK, L"Crouch or uncrouch with {OLA_CrouchToggle}", L"Duck down to crouch and stand up to stand, or press B",
            L"Duck down to crouch and stand up to stand, or press X" },
     // (Test40) climbing with your hands
+    // (Beta 1.2.0) PHYSICAL first: its hints must not tell you to press A to climb - A only jumps at a
+    // ledge there, Miles grabs it with his left hand himself and the hands do the rest.
+    { G_CLIMB_PHY, L"To climb up, press {OLA_Jump}",
+                   L"To climb up, press A at the ledge: Miles catches it with his left hand, then pull down with either hand" },
+    { G_CLIMB_PHY, L"To climb up, press {OLA_Jump}. To drop, press {OLA_CrouchToggle}",
+                   L"With a hand on the ledge (squeeze the left one to take it over), pull down to climb. To drop, push up (or press B)",
+                   L"With a hand on the ledge (squeeze the left one to take it over), pull down to climb. To drop, push up (or press X)" },
+    { G_CLIMB_PHY, L"To jump up, press {OLA_Jump}",
+                   L"To jump up, press A at the ledge: Miles grabs it with his left hand - either hand climbs (pull down)" },
+    { G_CLIMB_PHY, L"To vault, press {OLA_Jump} while moving towards waist-high objects.",
+                   L"To vault, press A while moving towards waist-high objects." },
     { G_CLIMB, L"To climb up, press {OLA_Jump}",
                L"To climb up, grab the edge with both hands and pull yourself up (or press A)" },
     { G_CLIMB, L"To climb up, press {OLA_Jump}. To drop, press {OLA_CrouchToggle}",
@@ -99,6 +110,7 @@ static bool GateOn(Gate g) {
     case G_DUCK:    return OLMotion_GetPhysCrouch() != 0;
     case G_HOLSTER: return OLInteract_Get(5) != 0;
     case G_CLIMB:   return OLInteract_Get(7) != 0;
+    case G_CLIMB_PHY: return OLInteract_ClimbMode() == 2;
     default:        return true;
     }
 }

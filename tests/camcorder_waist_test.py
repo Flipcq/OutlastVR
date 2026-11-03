@@ -25,10 +25,11 @@ int main() {
     const V3 hip = { 0, 0, 0 };
     assert(InWaistZone({ 0, 0, 0 }, hip));                 // on the holster
     assert(InWaistZone({ 0.18f, -0.05f, -0.10f }, hip));   // a hand at the right hip
-    assert(InWaistZone({ 0.00f, -0.10f, -0.30f }, hip));   // seated: hand in the lap, forward and down
-    assert(InWaistZone({ 0.00f, -0.25f, -0.20f }, hip));   // seated: lower than the hip, still forward
+    assert(InWaistZone({ 0.00f, -0.12f, -0.18f }, hip));   // seated: hand in the lap, forward and down
+    assert(InWaistZone({ 0.00f, -0.24f, -0.14f }, hip));   // seated: lower than the hip, still forward
     assert(InWaistZone({ 0.00f, 0.20f, 0.00f }, hip));     // a hand coming down from above
     assert(!InWaistZone({ 0.40f, 0.00f, 0.00f }, hip));    // far out to the side
+    assert(!InWaistZone({ 0.00f, 0.00f, -0.26f }, hip));   // a hand held out in front at hip height
     assert(!InWaistZone({ 0.00f, 0.00f, -0.50f }, hip));   // far in front
     assert(!InWaistZone({ 0.00f, -0.40f, 0.00f }, hip));   // below the waist zone
     puts("Camcorder waist zone: hip, standing reach and seated lap pass; far points stay out.");

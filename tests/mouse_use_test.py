@@ -89,7 +89,7 @@ static bool g_padStub=false,realConnected=false;
 static WORD realButtons=0;
 static DWORD RealPad(DWORD,OLXiState* p) { ZeroMemory(p,sizeof(*p));p->Gamepad.wButtons=realButtons;return realConnected?ERROR_SUCCESS:ERROR_DEVICE_NOT_CONNECTED; }
 static auto o_XiGetState=&RealPad;
-struct OLInteractPad { int camUp; bool blockGripL,blockGripR; WORD addButtons; bool stickOn; float stickLX,stickLY; };
+struct OLInteractPad { int camUp; bool blockGripL,blockGripR; WORD addButtons, removeButtons; bool stickOn; float stickLX,stickLY; };
 static int OLDev_Pad(WORD*,float*,float*,float*,float*) { return 0; }
 static void OLInteract_Pad(const OLXrPad&,OLInteractPad* p) { p->camUp=-1; }
 static WORD CamcorderGripButton(const OLXrPad&) { return 0; }
@@ -97,6 +97,7 @@ static WORD OLMotion_Process(const OLXrPad&,bool,float*,float*,float*,float*) { 
 static void OLInteract_FilterMoveStick(float*,float*) {}
 static SHORT StickAxis(float v) { return SHORT(v*32767); }
 static int OLInteract_Get(int) { return 1; }
+static int OLInteract_ClimbMode() { return 0; }   // (Beta 1.2.0) the hint gate asks for the climb mode
 static int OLMotion_GetPhysCrouch() { return 1; }
 '''
 MENU_STUBS = r'''

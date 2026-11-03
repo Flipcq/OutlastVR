@@ -169,6 +169,7 @@ extern "C" int OLInteract_FaceCamPinned();             // (Beta 1.1.4) [FACECAM]
 extern "C" int OLInteract_CamUpKnown();                // (V1) 1 camcorder at his face, 0 down, -1 not sampled yet
 extern "C" int OLInteract_PoseRefReady();              // (V1) the startup camcorder guard is over: safe to freeze a pose
 extern "C" int OLInteract_HandNV();                    // (Test43) [HANDNV] the camcorder's night vision
+extern "C" int OLInteract_ClimbFinishing();            // (Beta 1.2.0) [CLIMBFINISH] the game ends the climb
 extern "C" void OLPrompts_Install(uintptr_t base);   // [PROMPTS] ol_prompts.cpp
 extern "C" void OLSound_Install();                     // [SOUND] (Test43) ol_sound.cpp: Wwise - breath, audio report
 // [FRAMETAG] (Test36) per-frame head pose: latched on the game thread, identified on the render
@@ -239,9 +240,14 @@ static bool SceneScripted() {
 // 8 Locker 9 Cinematic ... SpecialMove (ESpecialMoveType): see the enum dump in the Test40 notes.
 static int ArmMoveClass() {
     if (g_sCinematic > 0 || g_sIgnoreMove > 0) return 2;
+    // (Beta 1.2.0) [CLIMBFINISH] PHYSICAL: the hands lifted Miles to the top and the game is playing its own
+    // climb from there - both arms are its animation, not the tracked hands.
+    if (OLInteract_ClimbFinishing()) return 2;
     const long lm = g_sMoveMode, sm = g_sSpecialMove;
     int c = 2;
-    if (lm <= 0 || lm == 1) c = 0;                       // walking, falling
+    if (lm <= 0) c = 0;                                  // walking
+    else if (lm == 1) c = OLInteract_ClimbHold(0) ? 1 : 0;   // (Beta 1.2.0) [CLIMBGRAB] the jump Miles's own left
+                                                          // hand caught still plays that hand's game pose
     else if (lm == 3 || lm == 4) c = 1;                  // on a ladder, hanging from a ledge
     else if (lm == 2) {
         switch (sm) {
@@ -251,7 +257,7 @@ static int ArmMoveClass() {
         default: c = 2;
         }
     }
-    if (c == 1 && !OLInteract_Get(8)) c = 2;              // [Motion] ClimbWithHands=0: the old way
+    if (c == 1 && !OLInteract_Get(7)) c = 2;              // [Motion] ClimbMode 0 (A button): the game's own arms
     return c;
 }
 extern "C" int OLUE3_HeroMoveState(int* lm, int* sm) {
@@ -3882,6 +3888,24 @@ static void GripFingers(IkArray& space, void* mesh, int h, float w) {
     for (int i = 0; i < space.n && i < 73; ++i) if (sub[i]) space.d[i] = IkCompose(space.d[PoseParent(mesh, i)], loc[i]);
 }
 
+// [CLIMBOPEN] (Beta 1.2.0) a hand that is free during a climb (not holding on) rests in the open/reference
+// pose instead of the game's gripping fingers. Fingers only (not the camcorder bone).
+static void RelaxFingers(IkArray& space, void* mesh, int h, float w) {
+    const int wrist = g_poseBone[h][2];
+    const int aux = h ? g_rAux : g_lAux;
+    if (w <= 0.0f || wrist < 0 || !g_poseRefValid) return;
+    IkAtom loc[73]; bool sub[73] = {};
+    for (int i = 0; i < space.n && i < 73; ++i) {
+        if (i == wrist || i == aux || !PoseDescendant(mesh, i, wrist, space.n)) continue;
+        const int p = PoseParent(mesh, i);
+        if (p < 0 || p >= space.n) continue;
+        loc[i] = IkLocalOf(space, i, p); sub[i] = true;
+        loc[i].q = IQBlend(loc[i].q, g_poseRefLocal[i].q, w);
+        loc[i].t = IVAdd(loc[i].t, IVScale(IVSub(g_poseRefLocal[i].t, loc[i].t), w));
+    }
+    for (int i = 0; i < space.n && i < 73; ++i) if (sub[i]) space.d[i] = IkCompose(space.d[PoseParent(mesh, i)], loc[i]);
+}
+
 extern "C" void OLUE3_DevGripDump() {
     char l[240];
     sprintf_s(l, "[OLVR][NATIVEGRIP] grip valid=%d live=%d aux=%d: q(%.5f %.5f %.5f %.5f) t(%.3f %.3f %.3f)", g_gripValid, g_gripLive, g_rAux,
@@ -4504,12 +4528,12 @@ static void BatteryPlace(void* comp, const IkArray& space, void* mesh, VIk3 cam,
 // game's own full-body animations go through). This is the ANIMATION only: the reload command/function
 // is not called and no Y is pressed, so the battery swap stays ours. `PlayCustomAnim` returns the
 // animation's length.
-extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime) {
+extern "C" float OLUE3_BeginBatteryReload(int inactive) {
     static bool s_tried = false, s_ok = false;
     static unsigned s_nameOff = 0, s_inactiveOff = 0, s_slotOff = 0;
     static void* s_play = nullptr;
     static int s_animOff = -1, s_rateOff = -1, s_blendInOff = -1, s_blendOutOff = -1;
-    static int s_loopOff = -1, s_overOff = -1, s_startOff = -1, s_endOff = -1, s_retOff = -1;
+    static int s_loopOff = -1, s_overOff = -1, s_endOff = -1, s_retOff = -1;
     if (!s_tried) {
         s_tried = true;
         BP_RefreshObjects();
@@ -4523,7 +4547,7 @@ extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime) {
             s_animOff = LS_ParamOff(s_play, "AnimName"); s_rateOff = LS_ParamOff(s_play, "Rate");
             s_blendInOff = LS_ParamOff(s_play, "BlendInTime"); s_blendOutOff = LS_ParamOff(s_play, "BlendOutTime");
             s_loopOff = LS_ParamOff(s_play, "bLooping"); s_overOff = LS_ParamOff(s_play, "bOverride");
-            s_startOff = LS_ParamOff(s_play, "StartTime"); s_endOff = LS_ParamOff(s_play, "EndTime");
+            s_endOff = LS_ParamOff(s_play, "EndTime");
             s_retOff = LS_ParamOff(s_play, "ReturnValue");
         }
         char l[240];
@@ -4551,17 +4575,14 @@ extern "C" float OLUE3_BeginBatteryReload(int inactive, float startTime) {
     if (s_blendOutOff >= 0) *(float*)(p + s_blendOutOff) = 0.35f;
     if (s_loopOff >= 0) *(int*)(p + s_loopOff) = 0;
     if (s_overOff >= 0) *(int*)(p + s_overOff) = 1;
-    if (s_startOff >= 0) *(float*)(p + s_startOff) = startTime > 0.0f ? startTime : 0.0f;
     if (s_endOff >= 0) *(float*)(p + s_endOff) = 0.0f;
     if (!LS_Call(slot, s_play, p)) { OLProxyLog("[OLVR][BATTERY] PlayCustomAnim failed"); return 0.0f; }
     float dur = s_retOff >= 0 ? *(float*)(p + s_retOff) : 0.0f;
     if (!(dur > 0.05f)) dur = 1.30f;
-    // PlayCustomAnim returns the full sequence length; from a non-zero StartTime only the tail plays.
-    const float remaining = dur - (startTime > 0.0f ? startTime : 0.0f);
     char l[220];
-    sprintf_s(l, "[OLVR][BATTERY] playing '%s' through the full-body slot (%.2f s, from %.2f s) - the mod does not press Y", an, remaining > 0.05f ? remaining : dur, startTime);
+    sprintf_s(l, "[OLVR][BATTERY] playing '%s' through the full-body slot (%.2f s) - the mod does not press Y", an, dur);
     OLProxyLog(l);
-    return remaining > 0.05f ? remaining : dur;
+    return dur;
 }
 
 // ---- [DOCUMENT] (Beta 1.1.9) the confidential document on Miles's left shoulder ------------------
@@ -5435,6 +5456,12 @@ static bool PoseApplyVisible(void* comp) {
             OLInteract_HandGrip(dg);
             if (changed[0] && dg[0] > 0.0f) GripFingers(space, mesh, 0, dg[0]);
             if (changed[1] && dg[1] > 0.0f && camHold <= 0.0f) GripFingers(space, mesh, 1, dg[1]);
+            // [CLIMBOPEN] (Beta 1.2.0) a free hand during a climb rests open (the reference pose), not in the
+            // game's gripping fingers. The holding hand plays the game's own arm; the free one is the player's.
+            if (moveClass == 1)
+                for (int h = 0; h < 2; ++h)
+                    if (changed[h] && !OLInteract_ClimbHold(h) && (h == 0 || camHold <= 0.0f))
+                        RelaxFingers(space, mesh, h, 1.0f);
         }
         // [HOLSTER] (Test38) place the game's handycam (hip, hand, or hidden at the eye) - after the
         // helpers, so the hand bone it hangs from is final (Test38 placed it before them)
@@ -7788,7 +7815,7 @@ static void ReadConfig() {
 void OLUE3_Init() {
     g_base = (uintptr_t)GetModuleHandleW(nullptr);
     char line[256];
-    OLProxyLog("[OLVR] BUILD=OUTLAST1VR-BETA-1.1.9-20261031 (BETA 1.1.9: confidential document on Miles's left shoulder - grab it to hold it, look at it to open the documents/notes notebook, left grip + Y now opens the notebook; Y at the face with no spare batteries buzzes twice; BETA 1.1.4: hold the right stick click to raise the camcorder with the game's animation and pin it at his face (hold again or grab at the face to lower); upright GAME POSE; wider waist grab zone incl. seated; left grip + B/X removed; BETA 1.1.1: head bob fully off while running too; BETA 1.1: Quest Link picture where you look (true pose declared), head bob fully off incl. running, world size + your own IPD, focus 0, body turns with you, doors let go when you turn away + arm resets, doors stop at Miles, auto ledge grab option, hand tucked at the eye, big battery gauge, recenter hint; Test49: camcorder GRIP BUTTON option (seated play); Test48: sprint + A vaults, a running squeeze at the hip is sprint not an edge, stick drift fix + controller layout in the log (Pimax / SteamVR); Test47: streaming freezes gone (texture copies in RAM), film grain switch, arms after Trager, readouts in from the edges; Test46: Quest Link fixed (lens-shaped eyes off there), render thread ~1/3 faster - monitor at 30 fps + forced occlusion tests skipped, turn speed through the game's own turn (arms stay right) + quick snap, live screen off for now, zoom fill without double vision, zoom only on a clear up/down push and filling the view, vault fix, async log + hitch times; Test45: camcorder aims with the controller + adjustable, ladders without the barrier, smoother scan; Test44: walk around for real; Test43: physical climbing, free-hold camcorder with a live screen, door scares fire, cover your mouth)");
+    OLProxyLog("[OLVR] BUILD=OUTLAST1VR-BETA-1.2.0-20261102 (BETA 1.2.0: climbing has three modes - A BUTTON (the default, the game's own climb), HYBRID (hands and the button) and PHYSICAL (hands only: the stick never climbs, A only jumps at a higher ledge, Miles grabs it with his left hand himself and near the top the game plays its own climb to the end); a physical climb is only a platform higher than his head; BETA 1.1.9: confidential document on Miles's left shoulder - grab it to hold it, look at it to open the documents/notes notebook, left grip + Y now opens the notebook; Y at the face with no spare batteries buzzes twice; BETA 1.1.4: hold the right stick click to raise the camcorder with the game's animation and pin it at his face (hold again or grab at the face to lower); upright GAME POSE; wider waist grab zone incl. seated; left grip + B/X removed; BETA 1.1.1: head bob fully off while running too; BETA 1.1: Quest Link picture where you look (true pose declared), head bob fully off incl. running, world size + your own IPD, focus 0, body turns with you, doors let go when you turn away + arm resets, doors stop at Miles, auto ledge grab option, hand tucked at the eye, big battery gauge, recenter hint; Test49: camcorder GRIP BUTTON option (seated play); Test48: sprint + A vaults, a running squeeze at the hip is sprint not an edge, stick drift fix + controller layout in the log (Pimax / SteamVR); Test47: streaming freezes gone (texture copies in RAM), film grain switch, arms after Trager, readouts in from the edges; Test46: Quest Link fixed (lens-shaped eyes off there), render thread ~1/3 faster - monitor at 30 fps + forced occlusion tests skipped, turn speed through the game's own turn (arms stay right) + quick snap, live screen off for now, zoom fill without double vision, zoom only on a clear up/down push and filling the view, vault fix, async log + hitch times; Test45: camcorder aims with the controller + adjustable, ladders without the barrier, smoother scan; Test44: walk around for real; Test43: physical climbing, free-hold camcorder with a live screen, door scares fire, cover your mouth)");
     sprintf_s(line, "[OLVR][S3] module base=%p", (void*)g_base);
     OLProxyLog(line);
 

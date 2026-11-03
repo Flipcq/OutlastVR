@@ -15,12 +15,14 @@ void OLInteract_Save(const wchar_t* ini);
 // Game thread, once per frame at the end of the CPU split (after the frame's head pose is committed).
 extern "C" void OLInteract_Tick();
 
-// Game thread, from the XInput hook: buttons to add this poll, grips the game must not see (a grip
-// that is grabbing a door knob, a battery or the camcorder is not sprint / camcorder), and the
-// camcorder's real state (-1 = not known yet).
+// Game thread, from the XInput hook: buttons to add this poll, buttons the game must NOT see, grips the
+// game must not see (a grip that is grabbing a door knob, a battery or the camcorder is not sprint /
+// camcorder), and the camcorder's real state (-1 = not known yet).
+// (Beta 1.2.0) removeButtons: PHYSICAL climbing keeps the jump button from finishing a climb - it only
+// jumps at a ledge - so its A is taken out of the pad again here (0x1000 = XInput A).
 // (Test40) stickOn/stickLX/stickLY: the left stick the hands ask for - on a ladder, forward to climb
 // to where your hand pulled; a pull on an edge, a step into it (used only while your own stick is centred).
-struct OLInteractPad { unsigned short addButtons; bool blockGripL, blockGripR; int camUp; bool stickOn; float stickLX, stickLY; };
+struct OLInteractPad { unsigned short addButtons, removeButtons; bool blockGripL, blockGripR; int camUp; bool stickOn; float stickLX, stickLY; };
 extern "C" void OLInteract_Pad(const OLXrPad& p, OLInteractPad* out);
 
 // 0 = no viewfinder, else the camcorder zoom factor (0..1] while the zoomed picture should be shown
@@ -84,9 +86,6 @@ extern "C" void  OLInteract_GetDocumentWristRot(float out[3]);
 extern "C" void  OLInteract_SetDocumentWristRot(const float in[3]);
 extern "C" void  OLInteract_ResetDocumentWristRot();
 extern "C" void  OLInteract_LogDocumentWrist();
-// [BATTERY] where the reload animation starts (seconds in): skip the "grab a new cell" part.
-extern "C" float OLInteract_GetReloadStart();
-extern "C" void  OLInteract_SetReloadStart(float s);
 // [BATTERY] play the reload animation once without swapping batteries (menu tuning).
 extern "C" void  OLInteract_PreviewReload();
 
@@ -98,7 +97,12 @@ extern "C" float OLInteract_HandAnchorWorld(int h, float out[3]);
 extern "C" int   OLInteract_HandAnchorLock(int h);
 extern "C" float OLInteract_HandAnchorYaw(int h);
 // [CLIMB] (Test40) In a climb / ledge hang / on a ladder this hand holds on: it plays the game's own arm.
+// (Beta 1.2.0) PHYSICAL: Miles's automatic left-hand grab also plays the game's own pose until the grip
+// takes it over; a released hand goes back to the tracked, open hand.
 extern "C" int OLInteract_ClimbHold(int h);
+// [CLIMBFINISH] (Beta 1.2.0) PHYSICAL: the hands lifted Miles to the top and the game was asked to finish
+// the climb with its own animation. 1 while that is happening, so ol_ue3 lets the game pose both arms.
+extern "C" int OLInteract_ClimbFinishing();
 // [LADDERGRAB] (Test41) Remove the part of a walk stick (pawn frame: x right, y forward) that would push
 // Miles onto a ladder no hand has taken.
 extern "C" void OLInteract_FilterMoveStick(float* x, float* y);
@@ -110,8 +114,11 @@ extern "C" void OLInteract_FilterMoveStick(float* x, float* y);
 // 12 (Beta 1.1) auto ledge grab: in the air the game catches the edge (physical climbing steps aside)
 extern "C" int  OLInteract_Get(int which);
 extern "C" void OLInteract_Set(int which, int on);
-// (Test43) climbing: 0 the A button, 2 physical (your hands carry Miles). The guided climb (1) was
-// removed - a saved 1 reads as physical. The camcorder in your hand: 4 free hold, 3 the game's raise pose.
+// (Beta 1.2.0) The three ways to climb: 0 = A BUTTON (the game's climb, the default), 1 = HYBRID (your
+// hands climb AND the button still works), 2 = PHYSICAL (your hands only - A only jumps at a ledge, the game
+// finishes the climb near the top, and the walk stick only walks you to a ladder, backs you down it and steps
+// you off the top). A saved 1 from the older builds (the guided climb, since removed) reads as HYBRID.
+// The camcorder in your hand: 4 free hold, 3 the game's raise pose.
 extern "C" int  OLInteract_ClimbMode();
 extern "C" void OLInteract_SetClimbMode(int m);
 extern "C" int  OLInteract_CamHold();

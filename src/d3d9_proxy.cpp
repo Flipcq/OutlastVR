@@ -2117,7 +2117,12 @@ static DWORD WINAPI Hook_XiGetState(DWORD idx, OLXiState* st) {
         float mx = p.moveX, my = p.moveY, lx = p.lookX;
         float ly = g_camcorderUp ? 0.0f : p.lookY;          // vertical stick owns zoom while camera is up
         const WORD motionButtons = OLMotion_Process(p, g_camcorderUp, &mx, &my, &lx, &ly);
-        WORD btn = MapPadButtons(pg, inMenu) | camEdge | motionButtons | ip.addButtons;
+        WORD btn = MapPadButtons(pg, inMenu) | camEdge | motionButtons;
+        // (Beta 1.2.0) [PHYSCLIMB] PHYSICAL: A must not finish a climb - ol_interact takes it out again here
+        // (it still jumps at a higher ledge, and the crouch button still drops him). The mod's own presses
+        // (climb up, drop, reload...) are added after this, so nothing it asks for is ever taken away.
+        btn &= ~ip.removeButtons;
+        btn |= ip.addButtons;
         if (inMenu && pg.gripR > 0.65f) btn |= 0x0200;              // right grip = RB (a tab switch)
         st->Gamepad.wButtons |= MenuTaps(btn, inMenu);
         // Sticks: take the fabricated values only when actually deflected, so a real stick is never

@@ -488,7 +488,10 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   not apply it) and a `HiddenGame` toggle rebuilds the scene proxy; visibility is `HiddenGame` (this
   engine ignores the attachment scale). Miles's `LightEnvironment` is copied so the cell is lit. The
   left hip uses the camcorder's waist-zone box mirrored to `-0.20 right, -0.60 up` (torso frame), so a
-  hand coming down, across, or resting in the lap when seated still reaches it.
+  hand coming down, across, or resting in the lap when seated still reaches it. (Beta 1.2.0) the box is
+  tighter horizontally - 22 cm forward/side instead of 34/26 - so a hand held out in front at waist
+  height no longer takes the cell or the camcorder; the document's shoulder grab went from a 24 cm to a
+  15 cm sphere for the same reason.
 - **Squeeze the left grip at the left hip** to take it. Let go and it is hidden again and back on the
   hip. The left grip is blocked from the game while it owns the battery. Its in-hand placement is tuned
   live in the mod menu's **BATTERY RELOAD** section (forward/right/up and roll/pitch/yaw sliders), saved
@@ -499,8 +502,9 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
   left hand within ~22 cm of the drawn camcorder starts `OLHero.AnimNameReloadBatteries` (the
   `...Inactive` variant while the camcorder is lowered) through
   `AnimNodeSlot.PlayCustomAnim` on `OLHero.FullBodyAnimSlot` - the slot the game's own full-body
-  animations go through - and the returned length times the swap. The animation starts at
-  `[Motion] ReloadAnimStart` (default 1.0 s) so the "grab a new cell from the hip" part is skipped.
+  animations go through - and the returned length times the swap. The animation plays from its
+  beginning, so the whole "grab a new cell from the hip" intro is kept; the old
+  `[Motion] ReloadAnimStart` skip (and its getter/setter) was removed.
   `[BATTERY]` blocks both arms and both grips while it
   plays, so the IK does not override Miles: no `Y`, no `OLA_Reload` pulse, and the camera need not be
   at the face. When the animation ends the mod uses one `OLPlayerController.NumBatteries` spare and sets
@@ -508,3 +512,115 @@ real", launcher MOVEMENT). Verified with headoff ramps on the null headset: 1 m 
 - The spawn/attach path logs `[BATTERY] spare cell spawned, collisionless, and hung from Miles's left
   thigh`, and the animation start logs its name and length, so a report can tell a missing mesh from a
   missing animation.
+
+## Beta 1.2.0 changes: climbing has three modes
+
+User: "restaurar codigo antigo de Climb PHYSICAL, deixar A button como padrao (launcher) ... physical climb so
+para plataformas mais altas que o Miles ... ao pular, o Miles agarra a mao esquerda automaticamente e a
+direita fica livre; ao segurar o grip esquerdo a mao passa a ser do jogador, soltar = cair ... 3 opcoes no
+launcher: A Button, Hybrid, Physical ... no physical o analogico esquerdo nao funciona ... o botao de pular
+so serve para se agarrar a uma plataforma mais alta ... subir ate uma certa altura e o jogo termina a
+animacao da escalada".
+
+- `[Motion] ClimbMode` is the switch: **0 = A BUTTON (the new default)**, 1 = HYBRID, 2 = PHYSICAL. A saved
+  `1` from the old builds (the Test41 guided climb, removed) reads as HYBRID, `>= 2` as PHYSICAL, anything
+  else as the A button (`ClimbModeFromSaved`). `ON_CLIMB` (`ClimbWithHands`) is derived from it, so the A
+  button mode leaves `[CLIMB]`/`[PHYSCLIMB]` completely idle - the game's own climb, untouched. Launcher,
+  mod menu and the shipped ini all default to 0; the in-game menu combo has the three names.
+- The decisions are pure functions next to the setting (`ClimbModeFromSaved`, `ClimbHandsOn`, `ClimbEatsJump`,
+  `ClimbStickRule`, `EdgeNeedsClimb`, `ClimbHandsOff`, `ClimbHoldPlaysGameArm`) so
+  `tests/climb_modes_test.py` can compile and
+  check them with g++: it also asserts the launcher row (`A BUTTON`/`HYBRID`/`PHYSICAL` -> 0/1/2, default 0),
+  the ini defaults, and that every call site is still wired (pad, stick, menu, hints, arms).
+- **PHYSICAL drives the game's own climb** (Beta 1.2.0): it no longer carries Miles with a physics-off carry.
+  `Climb`'s routing hands the physical carry (`PhysClimb`) to HYBRID only; PHYSICAL falls through to the guided
+  state machine and lets the game's own jump / hang / climb / ladder animations play, while the hands drive
+  them the way the button and the stick would: a pull sends A (`s_aFrom/s_aUntil`) for an edge, or the
+  synthesized stick (`s_ladderStick`) for a ladder. The holding hand stays in the game's pose
+  (`OLInteract_ClimbHold`), the free hand is the player's (relaxed open), and A is only a jump (it never
+  finishes a climb) while the walk stick only backs down (`ClimbStickRule`). This replaces the earlier
+  "hands carry Miles 1:1" model, which pushed the body without moving the hands and never matched the game's
+  grab pose.
+- **Only a platform he must climb**: a physical grip on an edge takes it only when the lip is over his eyes
+  (`[Motion] PhysClimbEdgeAboveEyes`, default 10 uu). A lower one (waist/chest height) stays the game's jump
+  or vault - the module logs the height it refused. Ladder rungs are unaffected (a ladder is a climb).
+- **PHYSICAL takes A out of climbing**: `OLInteractPad.removeButtons` (new field) carries `0x1000` and
+  `d3d9_proxy` clears it after `MapPadButtons` (the mod's own presses are added after that, so the climb-up /
+  drop pulses are never eaten), so A cannot finish a climb while he hangs or is carried (a jump off a ladder
+  still works; crouch still drops him).
+- **The walk stick where he is** (`ClimbStickRule`, pure): it never climbs a ladder for him, but it is not
+  simply off either - tester feedback: "o analógico precisa funcionar até o início da escalada ... se não eu
+  só fico escalando a escada de longe ... para voltar (descer a escada) ... e no final para terminar de
+  subir". So: free while walking, free with a hand on a rung and his feet still on the floor (the game mounts
+  it, no climbing from far away), on a ladder (3) back only (`CLIMB_STICK_DOWN_ONLY` - forward is the rungs')
+  until his feet are within `kPhysLadderTopFreeUU` (40) of that ladder's top, where it is free again and
+  finishes the step off; locked while the hands carry him off a ladder (edge carry, jump catch) and while he
+  hangs or shimmies on a ledge (4/5). `s_climbTopUnder` (his feet under the top of the ladder he is on,
+  `LadderNearHero`) feeds it, and only the forward component is zeroed in the `DOWN_ONLY` case. HYBRID and
+  A BUTTON keep the
+  game's own stick. `LadderWalkBlock()` has no barrier in this mode (`kPhysLadderBlockUU=0`): walking up to
+  the ladder works and the game mounts it by itself.
+- **`[LADDERMOUNT]` a floor rung steps him on**: in PHYSICAL, a hand that squeezes a rung while his feet are
+  still on the floor stays a rung hold (`s_holdLadder`) and the guided `[LADDERGRAB]` path pushes the walk stick
+  toward the ladder so the game mounts it. On the ladder (`lm` 3) the rung survives the mount: it is seeded into
+  `s_hold` and its stroke is re-anchored to where the hand is now, so the mount's body lift is not read as a
+  first pull. From there `PhysLadder` drives it: each stroke of a holding hand (its height against the head,
+  measured in the recenter frame) is one rung - the game lifting Miles moves his hand and head together, so it
+  is never a step, and a held hand never runs off to the next rung by itself. HYBRID keeps the physics-off
+  carry for ladders (its A button still climbs, so the native exit is not required).
+- **The carry is anchored at the controller, not the ledge point** (HYBRID): `s_pcT0[h]` (the reference for
+  the hand's pull) holds the recenter-frame controller pose `P3(fh.hand[h])`, never the world ledge point
+  `s_holdW[h]` - subtracting a world uu point from a recenter metre pose threw Miles sideways (hundreds of
+  metres) the moment a grip was taken. The hold's world point (`s_holdW`) is only what his body is moved toward,
+  in the same frame as the tracked hand.
+- **`[CLIMBGRAB]` the automatic left hand**: PHYSICAL does not carry Miles at all - it asks the game to climb.
+  `PhysAutoCatch` holds the left hand on the ledge by itself while he jumps at one (the climb special move) and
+  in the fall, so it is already playing the game's grab pose when the game hangs him (`lm` 4) - no delay, and
+  nothing is frozen (his physics stays the game's). The edge rule uses the eye height he took off from, so the
+  jump cannot lift his eyes past the lip before the hand catches it; a chest-high edge is still a jump/vault.
+  The hand lets go when he is back on his feet, and the crouch (drop) has a 1.2 s re-grab block.
+- **Either hand climbs; the left can be taken over**: in a PHYSICAL hang (`CL_HANG`) the left hand is held by
+  the auto-catch until the player squeezes its grip (`s_lOwned`): then it is the player's hand, like the right
+  one. A pull down on either hand (12 cm, one stroke, re-armed within 4 cm of where it took the grip) sends A
+  plus the walk stick forward - A on its own hopped him in place and slid him off, so the stick goes with it to
+  carry him onto the platform; a push up sends B plus the stick back (let go / go back). Letting the owned left
+  hand go while the right is not holding drops him (B after 180 ms); while the right hand holds he stays on. The
+  auto-catch never takes an owned hand back, and a new hang starts with the auto-grab again.
+  While the game climbs (`CL_CLIMBING`) either pull asks it to keep climbing and either push reverses it (B +
+  stick back), and the forward stick is kept alive only while the game's climb runs and an owned hand still
+  holds. Strokes are measured against the head, so the game moving Miles never fires one.
+- **Going down a ladder is the game's own descent**: the walk stick back (or a hand's push up) sets
+  `s_ladderDownUntil`; `OLInteract_ClimbHold(h)` then answers true for both hands, so `ol_ue3` leaves both arms
+  to the game's descent animation instead of relaxing the free hand open over it.
+- **Haptics on the physical climb**: the left grip buzzes once when it takes the auto-grabbed hand over; a pull
+  down buzzes the pulling hand, or both controllers when both hands are on the ledge and squeezing; letting go
+  with nothing else holding drops him after 150 ms with two buzzes in a row (the second 130 ms later, as he
+  falls).
+- **A holding hand stays in the game's pose**: `OLInteract_ClimbHold(h)` answers true for the guided climb
+  states (hang, climb, ladder) and for the PHYSICAL auto-catch (`s_pcAuto[h]`), so Miles's hand stays in the
+  game's grab position instead of jumping to the controller. `ArmMoveClass` maps those states to the
+  native-arms class; a released hand goes back to the tracked, open hand.
+- `HandOnEdge` kind 2 ("reaching up at an edge above its reach") never took an edge hold in the old code -
+  it needed a ladder rung under the hand -
+  which is exactly what a platform taller than Miles looks like from below: it now takes the edge when the
+  lip is over his eyes, holding where the hand is (`[PHYSCLIMB]` only; the guided path is untouched).
+- **`[CLIMBFINISH]` the game ends the climb**: once his hands have carried him up (`B.z` 15 uu over where the
+  hold was taken) and his eyes reach the lip (`[Motion] PhysClimbHandOffUU`, default 20 uu under it; 0 = off),
+  `PcHandOff` lets go, holds him still, and presses A for the game's own climb (at its own speed -
+  `s_climbByHands` off). If the game picks it up (`lm` 2/4) it plays its climb animation and `s_pcFinish` 2
+  restores his physics when it ends; if nothing comes back within 700 ms the existing `PcMantle` sweeps him
+  over the top instead.
+- `OLInteract_ClimbFinishing()` lets `ol_ue3`'s `ArmMoveClass` answer 2 while that happens, so both arms are
+  the game's animation rather than the tracked hands. `ArmMoveClass`'s climb-arms branch now reads
+  `OLInteract_Get(7)` (ClimbWithHands) - it was reading index 8 (the camcorder live screen), so climb arms
+  were never handed to the holds.
+- **`[CLIMBOPEN]` a free hand rests open**: during a climb (`ArmMoveClass == 1`: hang, ladder, a climb special
+  move) a hand that is not holding on would otherwise carry the game's own gripping finger curl (the hang /
+  ladder animations close both hands). `ol_ue3` now relaxes any free hand's fingers to the reference (open)
+  pose (`RelaxFingers`, blending the finger bones toward `g_poseRefLocal`), so the right hand looks open and
+  free while Miles's left hand does the grabbing.
+- Hints: `G_CLIMB_PHY` (PHYSICAL only) replaces the "or press A" wordings by hand-only ones; the hybrid ones
+  stay as they were. Menu/README/ini text rewritten for the three modes.
+- Found while editing the menu: every `OLInteract_Set()` in `ol_menu.cpp` was one index past its `Get` (the
+  "Walk around for real" row read and wrote the framed viewfinder, "Catch ledges automatically" wrote index
+  13, out of range, and did nothing). All of them now set the option they show.

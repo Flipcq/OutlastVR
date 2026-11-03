@@ -567,8 +567,8 @@ static void BuildUI() {
           "the same way - the view does not move, his arms and the hip holster line up\n"
           "with yours again. No more recentering for that. Off: only a recenter does it."); }
     // (Test44) [ROOMWALK]
-    { bool b = OLInteract_Get(11) != 0;
-      if (ImGui::Checkbox("Walk around for real", &b)) OLInteract_Set(11, b);
+    { bool b = OLInteract_Get(10) != 0;   // ON_ROOMWALK
+      if (ImGui::Checkbox("Walk around for real", &b)) OLInteract_Set(10, b);
       Help(
           "Step around your room and Miles's body walks with you. Walls and shut\n"
           "doors stop him the way they stop the stick, and he steps up low steps.\n"
@@ -662,7 +662,7 @@ static void BuildUI() {
           "and the camcorder together. Close the menu to see it, adjust again, and\n"
           "save. Zero everywhere: the lens points where your controller points."); }
     if (false) { bool b = OLInteract_Get(8) != 0;   // (Test46c) the live screen is out for now ([Motion] CamcorderLiveScreen)
-      if (ImGui::Checkbox("Live camcorder screen", &b)) OLInteract_Set(9, b);
+      if (ImGui::Checkbox("Live camcorder screen", &b)) OLInteract_Set(8, b);
       Help(
           "The flip-out screen shows what the lens sees, like a real camcorder: point\n"
           "it behind you, round a corner, at yourself. Click the right stick while you\n"
@@ -676,12 +676,12 @@ static void BuildUI() {
           "and it goes down. The right grip still toggles it too."); }
     }   // (Test49) end of the hands-on camcorder settings
     { bool b = OLInteract_Get(11) != 0;   // (Test46)
-      if (ImGui::Checkbox("Zoom in a framed viewfinder (black around it)", &b)) OLInteract_Set(12, b);
+      if (ImGui::Checkbox("Zoom in a framed viewfinder (black around it)", &b)) OLInteract_Set(11, b);
       Help(
           "Off (default): when you zoom, the zoomed picture fills your view.\n"
           "On: it sits in a camcorder-shaped window with black around it."); }
     { bool b = OLInteract_Get(2) != 0;
-      if (ImGui::Checkbox("Zoom in a viewfinder", &b)) OLInteract_Set(3, b);
+      if (ImGui::Checkbox("Zoom in a viewfinder", &b)) OLInteract_Set(2, b);
       Help(
           "Right stick up/down zooms. Zoomed, the picture sits in a camcorder\n"
           "viewfinder in front of you, dark around it, like holding it to your eye."); }
@@ -696,33 +696,38 @@ static void BuildUI() {
           "Doors are heavy: push one with your open hand and it swings as far as you\n"
           "push (a shove swings it on a little), or squeeze the grip on its handle and\n"
           "swing it. The interaction button still opens doors too."); }
-    // [CLIMB] (Test40)
+    // [CLIMB] (Test40, Beta 1.2.0: three ways to climb)
     Section("CLIMBING");
     { int cm = OLInteract_ClimbMode();
-      static const char* kClimb[] = { "A button (the game's climb)", "Physical (your hands carry Miles)" };
-      int ci = cm == 2 ? 1 : 0;
-      if (ImGui::Combo("Climbing", &ci, kClimb, 2)) OLInteract_SetClimbMode(ci ? 2 : 0);
+      static const char* kClimb[] = { "A button (the game's climb)", "Hybrid (hands and the button)", "Physical (your hands only)" };
+      int ci = cm == 2 ? 2 : (cm == 1 ? 1 : 0);
+      if (ImGui::Combo("Climbing", &ci, kClimb, 3)) OLInteract_SetClimbMode(ci);
       Help(
-          "Physical: squeeze a grip on an edge or a ladder rung and that hand holds on -\n"
-          "pull down and Miles rises, move it sideways and he shimmies, hand over hand.\n"
-          "Get the edge to your chest and he hauls himself over; let go of everything\n"
-          "and he drops. Guided: the game's own climb, playing only as fast as you pull.\n"
-          "A button: the old way. A climbs in every mode."); }
+          "A button: the game's own climb - A climbs and vaults, the stick climbs a ladder.\n"
+          "Hybrid: both. Squeeze a grip on an edge or a ladder rung and that hand holds on -\n"
+          "pull down and Miles rises, move it sideways and he shimmies, hand over hand - and A\n"
+          "still climbs.\n"
+          "Physical: only your hands. A ladder is climbed rung by rung - the walk stick only\n"
+          "walks you to it, backs you down it and steps you off the top. A just jumps at a higher\n"
+          "ledge (Miles grabs it with his left hand himself - squeeze the left grip to take it,\n"
+          "let go and he drops), crouch still drops you, and near the top the game finishes the\n"
+          "climb with its own animation."); }
     { bool b = OLInteract_Get(12) != 0;   // (Beta 1.1) [AUTOLEDGE]
-      if (ImGui::Checkbox("Catch ledges automatically when jumping", &b)) OLInteract_Set(13, b);
+      if (ImGui::Checkbox("Catch ledges automatically when jumping", &b)) OLInteract_Set(12, b);
       Help(
           "Jump toward a ledge and Miles grabs it by himself, like the original game.\n"
-          "Then pull down with both grips (or press A) to climb up, or press crouch to drop.\n"
+          "Then pull down with both grips (or press A, except in Physical) to climb up, or\n"
+          "press crouch to drop.\n"
           "Off: in the air your hands take the edge only when you squeeze a grip."); }
     // (Test45) cover-your-mouth removed from the menu ([Motion] CoverMouth=1 still turns it on)
     Section("DEVELOPER");
     { bool b = OLInteract_Get(3) != 0;
-      if (ImGui::Checkbox("Show interaction markers (developer)", &b)) OLInteract_Set(4, b);
+      if (ImGui::Checkbox("Show interaction markers (developer)", &b)) OLInteract_Set(3, b);
       Help(
           "Rings for every grab zone: knobs (green open, red locked, yellow in reach),\n"
           "the hip pouch (orange), the raise-to-eye spot (cyan)."); }
     { bool b = OLInteract_Get(4) != 0;
-      if (ImGui::Checkbox("Hints name the Quest controls", &b)) OLInteract_Set(5, b);
+      if (ImGui::Checkbox("Hints name the Quest controls", &b)) OLInteract_Set(4, b);
       Help(
           "The game's hints say what to do on Quest 3 controllers instead of showing\n"
           "Xbox buttons: the interaction button or \"hold down the left grip\"."); }
