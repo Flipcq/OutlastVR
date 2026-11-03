@@ -55,8 +55,8 @@ funcs = (block('static const float kEdgeFillMinCoverage')      # the constant, t
          + '\n' + block('static void OLR_ReanchorOnSpaceChange')
          + '\n' + block('static float SrgbToLinear')
          + '\n' + block('static float SrgbFromLinear')
-         + '\n' + block('static bool OLR_FormatIsSrgb')
-         + '\n' + block('static int64_t OLR_PickEyeFormat'))
+         + '\n' + block('static bool OLR_FormatIsSrgb(int64_t f) {')
+         + '\n' + block('static int64_t OLR_PickEyeFormat(const int64_t* fmts, uint32_t n, int64_t want)\n{'))
 
 stubs = r'''
 #include <cassert>
@@ -283,6 +283,18 @@ assert '[OLVR][REFCENTER]' in source, 'the runtime recenter must be logged'
 assert 'enumerateSwapchainFormats(g_session, 0, &nf, nullptr)' in source, \
     'the runtime format list must be queried at session creation'
 assert '[OLVR][SWAPFMT]' in source, 'the format list must be logged'
+
+# ---- compile order: a helper must not be CALLED above its definition without a declaration ------
+# This exact trap cost a build (MSVC C3861): the two format helpers were defined beside the gamma
+# blit, far below Init(), which calls them. Every helper listed here is used from more than one
+# place, so the FIRST mention of "name(" has to be its definition or its forward declaration - both
+# of which start a line with "static".
+for helper in ('OLR_PickEyeFormat', 'OLR_FormatIsSrgb', 'OLR_DecideFitFrustum',
+               'OLR_ClampPoseLeadPeriods', 'OLR_EdgeFillBox', 'OLR_ReanchorOnSpaceChange'):
+    at = source.index(helper + '(')
+    line_start = source.rindex('\n', 0, at) + 1
+    assert 'static' in source[line_start:at], (
+        '%s is used before it is defined and has no forward declaration (MSVC C3861)' % helper)
 # ...and acted on, which is what makes it more than a diagnostic:
 assert 'ci.format = g_eyeFmt;' in source, 'the eye swapchains must be created in the chosen format'
 assert source.count(', g_eyeFmtSrgb);') == 3, 'all three eye blits must pass the destination format'

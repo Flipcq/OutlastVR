@@ -239,6 +239,10 @@ static bool    g_eyeFmtSrgb = true;
 // [XR] RuntimeFormat=0 keeps the shipped BGRA8_SRGB request even where the runtime does not offer
 // it (i.e. restores the pre-1.2.1 behaviour exactly). An escape hatch, not a setting.
 static bool    g_useRuntimeFmt = true;
+// Declared here because Init() asks them below; both are defined next to the gamma blit, where the
+// format actually matters (MSVC C3861 if the call comes first - it did).
+static bool    OLR_FormatIsSrgb(int64_t f);
+static int64_t OLR_PickEyeFormat(const int64_t* fmts, uint32_t n, int64_t want);
 
 // [FITFRUSTUM] The decision, as one pure function so its truth table can be tested without a
 // headset (tests/stream_edge_fill_test.py). fitMode is the ini value (-1 auto, 0 off, 1 on),
