@@ -1686,7 +1686,7 @@ static bool Init(UINT w, UINT h) {
                 g_edgeFill = GetPrivateProfileIntW(L"Stream", L"EdgeFill", 1, ini) != 0;
                 g_edgeFillMargin = OLR_ClampEdgeFillMargin(
                     (int)GetPrivateProfileIntW(L"Stream", L"EdgeFillMargin", 4, ini));
-                { wchar_t pl[32]; GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"1", pl, 32, ini);
+                { wchar_t pl[32]; GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"2", pl, 32, ini);
                   g_poseLeadPeriods = OLR_ClampPoseLeadPeriods((int)_wtof(pl)); }
                 XLOG("[OLVR][STREAM] edge fill %s, margin %d%%, pose lead %d display period(s)",
                      g_edgeFill ? "on (the fitted eye's margin is stretched, not black)" : "off",

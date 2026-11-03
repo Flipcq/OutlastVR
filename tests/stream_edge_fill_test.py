@@ -330,7 +330,7 @@ assert 'static int  g_edgeFillMargin = 4;' in source, 'the bought margin must sh
 assert 'GetPrivateProfileIntW(L"Stream", L"EdgeFillMargin", 4, ini)' in source, \
     '[Stream] EdgeFillMargin must be read'
 assert 'OLR_ClampEdgeFillMargin(' in source, 'the margin knob must be bounded'
-assert 'GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"1", pl, 32, ini)' in source, \
+assert 'GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"2", pl, 32, ini)' in source, \
     '[Stream] PoseLeadPeriods must be read'
 assert '? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, sx0, sy0, sx1, sy1,' in source, \
     'the fitted blit must use the fill'
@@ -405,6 +405,6 @@ assert 'RuntimeFormat=1' in ini, 'RuntimeFormat must be documented in the shippe
 # ---- the shipped ini: documented, on, and matching the code defaults -------------------------
 section = ini[ini.index('[Stream]'):]
 assert 'EdgeFill=1' in section, 'EdgeFill ships ON'
-assert 'PoseLeadPeriods=1' in section, 'PoseLeadPeriods ships at the shipped behaviour'
+assert 'PoseLeadPeriods=2' in section, 'PoseLeadPeriods ships at the shipped behaviour'
 assert 'docs/STREAMING.md' in section, 'the section must point at the explanation'
 print('Runtimes: overscan fill, spec-driven fit, pose lead, runtime recenter and eye-format negotiation verified.')

@@ -69,10 +69,10 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
     on every runtime, only the geometry it is taken from differs. The theater screen and the
     camcorder viewfinder are quads and are left alone. A skipped fill now says why in
     the log, four times at most: `[OLVR][STREAMEDGE] kept black around the picture: ...`.
-  - **`[STREAMPOSE]`** The pose lead is now `[Stream] PoseLeadPeriods` (default 1, the shipped
-    behaviour; 2 for a deep link queue), and a `[OLVR][STREAM]` line reports the game's frame rate
-    against the headset's refresh whenever the runtime is synthesising most frames - which is the
-    dominant cause of the artifact. `tests/stream_edge_fill_test.py`, `docs/STREAMING.md`.
+  - **`[STREAMPOSE]`** The pose lead is now `[Stream] PoseLeadPeriods` (default `2` after the Beta
+  1.2.1 polish; `1` was the shipped behaviour before). A deeper link queue needs more lead so the
+  picture keeps up with the head, and `[STREAMEDGE]` covers the margin the extra prediction
+  exposes. `tests/stream_edge_fill_test.py`, `docs/STREAMING.md`.
 
 - **Running well on SteamVR alone and on Quest Link / Air Link** (the runtime-integration half,
   separate from streaming quality). Two gaps closed:

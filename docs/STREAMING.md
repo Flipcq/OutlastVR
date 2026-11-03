@@ -113,9 +113,11 @@ Three things make it worse here, in order of how much they matter:
   the bars are back, that line says whether the picture was too narrow for the fill or something
   else is going on.
 - **`[Stream] PoseLeadPeriods`** - how many display periods ahead of the compositor's display time
-  the pose handed to the camera is predicted. `1` is what every released build does. `2` suits a
-  runtime with a deep queue over a link (Air Link at high bitrate); `0` removes the lead entirely,
-  for A/B testing a "the world lags behind my head" report.
+  the pose handed to the camera is predicted. `2` is the shipped default now (was `1` before the
+  Beta 1.2.1 polish): a runtime with a deep queue over a link (Quest Air Link at high bitrate,
+  SteamVR with motion smoothing) benefits from looking further ahead so the world keeps up with
+  your head; `1` suits a native 90 Hz headset that keeps up; `0` removes the lead entirely, for
+  A/B testing a "the world lags behind my head" report.
 - **`[FOVMUTABLE]`** - the fit decision described in section 2, now taken from the runtime's own
   answer instead of its name.
 - **A diagnosis in the log.** When the game delivers well under the headset's refresh, the mod says
