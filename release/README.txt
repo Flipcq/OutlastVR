@@ -82,6 +82,9 @@ QUEST 3 CONTROLS
   Menu: pause                              Trigger: lean right / look back
                                            Meta button: the headset's menu
   Left grip + Y: documents                 Both stick clicks: recenter
+  Left grip + X: notes                     Grip at your left shoulder: the
+  Left trigger + Y: the notebook           confidential document
+    (documents and notes)
   Left grip + Menu: VR settings menu
 
   With the camcorder up: push the right stick straight up / down to zoom (a
@@ -231,7 +234,12 @@ IF SOMETHING LOOKS WRONG
   quickly                             to 72 Hz (or 60/80), turn ASW (Quest Link)
                                       or motion smoothing (SteamVR) off, and lower
                                       the render resolution. Keep
-                                      [Stream] EdgeFill=1 for the best picture.
+                                      [Stream] EdgeFill=1, and raise
+                                      [Stream] EdgeFillMargin (4 -> 8) if the
+                                      corners still flash black on the fastest
+                                      turns - it trades that much field of view
+                                      for a band of picture the headset can pull
+                                      from.
   The camcorder, doors, climbing or   VR SETTINGS -> HANDS: switch any of them
   labels get in the way               off (Camcorder on your hip off = raise it
                                       by lifting your hand to your eye, or the

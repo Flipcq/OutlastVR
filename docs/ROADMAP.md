@@ -8,6 +8,15 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
 
 ## Done in Beta 1.2.1 (input reliability and the Valve Index)
 
+- **The notebook shortcuts are split three ways** (polishing pass, from player feedback):
+  **left grip + Y = documents** (`ShowEvidenceMenu`, D-pad right), **left grip + X = notes**
+  (`ShowRecordingMenu`, D-pad left) and **left trigger + Y = the notebook menu that holds both**
+  (`ShowTabMenu`, Back). A chord never also crouches or reloads the battery: A is untouched by
+  every chord (Test48), B stays silent under the grip, the trigger keeps its own analog lean, and
+  the Y chords keep the shipped rule that the sprint pauses while one of them is open.
+  `MapPadButtons` in `src/d3d9_proxy.cpp`, the hint table in `src/ol_prompts.cpp`,
+  `tests/mouse_use_test.py`.
+
 - **Jump / use not registering every time.** Two separate leaks, both closed:
   - **A press could fall between two game polls.** UE3 reads the fabricated pad on its own tick, and
     `ReliablePadButtons` only extends a press it has already seen - so a tap that started and ended inside a
@@ -48,7 +57,18 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
     covers only what the game rendered; the margin used to be cleared to black, and that black is
     what the warp brings into view. The blit now extends the picture's own edge over the margin
     with the same affine map, so the margin is a stretched continuation of the world instead of a
-    bar. `OLR_EdgeFillBox()`, `[Stream] EdgeFill` (default 1).
+    bar. `OLR_EdgeFill()`, `[Stream] EdgeFill` (default 1). Polishing pass, after the corners still
+    flashed black on the fastest turns: the decision is **per axis** (an asymmetric lens leaves a
+    wide margin on one side and none on the other; one narrow axis used to throw the free margin
+    away), and the side with no margin at all is **bought** with `[Stream] EdgeFillMargin=4` (the
+    picture is drawn 4 % smaller, centred, and the fill covers the rest - 2 % of the lens on every
+    side of margin for 4 % of FOV, the world reading 4 % smaller). **Not a fit-mode setting:** the
+    runtimes that honour the declared frustum (SteamVR, VDXR) have no fit at all and their eye image
+    *is* the picture, so the same margin is taken in the plain blit path (`BlitHalfToEye`, plus the
+    held frames in `BlitHoldToEye`) with the declared frustum untouched - the correction is the same
+    on every runtime, only the geometry it is taken from differs. The theater screen and the
+    camcorder viewfinder are quads and are left alone. A skipped fill now says why in
+    the log, four times at most: `[OLVR][STREAMEDGE] kept black around the picture: ...`.
   - **`[STREAMPOSE]`** The pose lead is now `[Stream] PoseLeadPeriods` (default 1, the shipped
     behaviour; 2 for a deep link queue), and a `[OLVR][STREAM]` line reports the game's frame rate
     against the headset's refresh whenever the runtime is synthesising most frames - which is the

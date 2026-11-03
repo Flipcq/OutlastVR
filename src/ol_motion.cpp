@@ -199,18 +199,6 @@ static void SnapTurn(float* lx, ULONGLONG now) {
     if (g_snapBlink && now - s_snapStart < 350u) OLXR_Blink(70);
 }
 
-// (Test46) [DIRECTTURN] snap: one flick, the whole angle in one frame (the blink covers it).
-static bool s_snapArmedD = true;
-static void SnapTurnDirect(float* lx) {
-    const float sx = *lx;
-    *lx = 0.0f;
-    if (fabsf(sx) < 0.35f) { s_snapArmedD = true; return; }
-    if (!s_snapArmedD || fabsf(sx) < 0.75f) return;
-    s_snapArmedD = false;
-    OLUE3_TurnStep(sx > 0.0f ? (float)g_snapDeg : -(float)g_snapDeg);
-    if (g_snapBlink) OLXR_Blink(70);
-}
-
 // ---- [PHYSCROUCH] ----------------------------------------------------------------------------
 static bool  s_wantCrouch = false;    // the head is below the threshold (with hysteresis)
 static int   s_crouchGoal = -1;       // game state being reached for: -1 none, 0 stand, 1 crouch

@@ -21,6 +21,15 @@
 //   VR controllers: click both thumbsticks together to recenter (ol_xr.cpp [XRINPUT])
 // =============================================================================
 
+//
+// Contents - grep these tags to jump to a section:
+//   [HUDFIT]         pull the HUD into the part of the frame a headset can actually see
+//   [GAMMA]          SetGammaRamp capture
+//   [D3D9EX]         (Test36) the game on a D3D9Ex device
+//   [RECENTER]       one key, and a controller shortcut, both rebindable
+//   [PADSTUB]        motion controls, step 1: can a FABRICATED pad drive this game?
+//   [SETTINGS]       tune in the headset, press one button, keep it
+//
 #include <Windows.h>
 #include <d3d9.h>
 #include <d3d9on12.h>
@@ -1818,6 +1827,8 @@ static volatile long g_padFaked    = 0;   // frames answered for an empty slot
 // gameplay X/B and sends B through the mouse. Grips are run (the natural
 // "hold to sprint"), right stick click is night vision, and the triggers keep the game's own
 // analog lean. Menu opens the pause menu (Start).
+// The notebook: left grip + Y = documents, left grip + X = notes, left trigger + Y = the notebook
+// menu that holds both (see the chord block in MapPadButtons).
 // The game's camcorder command is a toggle, so the VR control must also be a toggle.  The old
 // implementation sent one toggle when the grip closed and another when it opened; a normal
 // squeeze therefore raised and immediately lowered the camera, and the zoom gate was almost
@@ -1964,30 +1975,39 @@ static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
     }
     if (nowMs < nvPulseUntil) b |= 0x0080;              // R3 = OLA_ToggleNightVision (short click)
     const bool shift = p.gripL > 0.6f;
-    // (Test48) A is not a left-grip chord: nothing is on left grip + A, and the left grip is also sprint, so
-    // counting it dropped BOTH the sprint and the jump the moment A was pressed while running - "most of the time
-    // running and vaulting with A does not work".
-    // (Beta 1.1.4) left grip + B and left grip + X are gone: they opened the notebook / recordings
-    // (the documents menu) by accident while sprinting. Only Y still has a grip chord. B and X stay
-    // silent while the grip is held, so the sprint cannot also crouch, use or open a menu.
-    // (Beta 1.1.9) left grip + Y opens the NOTES list (D-pad left = ShowRecordingMenu), not the
-    // notebook. The documents list (D-pad right = ShowEvidenceMenu) opens by looking at the held
-    // document instead, so the two shortcuts reach the two different notebook tabs.
-    const bool chord = shift && (buttons & OLXR_BTN_Y);
-    if (shift && (buttons & OLXR_BTN_Y)) b |= 0x0004;   // left grip + Y = notes (ShowRecordingMenu)
-    if (!chord) {
-        if (buttons & OLXR_BTN_A) b |= 0x1000;           // A  = OLA_Jump
-        if (!shift) {
-            if (mouseLayout) {
-                if (buttons & OLXR_BTN_X) b |= 0x2000;   // physical X = crouch
-                // Physical B is delivered as RAW mouse down/up by the XR sampler.
-            } else {
-                if (buttons & OLXR_BTN_B) b |= 0x2000;   // menus/legacy: B
-                if (buttons & OLXR_BTN_X) b |= 0x4000;   // menus/legacy: X
-            }
+    const bool leanL = p.trigL > 0.6f;
+    const bool yDown = (buttons & OLXR_BTN_Y) != 0;
+    const bool xDown = (buttons & OLXR_BTN_X) != 0;
+    // ---- the two notebook shortcuts and the notebook itself --------------------------------------
+    // Outlast's notebook has two lists, and each is its own game action: D-pad right =
+    // OLA_ShowEvidenceMenu (the DOCUMENTS), D-pad left = OLA_ShowRecordingMenu (the NOTES). Back =
+    // OLA_ShowTabMenu is the notebook itself - the menu that holds both lists.
+    //   left grip + Y    = documents (D-pad right)
+    //   left grip + X    = notes     (D-pad left)
+    //   left trigger + Y = the notebook, both lists (Back)
+    // The grip chords deliberately do NOT count A (Test48: the grip is also sprint, so gating A on
+    // it dropped the jump the moment it was pressed while running) and B stays silent under the
+    // grip, so the sprint cannot also crouch or use. X under the grip is the notes chord now and
+    // therefore never crouches; the left trigger keeps its own game action (analog lean) and a
+    // Y pressed while it is held is the notebook instead of the battery reload.
+    const bool docChord  = shift && yDown;
+    const bool noteChord = shift && xDown;
+    const bool bookChord = !shift && leanL && yDown;     // the grip owns Y when both are held
+    if (docChord)       b |= 0x0008;                     // D-pad right = documents (ShowEvidenceMenu)
+    else if (bookChord) b |= 0x0020;                     // Back = the notebook (ShowTabMenu)
+    if (noteChord)      b |= 0x0004;                     // D-pad left = notes (ShowRecordingMenu)
+    if (buttons & OLXR_BTN_A) b |= 0x1000;               // A  = OLA_Jump (never part of a chord)
+    if (!shift) {
+        if (mouseLayout) {
+            if (xDown) b |= 0x2000;                      // physical X = crouch
+            // Physical B is delivered as RAW mouse down/up by the XR sampler.
+        } else {
+            if (buttons & OLXR_BTN_B) b |= 0x2000;       // menus/legacy: B
+            if (xDown) b |= 0x4000;                      // menus/legacy: X
         }
-        if ((buttons & OLXR_BTN_Y) && !g_yHandled) b |= 0x8000;   // Y  = OLA_Reload (camcorder battery)
     }
+    if (yDown && !g_yHandled && !docChord && !bookChord)
+        b |= 0x8000;                                     // Y  = OLA_Reload (camcorder battery)
     // START = pause menu. Left grip + Menu is the mod menu instead ([TOUCHMENU]). (Test39) Start is
     // sent when Menu is RELEASED, and only if the left grip never joined the press: squeezing the
     // grip a moment after Menu used to open the game's pause menu AND the mod menu together.
@@ -2003,7 +2023,8 @@ static WORD MapPadButtons(const OLXrPad& p, bool inMenu = false) {
         }
         if (GetTickCount64() < s_startUntil) b |= 0x0010;
     }
-    if (!chord && (shift || (buttons & OLXR_BTN_LSTICK))) b |= 0x0100; // grip or L3 = sprint
+    if (!(docChord || bookChord) && (shift || (buttons & OLXR_BTN_LSTICK)))
+        b |= 0x0100;                                                 // grip or L3 = sprint
     b = ReliablePadButtons(b, resetFace);
     // camera up: right stick up = zoom in, down = zoom out. (Test46) A turn is never a perfectly
     // level push, so the zoom needs a mostly-vertical stick - but the first rule (|y| > 0.60 AND

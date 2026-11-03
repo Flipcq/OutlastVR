@@ -123,8 +123,8 @@ static void InterlockedExchangeAdd(volatile long* p,long v) { *p+=v; }
 static LRESULT CallNextHookEx(int,int,WPARAM,LPARAM) { return 42; }
 '''
 WRAPPERS = r'''
-static void Publish(unsigned buttons=0,float grip=0,int focus=1) {
-    OLXrPad p={}; p.buttons=buttons;p.gripL=grip;
+static void Publish(unsigned buttons=0,float grip=0,int focus=1,float trig=0) {
+    OLXrPad p={}; p.buttons=buttons;p.gripL=grip;p.trigL=trig;
     const XrResult r=focus?0:8;
 ''' + wiring + r'''
     published=p;
@@ -156,10 +156,19 @@ int main() {
     now+=11;Publish();assert(Poll()==0x2000); // retain the base gamepad extension for crouch
     now+=100;Publish();assert(Poll()==0);assert(events.empty());
     Idle();Publish(OLXR_BTN_A|OLXR_BTN_Y);assert(Poll()==0x9000);
-    // (Beta 1.1.4) left grip + X no longer opens the notes / notebook menus; the grip is still sprint,
-    // so crouch stays silent under it.
-    Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0100 && !DropRequested());
-    // (Beta 1.2.1) [MOUSEUSE] ...but Use is NOT silent under the sprint any more. The old rule was written
+    // (Beta 1.2.1) the notebook shortcuts, one game action each:
+    //   left grip + Y = DOCUMENTS   - D-pad right (ShowEvidenceMenu), 0x0008
+    //   left grip + X = NOTES       - D-pad left  (ShowRecordingMenu), 0x0004
+    //   left trigger + Y = the notebook menu that holds both - Back (ShowTabMenu), 0x0020
+    // The left grip is still sprint (LB, 0x0100), and a chord never also crouches or reloads.
+    Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0104 && !DropRequested());
+    Idle();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0008);
+    Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0104);        // and holding it does not wander
+    Idle();Publish(OLXR_BTN_Y);assert(Poll()==0x8000);          // let go of the grip: Y reloads again
+    Idle();Publish(OLXR_BTN_Y,0,1,1);assert(Poll()==0x0020);    // left trigger + Y = the notebook
+    Idle();Publish(OLXR_BTN_X,0,1,1);assert(Poll()==0x2000);    // ...but the trigger leaves X alone
+    Idle();Publish(OLXR_BTN_Y,1,1,1);assert(Poll()==0x0008);    // grip wins Y when both are held
+    // (Beta 1.2.1) [MOUSEUSE] ...and Use is NOT silent under the sprint any more. The old rule was written
     // for the removed 1.1.4 chords, and what it did in practice was swallow the Use of every player holding
     // the left grip - i.e. sprinting - so "opening a door does not work every time". Sprint and Use now
     // travel together, exactly as a player expects when they run at a door.
@@ -175,10 +184,6 @@ int main() {
     OLProxy_SetLeftGripOwned(0);Publish();Publish(OLXR_BTN_B,1);
     assert((events==std::vector<bool>{true}));
     Idle();assert((events==std::vector<bool>{true,false}));
-    // (Beta 1.1.9) left grip + Y opens the NOTES list - D-pad left (ShowRecordingMenu), 0x0004 - not the
-    // notebook's evidence tab. The documents list opens by looking at the held document instead.
-    Idle();events.clear();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0004);
-    assert(events.empty());
     // Taking a grip mid-press ends the Use, and releasing that grip does not turn into a new click.
     events.clear();OLProxy_SetLeftGripOwned(1);Publish(OLXR_BTN_B,1);Publish(OLXR_BTN_B,0);assert(events.empty());
     OLProxy_SetLeftGripOwned(0);
@@ -237,16 +242,16 @@ int main() {
     Hint(L"Pressione {OLA_Use} para fechar",L"Pressione (B) para fechar");
     Hint(L"Press {OLA_CrouchToggle}",L"Press X");
     Hint(L"Press {OLA_Crouch}",L"Press X");
-    Hint(L"Press {OLA_ShowTabMenu}",L"Press no shortcut");
-    Hint(L"Press {OLA_ShowRecordingMenu}",L"Press left grip + Y");
-    Hint(L"Press {OLA_ShowEvidenceMenu}",L"Press no shortcut");
+    Hint(L"Press {OLA_ShowTabMenu}",L"Press left trigger + Y");
+    Hint(L"Press {OLA_ShowRecordingMenu}",L"Press left grip + X");
+    Hint(L"Press {OLA_ShowEvidenceMenu}",L"Press left grip + Y");
     // (Beta 1.1.9) the door prompts are GONE - doors open by hand - so the game's "press Use to
     // close" line is rewritten to nothing in either layout (the Portuguese line is not one of the
     // game's English sentences, so it keeps the ordinary button rewrite).
     Hint(L"Press {OLA_Use} to close",L"");
     gameMenu=true;Hint(L"Press {OLA_Use}",L"Press X");Hint(L"Press {OLA_CrouchToggle}",L"Press B");
     gameMenu=false;g_mouseUse=0;Hint(L"Press {OLA_Use} to close",L"");
-    puts("PASS: localized Use/crouch hints, door prompts dropped, shortcuts and menu/legacy text");
+    puts("PASS: localized Use/crouch hints, door prompts dropped, notebook shortcuts and menu/legacy text");
 
     // Actual settings-menu low-level hook must pass our cancellation release,
     // while original physical and other injected clicks still drive its cursor.

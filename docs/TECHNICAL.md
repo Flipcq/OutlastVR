@@ -48,17 +48,21 @@ Licensed under [GPL-3.0](../LICENSE).
   or the frame has to be pre-warped into the runtime's own asymmetric lens frustum (Meta's PC
   runtime: Quest Link / Air Link). The margin the fit leaves is filled with the picture's own edge
   rather than black, so the compositor's reprojection has pixels to pull in when the head turns
-  quickly. A recenter done in the headset's own menu is folded into the pose baseline instead of
-  moving the world, and the eye-image format is negotiated with the runtime (BGRA8 sRGB wherever it
+  quickly (per axis, and with `[Stream] EdgeFillMargin` giving up a few percent of the picture's own
+  size to buy margin on the sides where the lens ends where the picture ends). A recenter done in
+  the headset's own menu is folded into the pose baseline instead of moving the world, and the
+  eye-image format is negotiated with the runtime (BGRA8 sRGB wherever it
   is offered - every runtime so far - with the pre-encoded-LUT path for one that has only the
   non-sRGB variant). `[FOVMUTABLE]`, `[STREAMEDGE]`, `[STREAMPOSE]`, `[REFCENTER]`, `[SWAPFMT]` in
   `src/ol_xr.cpp`, explained in [STREAMING.md](STREAMING.md).
 
 ## Experimental areas
 
-- **Hand/arm IK.** Position, elbow targets and controller orientation are driven through
-  UE3's native SkelControl system. It is enabled for gameplay testing and deliberately yields
-  during authored interactions and cinematic cameras.
+- **Hand/arm IK.** Position, elbow targets and controller orientation are written into the visible
+  skeletal component's pose after the game finishes composing it (`[VISIBLEIK]`, the final pose
+  composer at `base+0x6F8910`). It is enabled for gameplay testing and deliberately yields during
+  authored interactions and cinematic cameras. The earlier experiment that tried to drive UE3's
+  AnimTree SkelControls was proven inert for the first-person mesh and has been removed.
 
 ## Building
 

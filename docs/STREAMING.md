@@ -92,8 +92,26 @@ Three things make it worse here, in order of how much they matter:
   picture's own edge texels over that margin (the same affine map, sampled with a clamping
   sampler), so the margin is a stretched continuation of the world instead of a black bar. The
   visible picture stays exactly where it was - only the previously-black margin changes. A picture
-  that covers less than three quarters of the eye (a menu, a deliberately narrow camera) is left
-  alone: stretching that far would be a smear, not an overscan margin.
+  that covers less than three quarters of the eye **on that axis** (a menu, a deliberately narrow
+  camera) keeps its black field on that axis: stretching that far would be a smear, not an overscan
+  margin. The decision is per axis because an asymmetric lens (Quest 3 through Link: -54/+40 deg)
+  leaves a wide margin on one side and none on the other, and testing both axes together threw the
+  free one away. `OLR_EdgeFill()`.
+- **`[Stream] EdgeFillMargin=4`** - the margin that *cannot* be extended, because nothing was ever
+  rendered past the lens edge on that side, is bought instead: the picture is drawn 4 % smaller
+  (centred) inside the eye image and the fill covers what is left, so 2 % of the lens on every side
+  is a band of the picture for the warp to pull from. The cost is the same 4 % of field of view
+  (the world reads 4 % smaller - it zooms out slightly). `0` = off, the picture keeps its exact
+  size; `8-15` = more margin, more FOV given up. This is the knob for "the bars are still there at
+  the corners on a fast turn". **It is not a fit-mode setting**: on SteamVR or Virtual Desktop the
+  fit never runs and the eye image *is* the picture, so there is no margin anywhere either - the
+  same margin is taken off the picture in the plain blit path (`BlitHalfToEye`, and the held frames
+  in `BlitHoldToEye`), with the declared frustum untouched. The theater screen and the camcorder
+  viewfinder are quads, not the immersive view, and are left alone.
+- **A diagnosis in the log when the fill is skipped**: `[OLVR][STREAMEDGE] kept black around the
+  picture: it covers 58% of the eye horizontally and 55% vertically ...`, four times at most. If
+  the bars are back, that line says whether the picture was too narrow for the fill or something
+  else is going on.
 - **`[Stream] PoseLeadPeriods`** - how many display periods ahead of the compositor's display time
   the pose handed to the camera is predicted. `1` is what every released build does. `2` suits a
   runtime with a deep queue over a link (Air Link at high bitrate); `0` removes the lead entirely,
@@ -114,6 +132,7 @@ Three things make it worse here, in order of how much they matter:
 | Lower the eye resolution (`VR SETTINGS > PICTURE`, AUTO 85-90 % or a MANUAL size) | the game renders less per eye and holds a higher frame rate |
 | Wireless: 5 GHz / Wi-Fi 6 AP in the same room, PC on cable; Air Link bitrate 100-150 Mbps, Virtual Desktop 60-90 Mbps | every millisecond on the link is extra warp |
 | Keep `[Stream] EdgeFill=1` | what is left of the effect becomes a slight smear instead of a black bar |
+| Raise `[Stream] EdgeFillMargin` (4 -> 8) if the corners still flash black on the fastest turns | trades that much field of view (the world reads that much smaller) for more of the picture for the warp to pull from |
 
 ## 6. When the runtime recenters itself (SteamVR "Recenter", the Oculus menu's "Reset View")
 

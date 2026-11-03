@@ -85,7 +85,9 @@ Most of this mod was built and tested on a PC where the developer could not wear
   trigger shaping, the pad press timing and the interaction-profile bindings, the climb decisions,
   the camcorder gestures, the mouse/Use path. They are fast, they need no headset, and they are the
   cheapest way to find out that a change broke the thing next to it. Like the rest of the mod they
-  prove the logic, not the hardware.
+  prove the logic, not the hardware. `tests/rolltest.cpp` is the one that is not python: it is the
+  manual check that the yaw/pitch/roll extraction reads back a known composed rotation
+  (`g++ tests/rolltest.cpp -o rolltest && ./rolltest`).
 
 ## House rules
 

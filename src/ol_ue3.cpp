@@ -19,6 +19,33 @@
 //   Mode=probe                  ; probe = log only (safe) | split = double-call stereo
 // =============================================================================
 
+//
+// Contents - grep these tags to jump to a section:
+//   [CINEFOV]        true VR cutscenes
+//   [NVLIGHT]        camcorder / night-vision light follows the head
+//   [CAMPROBE]       logging-only camera decomposition probe
+//   [BONEPROBE]      find Miles's skeleton: the ground truth for real arm motion controls
+//   [WIGGLE]         prove the bone write path: oscillate Miles's right arm on purpose
+//   [BONEWATCH]      who touches Miles's bone arrays, and from where
+//   [SKELPROP]       read the SkelControl property offsets out of UE3's own reflection
+//   [PHYSCROUCH]     read the pawn's crouch flag through UE3's own reflection
+//   [SCENESTATE]     pause / cutscene / scripted-control signals (Test35)
+//   [GAMMA]          the startup brightness calibration, finished by the GAME itself
+//   [INTERACT]       (Test37) engine access for ol_interact.cpp
+//   [VISIBLEIK]      controller IK on the mesh that is actually rendered
+//   [ARMTUNE]        Test33 corrections to the Test16 solver
+//   [PHASE1]         camera comfort and the shared lean
+//   [HOLSTER]        (Test38) the game's own handycam, on the chest / in the hand
+//   [NATIVEGRIP]     (Test39) the game's own hand pose for the camcorder
+//   [BATTERY]        (Beta 1.1.8) the spare cell on Miles's left hip
+//   [DOCUMENT]       (Beta 1.1.9) the confidential document on Miles's left shoulder
+//   [LOOKUSE]        use what you look at (Test34)
+//   [LIVESCREEN]     (Test46) the camcorder's own flip screen, live
+//   [GAMMAACCEPT]    the script half of the calibration skip: call the screen's own OnAccept
+//   [HIRES]          (Test35) render at the headset's resolution in a desktop-sized window
+//   [SKELCTRL]       the UE3-native way to move a bone (superseded by [VISIBLEIK])
+//   [LENSFIT]        each eye rendered with its own lens frustum (Test36)
+//
 #include <Windows.h>
 #include <cstdio>
 #include <cstdint>
@@ -60,7 +87,6 @@ static bool SafeReadBytes(const void* src, void* dst, size_t n) {
     __try { memcpy(dst, src, n); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
-static bool SafeReadFloat(const void* p, float* out) { return SafeReadBytes(p, out, sizeof(float)); }
 
 static bool PlausibleFrac(float f) { return f >= -0.001f && f <= 1.001f; }
 
@@ -1807,80 +1833,6 @@ static void SkelPropRun() {
 }
 
 
-// ---- [ARMDRIVE] the controller moves Miles's arm -----------------------------------------------
-// Everything needed is now measured, none of it guessed:
-//   SkelControlLimb   EffectorLocation @0xF4  EffectorLocationSpace @0x10C   (2-bone IK effector)
-//   SkelControlBase   ControlStrength  @ found by reflection below (the on switch)
-// A SkelControl is ticked BY the animation system, in its own correct window, so there is no hook
-// and no write-timing problem - the trap that beat WIGGLE and BONEWATCH. The effector is set to
-// where the player's controller is in the world and the strength is raised; the engine solves the
-// elbow and moves the arm.
-// The base-class property offsets could not be read in the SKELPROP run because SkelControlBase's
-// Children chain mixes UFunctions in with UProperties and functions have no Offset field, which
-// wrecked the scoring. The subclasses proved the Offset field is at +0x8C, so the base chain is
-// re-read with that forced and only sane, increasing values accepted.
-// Values must be REWRITTEN EVERY FRAME: the animation system reasserts control state each tick
-// (the RE Engine lesson - anything written to a joint is rewritten every frame or it is eaten).
-// [Stage3] ArmDrive=1. Hold the right grip to aim; strength ramps so the arm never snaps.
-static unsigned g_scStrengthOff = 0;      // SkelControlBase::ControlStrength, from reflection
-// The live log proved Outlast has no left-arm SkelControlLimb at all. Both arms instead expose
-// SkelControlSingleBone controls for UpperArm and Forearm. Driving the old Limb path could never
-// produce two-arm IK; use the controls the game actually ships on both sides.
-static const unsigned kSingleBools    = 0xF4;
-static const unsigned kSingleRotSpace = 0x105;
-static const unsigned kSingleRotation = 0x110; // FRotator pitch,yaw,roll
-static unsigned g_bitApplyRotation = 0;
-static unsigned g_bitAddRotation = 0;
-static unsigned g_bitRemoveMeshRotation = 0;
-// Body estimates in Unreal units at the measured 100 uu/m. The camera is 168 uu above the pawn
-// root (CamProbe), so these hang the shoulder a head's height below the eyes.
-static const float kShoulderDown  = 25.0f;
-static const float kShoulderRight = 18.0f;
-static const float kShoulderBack  = 8.0f;
-static const float kArmReachUU    = 62.0f;   // upper arm + forearm, ~62 cm
-static const float kElbowBack     = 40.0f;
-static const float kElbowDown     = 55.0f;
-enum ArmSegment { ARM_UPPER = 0, ARM_FORE = 1 };
-struct ArmSingleRef { void* control; int hand; int segment; }; // hand: 0=left, 1=right
-static ArmSingleRef g_armSingle[64]; static int g_armSingleN = 0;
-static float g_armRamp[2] = { 0.0f, 0.0f };
-static bool g_armOwned = false;
-
-// A UE3 UBoolProperty packs many bools into one dword and stores WHICH BIT in a BitMask field on
-// the property object. The offset of that field is not known, so it is found the same way as
-// everything else here: inside the property object, look for the lone power-of-two dword. Guessing
-// the bit would mean flipping bAllowStretching or bInvertBoneAxis by accident.
-static unsigned SP_FindBoolBit(const char* cls, const char* want) {
-    void* c = SP_FindClass(cls);
-    if (!c) return 0;
-    char names[48][64]; unsigned offs[48];
-    const int len = SP_Walk(c, 0x80, 0x60, names, offs, 0x8C);
-    // Re-walk to reach the property OBJECT for the wanted name.
-    void* pobj = ProbeReadPtr((char*)c + 0x80);
-    for (int i = 0; i < len && pobj; ++i) {
-        if (!strcmp(names[i], want)) {
-            for (unsigned bo = 0x88; bo <= 0xC8; bo += 4) {
-                uint32_t v = 0;
-                if (!BP_Read((char*)pobj + bo, &v, 4)) continue;
-                if (v && !(v & (v - 1)) && v <= 0x80000000u) return v;   // exactly one bit set
-            }
-            return 0;
-        }
-        pobj = ProbeReadPtr((char*)pobj + 0x60);
-    }
-    return 0;
-}
-
-static unsigned SP_FindBaseProp(const char* want) {
-    void* cls = SP_FindClass("SkelControlBase");
-    if (!cls) return 0;
-    char names[48][64]; unsigned offs[48];
-    const int len = SP_Walk(cls, 0x80, 0x60, names, offs, 0x8C);   // links proven by the subclasses
-    for (int i = 0; i < len; ++i)
-        if (!strcmp(names[i], want) && offs[i] >= 0x40 && offs[i] < 0xF4) return offs[i];
-    return 0;
-}
-
 // ---- [PHYSCROUCH] read the pawn's crouch flag through UE3's own reflection --------------------
 // Same property chain SKELPROP proved (UClass Children +0x80, UProperty Next +0x60, Offset
 // +0x8C), but walked to the END of the class's own list: Pawn declares far more than the 48
@@ -2810,196 +2762,10 @@ static void DevGameThreadWork() {
     OLProxyLog(l);
 }
 
-// Every SkelControlSingleBone carrying a Hero left/right upper-arm or forearm reference. Several
-// variants exist; driving all of them is safer than guessing which current mesh/LOD is attached.
-static void ArmFind() {
-    BP_RefreshObjects();
-    g_armSingleN = 0;
-    int found[2][2] = {};
-    char nm[64], bn[64];
-    for (int i = 0; i < g_bpObjNum && g_armSingleN < 64; ++i) {
-        void* o = nullptr; uint32_t idx = 0;
-        if (!BP_Read(g_bpObjs + i, &o, 8) || !o) continue;
-        if (!BP_Read((char*)o + g_bpUNameOff, &idx, 4)) continue;
-        if (!BP_Name(idx, nm, sizeof(nm)) || strcmp(nm, "SkelControlSingleBone")) continue;
-        int sideScore[2] = { 0, 0 }, segScore[2] = { 0, 0 };
-        for (unsigned off = 0xF0; off <= 0x300; off += 4) {
-            uint32_t bi = 0;
-            if (!BP_Read((char*)o + off, &bi, 4) || !BP_Name(bi, bn, sizeof(bn))) continue;
-            if (strncmp(bn, "Hero-", 5)) continue;
-            if (strstr(bn, "Hero-L-") || strstr(bn, "Hero_Left") || strstr(bn, "Hero-L_")) ++sideScore[0];
-            if (strstr(bn, "Hero-R-") || strstr(bn, "Hero_Right") || strstr(bn, "Hero-R_")) ++sideScore[1];
-            if (strstr(bn, "UpperArm")) ++segScore[ARM_UPPER];
-            if (strstr(bn, "Forearm"))  ++segScore[ARM_FORE];
-        }
-        int hand = sideScore[0] > sideScore[1] ? 0 : (sideScore[1] > sideScore[0] ? 1 : -1);
-        int seg = segScore[ARM_UPPER] > segScore[ARM_FORE] ? ARM_UPPER :
-                  (segScore[ARM_FORE] > segScore[ARM_UPPER] ? ARM_FORE : -1);
-        if (hand < 0 || seg < 0) continue;
-        g_armSingle[g_armSingleN++] = { o, hand, seg };
-        ++found[hand][seg];
-    }
-    char l[240];
-    sprintf_s(l, "[OLVR][ARMDRIVE] %d live two-arm controls: L upper=%d fore=%d, R upper=%d fore=%d; "
-                 "strength@0x%X applyRot=0x%X addRot=0x%X",
-               g_armSingleN, found[0][0], found[0][1], found[1][0], found[1][1],
-               g_scStrengthOff, g_bitApplyRotation, g_bitAddRotation);
-    OLProxyLog(l);
-    if (!found[0][0] || !found[0][1] || !found[1][0] || !found[1][1])
-        OLProxyLog("[OLVR][ARMDRIVE] WARNING: complete L/R upper+forearm controls not found");
-}
-
-static int ArmWriteF(void* addr, float v) {
-    __try { *(float*)addr = v; return 1; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
-}
-static int ArmWriteB(void* addr, unsigned char v) {
-    __try { *(unsigned char*)addr = v; return 1; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
-}
-
-static void ArmReleaseOwnership() {
-    if (!g_armOwned || !g_scStrengthOff) return;
-    for (int i = 0; i < g_armSingleN; ++i)
-        ArmWriteF((char*)g_armSingle[i].control + g_scStrengthOff, 0.0f);
-    g_armOwned = false;
-}
-
-// camLoc/baseYaw come from the camera hook, so the target is built in the same body frame the
-// lean already uses and at the same measured 100 uu/m.
-static void ArmTick(const float* camLoc, float baseYaw) {
-    if (!g_armSingleN || !g_scStrengthOff || !g_bitApplyRotation) return;
-    OLXrPad pad;
-    const bool padReady = OLXR_MotionControlsReady() && OLXR_GetPad(&pad);
-
-    // GAMEPLAY-ONLY OWNERSHIP. The original camera FOV identifies menus, cinematics and deep
-    // camcorder views before CINEFOV widens them. Those states, and any explicit interaction,
-    // belong to Outlast's authored animation. Stop writing immediately so the native AnimTree
-    // can take both arms without fighting our IK; ordinary locomotion remains controller-driven.
-    static long nativeHold = 0;
-    if (padReady && ((pad.buttons & (OLXR_BTN_A | OLXR_BTN_B | OLXR_BTN_X | OLXR_BTN_Y)) ||
-                     pad.gripR > 0.60f))
-        nativeHold = 90;                       // roughly 1.5 seconds at the game tick
-    else if (nativeHold > 0)
-        --nativeHold;
-    const bool gameplay = padReady && !OLXR_ScreenActive() && g_nativeNarrowFrames == 0 &&
-                          nativeHold == 0 && g_injW > 0.95f;
-    if (!gameplay) {
-        g_armRamp[0] = g_armRamp[1] = 0.0f;
-        ArmReleaseOwnership();                 // one-frame handoff, then native animation owns it
-        return;
-    }
-
-    const float fx = cosf(baseYaw), fy = sinf(baseYaw);
-    const float rx = -sinf(baseYaw), ry = cosf(baseYaw);
-
-    struct HandTarget {
-        bool valid; float wx, wy, wz, shx, shy, shz, ex, ey, ez;
-        int rot[2][3]; float reach;
-    } t[2] = {};
-
-    const float kToUU = 65536.0f / 6.28318531f;
-    auto dirToRot = [kToUU](float x, float y, float z, int roll, int* out) {
-        const float flat = sqrtf(x * x + y * y);
-        out[0] = (int)(atan2f(z, flat) * kToUU);
-        out[1] = (int)(atan2f(y, x) * kToUU);
-        out[2] = roll;
-    };
-
-    for (int hand = 0; hand < 2; ++hand) {
-        if (!(pad.handValid & (1u << hand))) { g_armRamp[hand] = 0.0f; continue; }
-        g_armRamp[hand] += (1.0f - g_armRamp[hand]) * 0.20f;
-        if (g_armRamp[hand] > 0.999f) g_armRamp[hand] = 1.0f;
-
-        const float hx = pad.handPose[hand].px, hy = pad.handPose[hand].py, hz = pad.handPose[hand].pz;
-        const float dR = hx * kMetersToUU, dU = hy * kMetersToUU, dF = -hz * kMetersToUU;
-        t[hand].wx = camLoc[0] + rx * dR + fx * dF;
-        t[hand].wy = camLoc[1] + ry * dR + fy * dF;
-        t[hand].wz = camLoc[2] + dU;
-
-        const float side = hand ? 1.0f : -1.0f;
-        t[hand].shx = camLoc[0] + rx * (kShoulderRight * side) - fx * kShoulderBack;
-        t[hand].shy = camLoc[1] + ry * (kShoulderRight * side) - fy * kShoulderBack;
-        t[hand].shz = camLoc[2] - kShoulderDown;
-        float ax = t[hand].wx - t[hand].shx, ay = t[hand].wy - t[hand].shy;
-        float az = t[hand].wz - t[hand].shz;
-        float d = sqrtf(ax * ax + ay * ay + az * az);
-        if (d > kArmReachUU && d > 0.001f) {
-            const float k = kArmReachUU / d;
-            t[hand].wx = t[hand].shx + ax * k;
-            t[hand].wy = t[hand].shy + ay * k;
-            t[hand].wz = t[hand].shz + az * k;
-            d = kArmReachUU;
-        }
-        t[hand].reach = d;
-        // Solve an elbow on a stable down/back/outward bend plane. Equal 31uu segments match the
-        // measured 62uu reach and preserve the game's native shoulder placement.
-        ax = t[hand].wx - t[hand].shx; ay = t[hand].wy - t[hand].shy;
-        az = t[hand].wz - t[hand].shz;
-        d = sqrtf(ax * ax + ay * ay + az * az);
-        if (d < 1.0f) d = 1.0f;
-        const float ux = ax / d, uy = ay / d, uz = az / d;
-        float hxv = -fx * kElbowBack + rx * (12.0f * side);
-        float hyv = -fy * kElbowBack + ry * (12.0f * side);
-        float hzv = -kElbowDown;
-        const float hp = hxv * ux + hyv * uy + hzv * uz;
-        hxv -= hp * ux; hyv -= hp * uy; hzv -= hp * uz;
-        float hn = sqrtf(hxv * hxv + hyv * hyv + hzv * hzv);
-        if (hn < 0.001f) { hxv = rx * side; hyv = ry * side; hzv = -1.0f; hn = sqrtf(2.0f); }
-        hxv /= hn; hyv /= hn; hzv /= hn;
-        const float along = d * 0.5f;
-        const float bend2 = 31.0f * 31.0f - along * along;
-        const float bend = bend2 > 0.0f ? sqrtf(bend2) : 0.0f;
-        t[hand].ex = t[hand].shx + ux * along + hxv * bend;
-        t[hand].ey = t[hand].shy + uy * along + hyv * bend;
-        t[hand].ez = t[hand].shz + uz * along + hzv * bend;
-
-        const float qx = pad.handPose[hand].qx, qy = pad.handPose[hand].qy;
-        const float qz = pad.handPose[hand].qz, qw = pad.handPose[hand].qw;
-        const float handRoll = atan2f(2.0f * (qx * qy + qw * qz),
-                                      1.0f - 2.0f * (qx * qx + qz * qz));
-        dirToRot(t[hand].ex - t[hand].shx, t[hand].ey - t[hand].shy,
-                 t[hand].ez - t[hand].shz, 0, t[hand].rot[ARM_UPPER]);
-        dirToRot(t[hand].wx - t[hand].ex, t[hand].wy - t[hand].ey,
-                 t[hand].wz - t[hand].ez, (int)(handRoll * kToUU),
-                 t[hand].rot[ARM_FORE]);
-        t[hand].valid = true;
-    }
-
-    for (int i = 0; i < g_armSingleN; ++i) {
-        const int hand = g_armSingle[i].hand, seg = g_armSingle[i].segment;
-        char* c = (char*)g_armSingle[i].control;
-        if (hand < 0 || hand > 1 || seg < 0 || seg > 1 || !t[hand].valid) {
-            ArmWriteF(c + g_scStrengthOff, 0.0f);
-            continue;
-        }
-        __try {
-            unsigned flags = *(unsigned*)(c + kSingleBools);
-            flags |= g_bitApplyRotation;
-            if (g_bitAddRotation) flags &= ~g_bitAddRotation;
-            if (g_bitRemoveMeshRotation) flags &= ~g_bitRemoveMeshRotation;
-            *(unsigned*)(c + kSingleBools) = flags;
-            *(unsigned char*)(c + kSingleRotSpace) = 0; // BCS_WorldSpace
-            *(int*)(c + kSingleRotation + 0) = t[hand].rot[seg][0];
-            *(int*)(c + kSingleRotation + 4) = t[hand].rot[seg][1];
-            *(int*)(c + kSingleRotation + 8) = t[hand].rot[seg][2];
-        } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
-        ArmWriteF(c + g_scStrengthOff, g_armRamp[hand]);
-    }
-    g_armOwned = true;
-    static long s_rep = 0;
-    if ((++s_rep % 180) == 1) {
-        char l[220];
-        sprintf_s(l, "[OLVR][ARMDRIVE] gameplay single-bone IK n=%d valid=0x%X rampL=%.2f rampR=%.2f reachL=%.0f reachR=%.0f",
-                  g_armSingleN, pad.handValid, g_armRamp[0], g_armRamp[1],
-                  t[0].valid ? t[0].reach : 0.0f, t[1].valid ? t[1].reach : 0.0f);
-        OLProxyLog(l);
-    }
-}
-
 // ---- [VISIBLEIK] controller IK on the mesh that is actually rendered -------------------------
-// The AnimTree SkelControl objects discovered above accept writes but are templates/inactive
-// instances for this first-person mesh. The visible Miles component is composed by the native
+// The AnimTree SkelControl objects accept writes but are templates/inactive instances for this
+// first-person mesh, which is why the SkelControl drive was dropped. The visible Miles component
+// is composed by the native
 // function at RVA 0x6F8910. Hooking AFTER that function gives us the final LocalAtoms/SpaceBases
 // window: change the arm locals, ask the native composer to rebuild the hierarchy once, then
 // restore the source locals so the next authored animation tick starts from untouched game data.
@@ -5585,10 +5351,11 @@ static bool LS_Call(void* obj, void* fn, void* parms) {
     __except (EXCEPTION_EXECUTE_HANDLER) { if (nat) *nat = was; return false; }
 }
 
-// ---- [GAMMA] the startup brightness calibration, finished by the game's own code ---------------------
+// ---- [GAMMAACCEPT] the script half of the calibration skip: call the screen's own OnAccept ----------
 // Called from SceneStateRead on the game thread whenever OLHUD.bGammaCalibrationOpen is up. The screen is
 // OLUIFrontEnd_GammaScreen (or its _Console variant); OnAccept is the function its Accept button calls, so
 // this is the same path a player takes - the game closes the screen, keeps its gamma and stops asking.
+// The states, the ini switch and the reasoning live with the [GAMMA] block above.
 //
 // NO FIXED DELAY: this is called every frame while the flag is up. The first frames can see the flag before
 // the front end has loaded its view, so we retry on the following frames until the screen closes or we give
@@ -5877,22 +5644,6 @@ static bool LS_ResolveFns() {
     g_lsFnOk = true;
     return true;
 }
-// A loaded material instance with a 'CameraTexture' slot: the game's security-camera monitor screen.
-static void* LS_FindScreenParent(uint32_t* paramName) {
-    void* micCls = BP_FindClassObj("MaterialInstanceConstant");
-    char pnm[64];
-    for (int i = 0; i < g_bpObjNum; ++i) {
-        void* o = nullptr;
-        if (!BP_Read(g_bpObjs + i, &o, 8) || !o || LS_ClassOf(o) != micCls) continue;
-        struct { char* d; int n, mx; } ta = {};
-        if (!BP_Read((char*)o + g_lsTexParamsOff, &ta, 16) || !ta.d || ta.n <= 0 || ta.n > 32) continue;
-        for (int j = 0; j < ta.n; ++j) {
-            uint32_t pn = 0;
-            if (BP_Read(ta.d + j * 32, &pn, 4) && BP_Name(pn, pnm, sizeof(pnm)) && !strcmp(pnm, "CameraTexture")) { *paramName = pn; return o; }
-        }
-    }
-    return nullptr;
-}
 // [LIVESCREEN] The camcorder's own screen material (CameraScreen_INST: emissive, with the camcorder HUD
 // 'camerahud' over it and its own night-vision switch 'nvOn') draws its picture from the texture
 // Screen_camera, baked in (no parameter, and a material instance made at runtime under it does not render).
@@ -5903,7 +5654,6 @@ static void* LS_FindScreenParent(uint32_t* paramName) {
 extern "C" IMAGE_DOS_HEADER __ImageBase;   // this DLL (our proxy is also called d3d9.dll)
 static unsigned g_lsResOff = 0;
 static void* g_lsScreenRes = nullptr;
-static int   g_lsScreenTexOff = -1;
 static void* g_lsOrigD3D = nullptr;
 static void* g_lsRtD3D = nullptr;
 static int   g_lsSwapTries = 0;
@@ -5949,41 +5699,6 @@ static void** LS_D3DTexSlot(void* res, int* o1, int* o2) {
         }
     }
     return nullptr;
-}
-static bool LS_Swap() {
-    if (!g_lsResOff && !SP_FindPropAny("Texture", "Resource", &g_lsResOff, nullptr)) return false;
-    void* rres = g_ls.rt ? ProbeReadPtr((char*)g_ls.rt + g_lsResOff) : nullptr;
-    const bool tell = g_lsSwapTries == 1 || g_lsSwapTries == 600 || g_lsSwapTries == 2999;
-    char l0[200];
-    if (!rres) { if (tell) { sprintf_s(l0, "[OLVR][LIVESCREEN] swap try %d: the render target has no resource yet (Resource +0x%X)", g_lsSwapTries, g_lsResOff); OLProxyLog(l0); } return false; }
-    int r1 = -1, r2 = -1, s1 = -1, s2 = -1;
-    void** rslot = LS_D3DTexSlot(rres, &r1, &r2);
-    if (!rslot) { if (tell) { sprintf_s(l0, "[OLVR][LIVESCREEN] swap try %d: the render target's GPU texture is not there yet (resource %p)", g_lsSwapTries, rres); OLProxyLog(l0); } return false; }
-    // every texture called Screen_camera: the one that is actually on the GPU
-    void* texCls = BP_FindClassObj("Texture2D");
-    void** sslot = nullptr; void* screenTex = nullptr; int cands = 0;
-    for (int i = 0; i < g_bpObjNum && !sslot; ++i) {
-        void* o = nullptr;
-        if (!BP_Read(g_bpObjs + i, &o, 8) || !o || LS_ClassOf(o) != texCls || !LS_NameIs(o, g_lsTarget)) continue;
-        ++cands;
-        void* sres = ProbeReadPtr((char*)o + g_lsResOff);
-        if (sres && (sslot = LS_D3DTexSlot(sres, &s1, &s2)) != nullptr) screenTex = o;
-    }
-    if (!sslot) {
-        if (tell) { sprintf_s(l0, "[OLVR][LIVESCREEN] swap try %d: %d %s texture(s), none on the GPU (render target's at +0x%X/+0x%X)", g_lsSwapTries, cands, g_lsTarget, r1, r2); OLProxyLog(l0); }
-        return false;
-    }
-    void* rt = *rslot; void* orig = *sslot;
-    __try {
-        ((AR_t)(*(void***)rt)[1])(rt);                                   // AddRef: the screen texture now holds one
-        InterlockedExchangePointer(sslot, rt);
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-    g_lsScreenRes = (void*)sslot; g_lsScreenTexOff = 0; g_lsOrigD3D = orig; g_lsRtD3D = rt; g_lsSwapped = true;
-    g_lsSlotPath[0] = s1; g_lsSlotPath[1] = s2; g_lsScreenTex = screenTex;
-    char l[240];
-    sprintf_s(l, "[OLVR][LIVESCREEN] the camcorder screen's texture (%s) now draws the live render target (D3D texture at +0x%X/+0x%X, render target's at +0x%X/+0x%X)", g_lsTarget, s1, s2, r1, r2);
-    OLProxyLog(l);
-    return true;
 }
 // Put the screen's own texture back. The slot is found again from the Screen_camera object (a stored
 // address could be a freed resource after a level change); if the texture is gone, so is our reference.

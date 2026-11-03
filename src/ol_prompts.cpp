@@ -11,8 +11,9 @@
 //  - whole hints that a hand gesture now does are replaced ("Grab the handle to open, or press
 //    X"), each only while that gesture is switched on;
 //  - every remaining {OLA_<action>} becomes the Quest 3 control the mod maps to it (d3d9_proxy
-//    MapPadButtons: A/B/X/Y pass straight through, LB = left grip, RB = right grip, Y alone still
-//    has a left-grip chord = documents, Start = Menu), so no Xbox icon is left to draw.
+//    MapPadButtons: A/B/X/Y pass straight through, LB = left grip, RB = right grip, left grip + Y
+//    = documents, left grip + X = notes, left trigger + Y = the notebook, Start = Menu), so no
+//    Xbox icon is left to draw.
 // The rewritten text lives on this call's stack; the original copies it into its own FString, so
 // the game never holds a pointer to it. Anything this does not recognise passes through untouched.
 // =============================================================================
@@ -52,10 +53,10 @@ static const ActionWord kActions[] = {
     { L"LeanLeft", L"the left trigger" },        { L"LeanRight", L"the right trigger" },
     // (Beta 1.1.4) the left-grip chords for the notebook and recordings are removed: the hints say
     // so instead of naming a button that now does nothing.
-    // (Beta 1.1.9) left grip + Y opens the notes list (ShowRecordingMenu); the documents list
-    // (ShowEvidenceMenu) opens by looking at the held document, not by a button.
-    { L"ShowTabMenu", L"no shortcut" },           { L"ShowRecordingMenu", L"left grip + Y" },
-    { L"ShowEvidenceMenu", L"no shortcut" },      { L"ShowMenu", L"the Menu button" },
+    // (Beta 1.2.1) the notebook shortcuts: left grip + Y = documents, left grip + X = notes,
+    // left trigger + Y = the notebook menu that holds both lists (ShowTabMenu).
+    { L"ShowTabMenu", L"left trigger + Y" },       { L"ShowRecordingMenu", L"left grip + X" },
+    { L"ShowEvidenceMenu", L"left grip + Y" },     { L"ShowMenu", L"the Menu button" },
     { L"MoveForward", L"the left stick" },       { L"MoveBackward", L"the left stick" },
     { L"StrafeLeft", L"the left stick" },        { L"StrafeRight", L"the left stick" },
     { L"TurnLeft", L"the right stick" },         { L"TurnRight", L"the right stick" },

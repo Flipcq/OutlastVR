@@ -41,6 +41,18 @@
 // Everything here runs on the game thread: the tick at the end of the frame's CPU split, the pad
 // merge from the XInput poll (also the game thread), so no state below needs a lock.
 // =============================================================================
+//
+// Contents - grep these tags to jump to a section:
+//   [CLIMB]          (Beta 1.2.0) the three ways to climb
+//   [BATTERY]        (Beta 1.1.8) the spare cell on the left hip
+//   [DOCUMENT]       (Beta 1.1.9) the confidential document on the left shoulder
+//   [PHYSCLIMB]      (Test43) your hands carry Miles
+//   [PHYSICAL]       (Beta 1.2.0) the game climbs, your hands ask for it
+//   [CLIMBPACE]      the climb's animation speed follows the pull of the holding hands
+//   [HANDNV]         (Test43) night vision on the camcorder in your hand
+//   [BREATH]         (Test43) cover your mouth
+//   [ROOMWALK]       (Test44) walk around your room and Miles walks with you
+//
 #include <Windows.h>
 #include <cmath>
 #include <cstdio>
@@ -1074,8 +1086,9 @@ static void Battery(ULONGLONG now, float dt, const OLXrFrameHands& fh, const OLX
 // A flat document StaticMesh hangs from Miles's left shoulder bone, exactly like the spare battery
 // hangs from his left thigh. It is hidden while it rests there. Squeeze the left grip at the left
 // shoulder and it glides into your left hand; let go and it goes back. Look at the held document for
-// a moment and the documents/notes notebook opens (the mod sends ShowTabMenu), and the document
-// returns to his shoulder - no separate shortcut needed to read it.
+// a moment and the DOCUMENTS list opens (D-pad right = ShowEvidenceMenu), and the document returns
+// to his shoulder - no separate shortcut needed to read it. (Left grip + Y does the same from the
+// controller, see MapPadButtons; left grip + X is the notes list and left trigger + Y the notebook.)
 enum { DOC_NONE = 0, DOC_HELD };
 static int   s_docState = DOC_NONE;
 static float s_docBlend = 0.0f;              // 0 on the shoulder .. 1 in the left hand
@@ -1084,7 +1097,7 @@ static float s_dDoc = 9.0f;
 static bool  s_docInShoulder = false;
 static V3    s_docShoulder, s_docShoulderVis;
 static ULONGLONG s_docLookAt = 0;            // how long the head has been looking at the held document
-static ULONGLONG s_docMenuPulseUntil = 0;    // the ShowTabMenu press (Back) sent to the game
+static ULONGLONG s_docMenuPulseUntil = 0;    // the documents pulse (D-pad right) sent to the game
 // The left shoulder in the torso frame: 15 cm left, 16 cm below the eyes, a touch forward.
 static const V3 kDocShoulderOff = { -0.15f, -0.16f, 0.02f };
 static const float kDocGrabM = 0.15f;        // how close the left hand must come to grab it (focused on the shoulder)
@@ -1189,7 +1202,6 @@ static const float kDoorWideUU = 80.0f;   // near enough that the right grip bel
 static const float kLetGoTurnDeg = 45.0f, kLetGoReachUU = 95.0f;
 static const float kPushAccel = 1600.0f;                 // deg/s^2 a hand can give a heavy door
 static const float kFricVisc = 1.1f, kFricCoul = 22.0f;  // hinge friction: lighter door, easier to move
-static const float kHeroRadius = 26.0f;                  // Miles, for the panel to stop against
 // [DOOR] open-hand collision box: keeps the whole hand (wrist + fingers) off the door panel when
 // pushing with an open hand.
 static const float kFingerLenUU = 14.0f;   // wrist to fingertips (uu)
@@ -1293,13 +1305,6 @@ static bool ReadDoor(void* d, NearDoor* o) {
               (F.dbreak && Rd(d, F.dbreak, &brk) && brk != 0) ||
               (F.duser && Rd(d, F.duser, &user) && user && user != OLUE3_Hero());
     return true;
-}
-static float PanelDist(V3 hinge, float phiDeg, float width, V3 p) {
-    const float c = cosf(phiDeg * 0.0174532925f), s = sinf(phiDeg * 0.0174532925f);
-    const float px = p.x - hinge.x, py = p.y - hinge.y;
-    float t = px * c + py * s; if (t < 0.0f) t = 0.0f; if (t > width) t = width;
-    const float dx = px - c * t, dy = py - s * t;
-    return sqrtf(dx * dx + dy * dy);
 }
 static DoorSim* SimFor(void* d, bool create) {
     for (DoorSim& s : s_sim) if (s.d == d) return &s;
@@ -2860,7 +2865,6 @@ extern "C" void OLInteract_DevLedges() {
 // eye carries back into your hand.
 static int s_handNV = -1;                       // -1: not known yet (taken from the game)
 static ULONGLONG s_nvUpMs = 0, s_nvPulseUntil = 0, s_nvAdoptAt = 0;
-static bool s_nvSynced = false;
 extern "C" int OLInteract_HandNV() { return s_handNV > 0 ? 1 : 0; }
 static void HandNV(ULONGLONG now, const OLXrPad& p, void* hero) {
     (void)p;

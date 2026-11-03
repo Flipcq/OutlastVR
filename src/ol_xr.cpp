@@ -16,6 +16,21 @@
 // OpenXR is loaded dynamically (x64 openxr_loader.dll next to the game exe); no SDK link.
 // =============================================================================
 
+//
+// Contents - grep these tags to jump to a section:
+//   [STEREOMODEL]    two complete stereo models, switchable live
+//   [XRRUNTIME]      runtime quirks, ported from ME1 (2026-08-04)
+//   [XRINPUT]        motion controls: the OpenXR action set
+//   [HANDCAM]        (Test34) the camcorder is the camera: aiming it is aiming Miles
+//   [HAPTICS]        the game's own rumble, felt in the hands
+//   [PERF]           (Test35) where a frame's time goes, logged every 5 s
+//   [ZEROCOPY]       (Test35) the headset frame never leaves the GPU
+//   [EXSHARE]        (Test36) the hand-over for a D3D9Ex game device
+//   [GAMMA]          corrected blit
+//   [MARKERS]        (Test37) developer markers for the physical interactions
+//   [FLIPSCREEN]     (Test43) the camcorder's flip-out screen, live
+//   [THEATER]        the menu / loading presentation, rebuilt for VR (Test34)
+//
 #include "ol_xr_types.h"
 #include "ol_xr.h"
 #include "ol_camcorder_hud.h"
@@ -228,8 +243,12 @@ static bool g_fovMutable = true;
 // [Stream] PoseLeadPeriods display periods; 1 is what every released build has done.
 static int  g_poseLeadPeriods = 1;
 // [STREAMEDGE] Fill the eye image's margin instead of clearing it to black - the overscan the
-// reprojection warp pulls from when you turn your head quickly. See OLR_EdgeFillBox.
+// reprojection warp pulls from when you turn your head quickly. See OLR_EdgeFill.
 static bool g_edgeFill = true;
+// [STREAMEDGE] Percent of the picture's own size given up so the fill can buy margin on the sides
+// where there is none (the lens reaches past the game's render): the picture is drawn that much
+// smaller, centred, and the fill covers what is left. 0 = the picture keeps its exact size.
+static int  g_edgeFillMargin = 4;
 // [SWAPFMT] The eye-image format asked of the runtime, decided once from its own list (see
 // OLR_PickEyeFormat). BGRA8_SRGB is the shipped value; BGRA8_UNORM only replaces it on a runtime
 // that does not offer sRGB, and then the gamma LUT carries sRGB-encoded values instead of linear
@@ -262,6 +281,16 @@ static int OLR_ClampPoseLeadPeriods(int v)
 {
     if (v < 0) return 0;
     if (v > 2) return 2;
+    return v;
+}
+// [STREAMEDGE] Bounds for [Stream] EdgeFillMargin - how much of the picture's own angular size may
+// be given up (percent) to buy reprojection margin on the sides where the lens reaches past the
+// game's render and there is none at all. 0 = off, 15 = the picture is drawn 13 % smaller (the
+// world reads 15 % smaller - it zooms out), which is as far as that trade stays comfortable.
+static int OLR_ClampEdgeFillMargin(int v)
+{
+    if (v < 0) return 0;
+    if (v > 15) return 15;
     return v;
 }
 static XrFovf g_rtEyeFov[2] = {};          // the runtime's own per-eye frustum, from xrLocateViews
@@ -1650,14 +1679,18 @@ static bool Init(UINT w, UINT h) {
                 // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
                 // EdgeFill: fill the fitted eye image's margin with the picture's own edge instead
                 // of black, so the runtime's reprojection has something to pull in when the head
-                // turns quickly. PoseLeadPeriods: how many display periods ahead of the compositor's
-                // display time the camera pose is predicted (1 = every released build).
+                // turns quickly. EdgeFillMargin: buy that margin on the sides where the lens reaches
+                // past the game's render by drawing the picture that much smaller (0 = off).
+                // PoseLeadPeriods: how many display periods ahead of the compositor's display time
+                // the camera pose is predicted (1 = every released build).
                 g_edgeFill = GetPrivateProfileIntW(L"Stream", L"EdgeFill", 1, ini) != 0;
+                g_edgeFillMargin = OLR_ClampEdgeFillMargin(
+                    (int)GetPrivateProfileIntW(L"Stream", L"EdgeFillMargin", 4, ini));
                 { wchar_t pl[32]; GetPrivateProfileStringW(L"Stream", L"PoseLeadPeriods", L"1", pl, 32, ini);
                   g_poseLeadPeriods = OLR_ClampPoseLeadPeriods((int)_wtof(pl)); }
-                XLOG("[OLVR][STREAM] edge fill %s, pose lead %d display period(s)",
+                XLOG("[OLVR][STREAM] edge fill %s, margin %d%%, pose lead %d display period(s)",
                      g_edgeFill ? "on (the fitted eye's margin is stretched, not black)" : "off",
-                     g_poseLeadPeriods);
+                     g_edgeFillMargin, g_poseLeadPeriods);
                 // [SWAPFMT] 0 = always ask for BGRA8_SRGB, whatever the runtime lists.
                 g_useRuntimeFmt = GetPrivateProfileIntW(L"XR", L"RuntimeFormat", 1, ini) != 0;
                 g_lensFitIni = (long)GetPrivateProfileIntW(L"Render", L"LensFit", 1, ini);
@@ -3199,11 +3232,6 @@ static ID3D11Texture2D*          g_blitTmpNs = nullptr;
 static ID3D11RenderTargetView*   g_blitTmpNsRtv = nullptr;
 static UINT g_blitTmpNsW = 0, g_blitTmpNsH = 0;
 
-static bool GammaActive() {
-    return fabsf(g_gamma - 1.0f) > 0.005f || OLProxy_GammaRampGen() != 0 ||
-           OLProxy_NightVisionActive() != 0;
-}
-
 typedef HRESULT (WINAPI *PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const void*, void*,
                                          LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
 
@@ -3540,16 +3568,29 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
 static bool ShaderBlitReady() {
     return EnsureGammaPipeline() && BuildGammaLut();
 }
-static bool GammaBlitReady() {
-    return GammaActive() && ShaderBlitReady();
-}
+
+// [STREAMEDGE] Defined with the fitted blit further down; this path needs it too (see BlitHalfToEye).
+static int OLR_EdgeFill(float* dx0, float* dy0, float* dx1, float* dy1,
+                        float sx0, float sy0, float sx1, float sy1,
+                        float eyeW, float eyeH, int marginPct,
+                        float* outSX, float* outSY, float* outSW, float* outSH);
 
 // Copy one eye's window of the captured backbuffer into that eye's swapchain image.
 // srcX is SIGNED and fractional so the Mass Effect model can slide it past the half's edge;
 // clampLo/clampHi bound the sample inside that eye's own half. In the Outlast model the window
 // is a plain in-bounds box and this is the baseline's exact CopySubresourceRegion.
+//
+// [STREAMEDGE] (Beta 1.2.1 polishing) THE MARGIN IS NOT A Quest-Link-ONLY CURE. On a runtime that
+// honours the declared frustum (SteamVR, VDXR) the fit never runs, so the eye image IS the picture
+// and there is no margin anywhere: the compositor's reprojection pulls black in at the sides on a
+// fast turn just the same, which is the same report. So the bought margin of OLR_EdgeFill is taken
+// here as well - the picture is drawn EdgeFillMargin % smaller inside the same eye image and the
+// fill stretches its edge over what is left. The declared frustum is untouched, so the cost is the
+// same few percent of field of view on every runtime instead of on one.
+// `margin` is false for the frames that are not the immersive view at all (the theater screen and
+// the camcorder viewfinder are quads: there is nothing to reproject around them).
 static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
-                          float srcX, float clampLoPx, float clampHiPx) {
+                          float srcX, float clampLoPx, float clampHiPx, bool margin = true) {
     if (!sc || imgs.empty()) return false;
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
@@ -3558,14 +3599,28 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
     if (XrSucceeded(g_fn.waitSwapchainImage(sc, &wi))) {
         const bool shifted = fabsf(srcX - clampLoPx) > 0.01f;
+        // The whole eye image is this eye's picture here, so the fill's idea of "the picture's box"
+        // is the entire image: coverage is 100 %, both axes qualify, and all it does is take the
+        // bought margin off and hand back the source box that covers the eye image with it.
+        float dX0 = 0.0f, dY0 = 0.0f, dX1 = (float)g_eyeW, dY1 = (float)g_eyeH;
+        float sX = srcX, sY = 0.0f, sW = (float)g_srcEyeW, sH = (float)g_srcEyeH;
+        const int fill = (margin && g_edgeFill && g_edgeFillMargin > 0)
+            ? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, srcX, 0.0f, srcX + (float)g_srcEyeW,
+                           (float)g_srcEyeH, (float)g_eyeW, (float)g_eyeH, g_edgeFillMargin,
+                           &sX, &sY, &sW, &sH)
+            : 0;
         // ALWAYS the shader when it is available, even with nothing to correct: it is the only
         // path that writes an OPAQUE alpha. A plain copy carries the game backbuffer alpha
         // through untouched, and a D3D9 backbuffer alpha is typically zero - SteamVR honours
         // that and composites the whole game as a see-through overlay on its own environment.
         if (ShaderBlitReady()) {
-            ok = GammaDraw(g_uploadTex, g_w, g_h, srcX, g_srcEyeW, g_srcEyeH,
+            ok = fill
+               ? GammaDraw(g_uploadTex, g_w, g_h, sX, (UINT)sW, (UINT)sH,
                            clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
-                           0.0f, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb);   // [SWAPFMT]
+                           sY, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb)   // [SWAPFMT]
+               : GammaDraw(g_uploadTex, g_w, g_h, srcX, g_srcEyeW, g_srcEyeH,
+                           clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
+                           0.0f, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb);  // [SWAPFMT]
         }
         if (!ok) {
             // Degrade locally, never silently: drop the shift for this eye rather than failing
@@ -3589,7 +3644,8 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     return ok;
 }
 
-// [STREAMEDGE] (Beta 1.2.1) OVERS CAN, for the eye image that [FITFRUSTUM] builds.
+// [STREAMEDGE] (Beta 1.2.1) OVERS CAN, for the eye image that [FITFRUSTUM] builds, and the margin
+// every other runtime needs as well.
 //
 // What the black vertical bars are: every PC runtime reprojects the frame you submitted to where
 // your head actually is at scan-out (SteamVR "reprojection"/motion smoothing, Meta ASW, VD's
@@ -3599,38 +3655,77 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
 // "will result in just black pulled in on the sides". The cure real engines use is a margin of
 // rendered pixels beyond the visible frustum (FOV padding / overscan) for the warp to pull from.
 //
-// This mod cannot ask the game for a wider camera on every runtime, but in [FITFRUSTUM] mode the
-// eye image we hand over already spans the RUNTIME's frustum while the picture only covers the
-// part the engine rendered - the rest used to be cleared to black, and THAT black is what the
-// compositor smears into view when you turn your head. So: draw the picture into the whole eye
-// image instead, with the source box extended by the same affine amount. The sampler is
-// D3D11_TEXTURE_ADDRESS_CLAMP and the shader clamps u to the eye's own half, so the margin
-// samples the picture's edge texels - a stretched, plausible continuation of the world rather
-// than a black bar. The visible picture is untouched: same pixels, same angles.
+// This mod cannot ask the game for a wider camera, so the margin is manufactured inside the eye
+// image, from whichever geometry that image has:
+//  * [FITFRUSTUM] mode (the runtimes that discard a declared FOV - Quest Link / Air Link). The eye
+//    image spans the RUNTIME's lens frustum while the picture only covers the part the engine
+//    rendered; the rest used to be cleared to black, and THAT black is what the compositor smears
+//    into view. So: draw the picture into the whole eye image instead, with the source box extended
+//    by the same affine amount. The sampler is D3D11_TEXTURE_ADDRESS_CLAMP and the shader clamps u
+//    to the eye's own half, so the margin samples the picture's edge texels - a stretched,
+//    plausible continuation of the world rather than a black bar. The visible picture is untouched:
+//    same pixels, same angles.
+//  * The other runtimes (SteamVR, VDXR - they honour the declaration). No fit runs, so the eye image
+//    IS the picture and there is no margin anywhere: the same black bars, from the same cause. There
+//    the margin has to be taken out of the picture itself (see BlitHalfToEye / BlitHoldToEye), and
+//    the part that cannot be taken out of it is the BOUGHT MARGIN below.
 //
-// Returns false when there is nothing sensible to fill (degenerate rect, or a picture so much
-// narrower than the lens that stretching it would be a smear rather than an overscan margin -
-// a menu or a scripted camera below kEdgeFillMinCoverage keeps the honest black field), and the
-// caller then blits exactly as every earlier build did.
+// Two refinements (Beta 1.2.1 polishing) because the bars were still there at the corners:
+//  * PER AXIS. The lens is asymmetric on Quest Link (-54/+40 deg), so the picture hits the eye
+//    image's own edge on one side and has 15 % of free margin on the other. Judging both axes
+//    together threw the free margin away whenever the other one was narrow (a wide, short picture,
+//    the camcorder's 4:3 frame, a letterboxed shot) - and the side with no margin at all is
+//    exactly where the warp pulls black in first. Each axis is now decided on its own.
+//  * BOUGHT MARGIN. Where the lens ends where the picture ends - one side of the asymmetric Quest
+//    lens - there is no margin to extend: nothing was ever rendered there. And on the runtimes that
+//    honour the declaration the eye image is the picture, so there is never a margin at all.
+//    [Stream] EdgeFillMargin gives up that much of the picture's own size (percent, centred), which
+//    leaves the fill a real band of the picture - not one texel - to stretch over every edge. It
+//    costs the same percentage of FOV (the world reads that much smaller), which is why it is a
+//    number in the ini and not a constant.
+//
+// Returns which axes were filled (bit 0 = X, bit 1 = Y): 0 when there is nothing sensible to fill
+// (degenerate rect, or a picture so much narrower than the lens that stretching it would be a
+// smear rather than an overscan margin - a menu or a scripted camera below kEdgeFillMinCoverage
+// keeps the honest black field), and the caller then blits exactly as every earlier build did.
+// dx0..dy1 is updated in place: the axis that is filled is extended to the eye image's own origin
+// and the bought margin is taken off it. outS* always describes the picture's own mapping.
 static const float kEdgeFillMinCoverage = 0.75f;
-static bool OLR_EdgeFillBox(float dx0, float dy0, float dx1, float dy1,
-                            float sx0, float sy0, float sx1, float sy1,
-                            float eyeW, float eyeH,
-                            float* outSX, float* outSY, float* outSW, float* outSH)
+static int OLR_EdgeFill(float* dx0, float* dy0, float* dx1, float* dy1,
+                        float sx0, float sy0, float sx1, float sy1,
+                        float eyeW, float eyeH, int marginPct,
+                        float* outSX, float* outSY, float* outSW, float* outSH)
 {
-    if (!outSX || !outSY || !outSW || !outSH) return false;
-    const float dw = dx1 - dx0, dh = dy1 - dy0;
-    if (!(dw > 0.5f) || !(dh > 0.5f) || !(eyeW > 0.5f) || !(eyeH > 0.5f)) return false;
-    // How much of the eye the game's own picture covers. Gameplay is 85-95 % on Quest; a menu or
-    // a deliberately narrow camera is far below that and is left alone.
-    if (dw < eyeW * kEdgeFillMinCoverage || dh < eyeH * kEdgeFillMinCoverage) return false;
+    if (!dx0 || !dy0 || !dx1 || !dy1 || !outSX || !outSY || !outSW || !outSH) return 0;
+    const float dw = *dx1 - *dx0, dh = *dy1 - *dy0;
+    if (!(dw > 0.5f) || !(dh > 0.5f) || !(eyeW > 0.5f) || !(eyeH > 0.5f)) return 0;
     const float kx = (sx1 - sx0) / dw;              // source pixels per destination pixel
     const float ky = (sy1 - sy0) / dh;
-    if (!(kx > 1e-6f) || !(ky > 1e-6f)) return false;
-    // The SAME affine map, extended to a destination that starts at the eye image's own origin.
-    *outSX = sx0 - dx0 * kx;  *outSW = eyeW * kx;
-    *outSY = sy0 - dy0 * ky;  *outSH = eyeH * ky;
-    return true;
+    if (!(kx > 1e-6f) || !(ky > 1e-6f)) return 0;
+    // How much of the eye the game's own picture covers, axis by axis. Gameplay is 85-95 % on
+    // Quest; a menu or a deliberately narrow camera is far below that and keeps its black field.
+    const int axes = (dw >= eyeW * kEdgeFillMinCoverage ? 1 : 0) |
+                     (dh >= eyeH * kEdgeFillMinCoverage ? 2 : 0);
+    if (!axes) return 0;
+    // The bought margin: pull the picture in on the axes that are filled, about its own centre, so
+    // the fill below covers a real band of the picture instead of a single edge texel.
+    const int pct = OLR_ClampEdgeFillMargin(marginPct);
+    if (pct > 0) {
+        const float s = 1.0f + (float)pct * 0.01f;
+        if (axes & 1) { const float c = 0.5f * (*dx0 + *dx1), h = 0.5f * dw / s;
+                        *dx0 = c - h; *dx1 = c + h; }
+        if (axes & 2) { const float c = 0.5f * (*dy0 + *dy1), h = 0.5f * dh / s;
+                        *dy0 = c - h; *dy1 = c + h; }
+    }
+    const float nx = (*dx1 - *dx0), ny = (*dy1 - *dy0);
+    const float nkx = (sx1 - sx0) / nx, nky = (sy1 - sy0) / ny;
+    if (!(nkx > 1e-6f) || !(nky > 1e-6f)) return 0;
+    // The SAME affine map the picture is drawn with, extended to the eye image's own origin.
+    *outSX = (axes & 1) ? sx0 - *dx0 * nkx : sx0;
+    *outSW = (axes & 1) ? eyeW * nkx : (sx1 - sx0);
+    *outSY = (axes & 2) ? sy0 - *dy0 * nky : sy0;
+    *outSH = (axes & 2) ? eyeH * nky : (sy1 - sy0);
+    return axes;
 }
 
 // [LINKPOSE] (Beta 1.1) A projection layer's declared pose has to be where the head REALLY was, in the
@@ -3703,16 +3798,34 @@ static bool BlitFitToEyeTan(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
     if (!XrSucceeded(g_fn.acquireSwapchainImage(sc, &ai, &idx))) return false;
-    // [STREAMEDGE] Extend the picture over the eye image's own margin (see OLR_EdgeFillBox).
-    // Everything that is NOT filled is still cleared to black by GammaDraw below, so the frame
-    // looks exactly as it always did when the render already covers the runtime's frustum.
-    float dX = dx0, dY = dy0, dW = dx1 - dx0, dH = dy1 - dy0;
+    // [STREAMEDGE] Extend the picture over the eye image's own margin (see OLR_EdgeFill). Each axis
+    // is decided on its own: on one side of an asymmetric lens the picture reaches the image's edge
+    // and has no margin at all, while the other side has a band of free margin - and that band is
+    // exactly what saves the corners during a fast turn. Everything that is NOT filled is still
+    // cleared to black by GammaDraw below, so the frame looks exactly as it always did when the
+    // render already covers the runtime's frustum.
+    float dX0 = dx0, dY0 = dy0, dX1 = dx1, dY1 = dy1;
     float sX = sx0, sY = sy0, sW = sx1 - sx0, sH = sy1 - sy0;
-    if (g_edgeFill && OLR_EdgeFillBox(dx0, dy0, dx1, dy1, sx0, sy0, sx1, sy1,
-                                      (float)g_eyeW, (float)g_eyeH, &sX, &sY, &sW, &sH)) {
-        dX = 0.0f; dY = 0.0f; dW = (float)g_eyeW; dH = (float)g_eyeH;
-    } else {
-        sX = sx0; sY = sy0; sW = sx1 - sx0; sH = sy1 - sy0;   // unfilled: the shipped rect
+    const int fill = g_edgeFill
+        ? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, sx0, sy0, sx1, sy1,
+                       (float)g_eyeW, (float)g_eyeH, g_edgeFillMargin, &sX, &sY, &sW, &sH)
+        : 0;
+    const float dX = (fill & 1) ? 0.0f : dX0;
+    const float dW = (fill & 1) ? (float)g_eyeW : (dX1 - dX0);
+    const float dY = (fill & 2) ? 0.0f : dY0;
+    const float dH = (fill & 2) ? (float)g_eyeH : (dY1 - dY0);
+    if (!fill) {
+        // Nothing was filled: this frame keeps the honest black field. Say so once, with the numbers
+        // that decided it - a report of "the bars are back" needs to know whether the picture was
+        // too narrow for the fill or something else was going on.
+        static int s_skipLogs = 0;
+        if (s_skipLogs < 4) {
+            ++s_skipLogs;
+            XLOG("[OLVR][STREAMEDGE] kept black around the picture: it covers %.0f%% of the eye "
+                 "horizontally and %.0f%% vertically (fill needs %.0f%% on an axis)",
+                 (dx1 - dx0) / (float)g_eyeW * 100.0f, (dy1 - dy0) / (float)g_eyeH * 100.0f,
+                 kEdgeFillMinCoverage * 100.0f);
+        }
     }
     bool ok = false;
     XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
@@ -4868,8 +4981,20 @@ static bool BlitHoldToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs, I
     bool ok = false;
     XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
     if (XrSucceeded(g_fn.waitSwapchainImage(sc, &wi))) {
+        // [STREAMEDGE] The same bought margin as the live paths (see BlitHalfToEye): a held frame
+        // goes out as a projection layer just like a fresh one, so it must carry it too.
+        float dX0 = 0.0f, dY0 = 0.0f, dX1 = (float)g_eyeW, dY1 = (float)g_eyeH;
+        float sX = 0.0f, sY = 0.0f, sW = (float)g_srcEyeW, sH = (float)g_srcEyeH;
+        const int fill = (g_edgeFill && g_edgeFillMargin > 0)
+            ? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, 0.0f, 0.0f, (float)g_srcEyeW, (float)g_srcEyeH,
+                           (float)g_eyeW, (float)g_eyeH, g_edgeFillMargin, &sX, &sY, &sW, &sH)
+            : 0;
         if (ShaderBlitReady())
-            ok = GammaDraw(src, g_srcEyeW, g_srcEyeH, 0.0f, g_srcEyeW, g_srcEyeH,
+            ok = fill
+               ? GammaDraw(src, g_srcEyeW, g_srcEyeH, sX, (UINT)sW, (UINT)sH,
+                           0.0f, (float)g_srcEyeW, imgs[idx], g_eyeW, g_eyeH,
+                           sY, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb)
+               : GammaDraw(src, g_srcEyeW, g_srcEyeH, 0.0f, g_srcEyeW, g_srcEyeH,
                            0.0f, (float)g_srcEyeW, imgs[idx], g_eyeW, g_eyeH,
                            0.0f, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb);   // opaque alpha, [SWAPFMT]
         else if (g_eyeW == g_srcEyeW && g_eyeH == g_srcEyeH && g_eyeFmtSrgb) {
@@ -5552,13 +5677,13 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                 eyesOk = fitMode
                        ? BlitFitToEye(g_scL, g_imgL, 0.0f, (float)g_w, 0.0f, (float)g_w,
                                       fx, fy, g_rtEyeFov[0])
-                       : BlitHalfToEye(g_scL, g_imgL, 0.0f, 0.0f, (float)g_w);
+                       : BlitHalfToEye(g_scL, g_imgL, 0.0f, 0.0f, (float)g_w, !(screenWanted || vfFrame));
             }
             if (eyesOk && CaptureBackbuffer(dev)) {
                 eyesOk = fitMode
                        ? BlitFitToEye(g_scR, g_imgR, 0.0f, (float)g_w, 0.0f, (float)g_w,
                                       fx, fy, g_rtEyeFov[1])
-                       : BlitHalfToEye(g_scR, g_imgR, 0.0f, 0.0f, (float)g_w);
+                       : BlitHalfToEye(g_scR, g_imgR, 0.0f, 0.0f, (float)g_w, !(screenWanted || vfFrame));
             } else {
                 eyesOk = false;
             }
@@ -5605,8 +5730,8 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
             }
             if (!fittedToRuntime)
             eyesOk = preCaptured
-                  && BlitHalfToEye(scL, imL, 0.0f  - convPx, 0.0f,  halfW)
-                  && BlitHalfToEye(scR, imR, halfW + convPx, halfW, (float)g_w);
+                  && BlitHalfToEye(scL, imL, 0.0f  - convPx, 0.0f,  halfW, !(screenWanted || vfFrame))
+                  && BlitHalfToEye(scR, imR, halfW + convPx, halfW, (float)g_w, !(screenWanted || vfFrame));
         } else {
             // Convergence: take each eye's half from a window slid inward/outward by conv pixels.
             // Positive moves the halves TOWARD each other, pushing the zero-parallax plane
@@ -5625,8 +5750,10 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
             if (rx > (int)g_w - (int)g_srcEyeW) rx = (int)g_w - (int)g_srcEyeW;
             g_cropLx = lx; g_cropRx = rx;
             eyesOk = preCaptured
-                  && BlitHalfToEye(g_scL, g_imgL, (float)lx, (float)lx, (float)(lx + g_srcEyeW))
-                  && BlitHalfToEye(g_scR, g_imgR, (float)rx, (float)rx, (float)(rx + g_srcEyeW));
+                  && BlitHalfToEye(g_scL, g_imgL, (float)lx, (float)lx, (float)(lx + g_srcEyeW),
+                                   !(screenWanted || vfFrame))
+                  && BlitHalfToEye(g_scR, g_imgR, (float)rx, (float)rx, (float)(rx + g_srcEyeW),
+                                   !(screenWanted || vfFrame));
         }
         if (!held) {
             s_lastSigValid = eyesOk;
