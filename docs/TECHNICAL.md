@@ -25,7 +25,11 @@ Licensed under [GPL-3.0](../LICENSE).
   rendered.
 - **Motion controllers as a virtual gamepad** - an OpenXR action set is merged into the
   XInput state the game polls, so the game plays as normal with real controllers, glyphs
-  included, no physical pad required.
+  included, no physical pad required. Interaction profiles are suggested for Touch, Index, WMR,
+  Vive and the Khronos fallback, each in two passes (a runtime that refuses one path refuses the
+  whole call, so the optional ones - haptics, touch sensors, Valve's system button - are retried
+  without). A press is held for 150 ms in the published snapshot, so the game's own frame rate
+  cannot swallow a tap, and a stick that is pushed always walks whatever a touch sensor claims.
 - **Gameplay upper-body IK** - both arms follow their matching VR controllers during ordinary
   play, while menus, cinematics, camcorder zoom and native interactions retain authored arm
   animation ownership.

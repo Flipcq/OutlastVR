@@ -28,6 +28,7 @@
 #include <wincodec.h>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 #include <vector>
 #include <math.h>
 
@@ -455,6 +456,13 @@ static XrAction g_aMove = 0, g_aLook = 0, g_aTrig = 0, g_aGrip = 0, g_aPose = 0,
 static XrAction g_aClick = 0, g_aPrimary = 0, g_aSecondary = 0, g_aMenu = 0;
 static XrAction g_aHaptic = 0;   // [HAPTICS] vibration output, both hands
 static XrAction g_aStickTouch = 0;   // (Test48) [STICKCENTER] thumb on the stick (Touch / Index / Vive pad), optional
+// (Beta 1.2.1) [INDEXMENU] A menu button that actually reaches an application on a Valve Index. Its
+// /input/system/click is in the profile but marked "may be unavailable for application use" (OpenXR
+// interaction profiles) and never reaches an app on SteamVR - it is the dashboard button - so on the Index
+// there was no way to open the game's pause menu or this mod's own settings menu at all. The Index
+// trackpads are unused by this mod and DO have an analog force sensor, so a firm press on the LEFT one is
+// the menu there. It stays optional: a runtime that does not report it loses nothing but that pressing.
+static XrAction g_aIndexForce = 0;
 static XrPath   g_handPath[2] = { 0, 0 };
 static XrSpace  g_handSpace[2] = { 0, 0 };
 static XrSpace  g_aimSpace[2]  = { 0, 0 };
@@ -601,23 +609,42 @@ static void BuildActionSet() {
     if (!mk(g_aHaptic, XR_ACTION_TYPE_VIBRATION_OUTPUT_VALUE, "rumble", "Rumble")) g_aHaptic = 0;
     // (Test48) [STICKCENTER] optional the same way: refused, only the stick-drift fix is lost.
     if (!mk(g_aStickTouch, XR_ACTION_TYPE_BOOLEAN_INPUT_VALUE, "sticktouch", "Thumbstick Touch")) g_aStickTouch = 0;
+    // (Beta 1.2.1) [INDEXMENU] optional too (see g_aIndexForce): only the Valve Index profile binds it.
+    if (!mk(g_aIndexForce, XR_ACTION_TYPE_FLOAT_INPUT_VALUE, "menupress", "Menu Press")) g_aIndexForce = 0;
 
     struct Bind { XrAction a; const char* path; };
+    // (Beta 1.2.1) [PROFILE] Paths a runtime is allowed to refuse, or to accept and then never deliver:
+    // the haptics output, the stick touch sensors, and Valve's system button. One refused path fails the
+    // WHOLE xrSuggestInteractionProfileBindings call ("the runtime must return XR_ERROR_PATH_UNSUPPORTED",
+    // OpenXR input chapter), which is how a Valve Index could end up with poses and grips working and the
+    // sticks and buttons dead - exactly the "cannot walk" report. So a profile is suggested TWICE: the full
+    // set first, and if that is refused, the same set without these paths. A second successful call for a
+    // profile replaces the first (same chapter), so the retry is well defined and loses only these.
+    auto optional = [&](const Bind& b) {
+        return b.a == g_aHaptic || b.a == g_aStickTouch || b.a == g_aIndexForce ||
+               strstr(b.path, "/input/system/") != nullptr;
+    };
     auto suggest = [&](const char* profile, const Bind* b, int n) {
         XrPath prof = XrPathOf(profile);
         if (!prof) return;
-        XrActionSuggestedBinding sb[24];
-        int m = 0;
-        for (int i = 0; i < n && m < 24; ++i) {
-            if (!b[i].a) continue;   // an optional action (haptics) the runtime refused to create
-            XrPath p = XrPathOf(b[i].path);
-            if (p) { sb[m].action = b[i].a; sb[m].binding = p; ++m; }
+        for (int pass = 0; pass < 2; ++pass) {
+            XrActionSuggestedBinding sb[24];
+            int m = 0;
+            for (int i = 0; i < n && m < 24; ++i) {
+                if (!b[i].a) continue;                       // an optional action the runtime refused to create
+                if (pass && optional(b[i])) continue;        // second pass: only what every runtime must take
+                XrPath p = XrPathOf(b[i].path);
+                if (p) { sb[m].action = b[i].a; sb[m].binding = p; ++m; }
+            }
+            if (!m) return;
+            XrInteractionProfileSuggestedBinding ipb = {};
+            ipb.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING_VALUE;
+            ipb.interactionProfile = prof; ipb.countSuggestedBindings = (uint32_t)m; ipb.suggestedBindings = sb;
+            XrResult rr = g_fn.suggestInteractionProfileBindings(g_instance, &ipb);
+            XLOG("[OLVR][XRINPUT] bindings %s%s -> r=%d (%d paths)", profile,
+                 pass ? " (without the paths a runtime may refuse)" : "", rr, m);
+            if (XrSucceeded(rr)) return;
         }
-        XrInteractionProfileSuggestedBinding ipb = {};
-        ipb.type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING_VALUE;
-        ipb.interactionProfile = prof; ipb.countSuggestedBindings = (uint32_t)m; ipb.suggestedBindings = sb;
-        XrResult rr = g_fn.suggestInteractionProfileBindings(g_instance, &ipb);
-        XLOG("[OLVR][XRINPUT] bindings %s -> r=%d (%d paths)", profile, rr, m);
     };
 
     // Oculus Touch: X/Y on the left controller, A/B on the right, menu on the left only.
@@ -637,6 +664,7 @@ static void BuildActionSet() {
     suggest("/interaction_profiles/oculus/touch_controller", touch, (int)(sizeof(touch)/sizeof(touch[0])));
 
     // Index: A/B on both controllers, squeeze force is a separate path from the analog grip.
+    // (Beta 1.2.1) [INDEXMENU] the trackpad force is the menu there: /input/system/click is the runtime's.
     const Bind index[] = {
         { g_aPose, "/user/hand/left/input/grip/pose" },   { g_aPose, "/user/hand/right/input/grip/pose" },
         { g_aAim,  "/user/hand/left/input/aim/pose" },    { g_aAim,  "/user/hand/right/input/aim/pose" },
@@ -647,6 +675,7 @@ static void BuildActionSet() {
         { g_aPrimary,   "/user/hand/left/input/a/click" }, { g_aPrimary,   "/user/hand/right/input/a/click" },
         { g_aSecondary, "/user/hand/left/input/b/click" }, { g_aSecondary, "/user/hand/right/input/b/click" },
         { g_aMenu, "/user/hand/left/input/system/click" },
+        { g_aIndexForce, "/user/hand/left/input/trackpad/force" },
         { g_aHaptic, "/user/hand/left/output/haptic" }, { g_aHaptic, "/user/hand/right/output/haptic" },
         { g_aStickTouch, "/user/hand/left/input/thumbstick/touch" }, { g_aStickTouch, "/user/hand/right/input/thumbstick/touch" },
     };
@@ -748,6 +777,19 @@ static void ReadStick(XrAction a, int hand, float* x, float* y) {
 // ignored from then on. [Input] StickAutoCenter=0 turns this off; [Input] StickDeadzone (0.00 - 0.60,
 // default 0.30) catches drift on controllers with no touch sensor.
 //
+// (Beta 1.2.1) [STICKCENTER] "Valve Index controllers on a Pimax: cannot walk - the arms move and the
+// camcorder can be grabbed, but the stick does nothing" (docs/ROADMAP.md). A profile that hands over the
+// grip and the poses but not a stick is not the shape of that bug - an active interaction profile either
+// delivers all of its bound paths or none - so the pad was being read and then thrown away HERE. Every
+// way this block could do that is now closed, because the one rule that matters is stronger than drift
+// correction: A STICK THAT IS PUSHED IS NEVER NOTHING, whatever a touch sensor claims.
+//   * a rest point is only ever learned from a stick that is (nearly) centred, so a sensor that reports
+//     "no thumb" while the stick is actually held down can no longer teach the drift fix that the pushed
+//     position IS the rest point - which made the stick read zero for the rest of the session;
+//   * a stick past kStickPushed passes through untouched even while the drift fix is armed, so the
+//     worst a lying sensor can still do is lose the drift correction, never the walk.
+// A runtime whose controller has no touch sensor at all reads -1 here and is untouched, as before.
+//
 // (Beta 1.1.4) [DEADZONE] "Miles runs but veers left, even with W on the keyboard". Three ways the mod fed him
 // a sideways push nobody asked for:
 //   1. the dead zone's default was 0.00, so an install whose ini predates the key (or one regenerated by an
@@ -763,6 +805,10 @@ static void ReadStick(XrAction a, int hand, float* x, float* y) {
 static volatile long  g_stickAutoCenter = 1;
 static volatile float g_stickDeadzone = 0.30f;
 static const float    kTriggerDeadzone = 0.12f;
+// (Beta 1.2.1) [STICKCENTER] past this length the stick is being HELD, not resting: no touch sensor and
+// no learned drift may turn it into nothing. Well past the highest dead zone (0.60) a player can set, so
+// the rule can never be what stops a deliberate push, and well under a full push so slow walking counts.
+static const float    kStickPushed = 0.45f;
 static float s_stickRest[2][2] = {};
 static bool  s_stickDrift[2] = { false, false }, s_touchBroken[2] = { false, false };
 static int   s_stickTouch[2] = { -1, -1 };   // last sample: -1 no sensor, 0 no thumb, 1 thumb on it
@@ -798,7 +844,20 @@ static void StickCenter(int hand, float* x, float* y) {
     }
     static float s_lo[2][2], s_hi[2][2];
     static ULONGLONG s_win[2] = { 0, 0 }, s_driftSince[2] = { 0, 0 };
-    if (touch == 0) {
+    // (Beta 1.2.1) [STICKCENTER] a stick that is pushed is somebody's thumb, whatever the sensor says.
+    const bool pushed = mag > kStickPushed;
+    if (touch == 0 && pushed) {
+        // The sensor claims no thumb while the stick is well off centre - it can never be trusted here,
+        // and in particular it must not teach the drift fix a "rest point" at a pushed position (that is
+        // what left the stick reading zero for good). Stop using it; the raw stick and the dead zone are
+        // more than enough on their own.
+        s_touchBroken[hand] = true; s_stickDrift[hand] = false;
+        s_stickRest[hand][0] = s_stickRest[hand][1] = 0.0f;
+        s_win[hand] = 0; s_driftSince[hand] = 0;
+        touch = -1;
+        XLOG("[OLVR][STICKCENTER] the %s stick is pushed (%.2f %.2f) with no thumb reported on it - its touch sensor is not used",
+             hand ? "right" : "left", rx, ry);
+    } else if (touch == 0) {
         if (!s_win[hand] || now - s_win[hand] > 1000) { s_win[hand] = now; s_lo[hand][0] = s_hi[hand][0] = rx; s_lo[hand][1] = s_hi[hand][1] = ry; }
         if (rx < s_lo[hand][0]) s_lo[hand][0] = rx; if (rx > s_hi[hand][0]) s_hi[hand][0] = rx;
         if (ry < s_lo[hand][1]) s_lo[hand][1] = ry; if (ry > s_hi[hand][1]) s_hi[hand][1] = ry;
@@ -819,7 +878,7 @@ static void StickCenter(int hand, float* x, float* y) {
     } else s_win[hand] = 0;
     s_stickTouch[hand] = touch;
     float ox = rx, oy = ry;
-    if (s_stickDrift[hand] && touch >= 0) {
+    if (s_stickDrift[hand] && touch >= 0 && !pushed) {   // (Beta 1.2.1) a pushed stick always passes
         if (touch == 0) ox = oy = 0.0f;
         else { ox -= s_stickRest[hand][0]; oy -= s_stickRest[hand][1]; }
     }
@@ -954,6 +1013,33 @@ static void DevFakeHands(OLXrPose hand[2], unsigned* valid, XrTime t) {
     *valid = 3u;
 }
 
+// (Beta 1.2.1) [PADLATCH] A press has to survive the game's OWN poll rate.
+// The game reads this pad on its clock (UE3's tick, ~16 ms at 60 fps, and 100 ms or more in the hitches
+// the log records as frames slower than 40 ms - level streaming, texture uploads, the doorways and ledges
+// where players press jump / use). A press that starts and ends between two reads never happened for the
+// game, and ReliablePadButtons() over in d3d9_proxy.cpp cannot fix that: it only extends a press it has
+// already SEEN. So the guarantee belongs here, on the publisher, which runs at display rate: every
+// discrete button stays down in the published snapshot for kPadPressHoldMs, however quick the finger was.
+// That is longer than any game frame a player can still act in, so at least one poll sees it.
+// Only the release is delayed - nothing is ever held for a second press, and the sticks, grips and
+// triggers are level-triggered and untouched.
+static const ULONGLONG kPadPressHoldMs = 150;
+static ULONGLONG s_pressUntil[7] = {};       // per OLXR_BTN_* bit; worker thread only
+static unsigned LatchPresses(unsigned down) {
+    const ULONGLONG now = GetTickCount64();
+    unsigned out = down;
+    for (int i = 0; i < 7; ++i) {
+        const unsigned bit = 1u << i;
+        if (down & bit) s_pressUntil[i] = now + kPadPressHoldMs;
+        else if (now < s_pressUntil[i]) out |= bit;
+    }
+    return out;
+}
+// A button the mod swallowed on purpose (the recenter chord) must not come back through the latch.
+static void LatchForget(unsigned bits) {
+    for (int i = 0; i < 7; ++i) if (bits & (1u << i)) s_pressUntil[i] = 0;
+}
+
 // Sync + publish. WORKER THREAD ONLY, once per xrWaitFrame. The whole struct is built locally
 // and copied under the lock in one go, so the game thread can never see a half-updated pad.
 static void SyncInput(XrTime displayTime) {
@@ -984,6 +1070,16 @@ static void SyncInput(XrTime displayTime) {
     if (ReadBool(g_aClick, 0)) p.buttons |= OLXR_BTN_LSTICK;
     if (ReadBool(g_aClick, 1)) p.buttons |= OLXR_BTN_RSTICK;
     if (ReadBool(g_aMenu, 0) || ReadBool(g_aMenu, 1)) p.buttons |= OLXR_BTN_MENU;
+    // (Beta 1.2.1) [INDEXMENU] the Valve Index menu: a firm press on the LEFT trackpad. Hysteresis so a
+    // thumb resting near it, or the sensor's own noise, cannot open the pause menu; ReadFloat answers 0
+    // when the runtime has no such path, which leaves the bit off exactly as before this existed.
+    if (g_aIndexForce) {
+        static bool s_idxDown = false;
+        const float f = ReadFloat(g_aIndexForce, 0);
+        if (!s_idxDown && f > 0.40f) s_idxDown = true;
+        else if (s_idxDown && f < 0.20f) s_idxDown = false;
+        if (s_idxDown) p.buttons |= OLXR_BTN_MENU;
+    }
 
     // Both stick clicks recenter from the VR controllers. Swallow the two game buttons while the
     // chord is held so recentering cannot also toggle night vision or trigger a debug binding.
@@ -994,7 +1090,10 @@ static void SyncInput(XrTime displayTime) {
         XLOG("[OLVR][XRINPUT] both-stick recenter");
     }
     s_recenterChord = recenterChord;
-    if (recenterChord) p.buttons &= ~(OLXR_BTN_LSTICK | OLXR_BTN_RSTICK);
+    if (recenterChord) {
+        p.buttons &= ~(OLXR_BTN_LSTICK | OLXR_BTN_RSTICK);
+        LatchForget(OLXR_BTN_LSTICK | OLXR_BTN_RSTICK);   // (Beta 1.2.1) [PADLATCH] the chord holds nothing
+    }
 
     // Hand poses, expressed in the SAME recenter frame the head position uses, so anything built
     // on them later (gestures, hand-relative movement) shares one coordinate system with the lean.
@@ -1061,6 +1160,9 @@ static void SyncInput(XrTime displayTime) {
     }
 
     OLProxy_MouseUseSample(p.buttons, p.gripL, r == XR_SUCCESS_VALUE);
+    // (Beta 1.2.1) [PADLATCH] the mouse path above keeps the RAW edges (a tap between two XR samples is
+    // still a down and an up in Windows' own queue); the pad the game polls gets the guaranteed press.
+    p.buttons = LatchPresses(p.buttons);
     AcquireSRWLockExclusive(&g_pubLock);
     g_padPub = p; g_padPubValid = 1;
     ReleaseSRWLockExclusive(&g_pubLock);

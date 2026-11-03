@@ -16,7 +16,9 @@ mouse_hook = menu[menu.index('static LRESULT CALLBACK LLMouseProc('):menu.index(
 adapter = proxy[proxy.index('// [MOUSEUSE] The requested'):proxy.index('// OpenXR and UE3/XInput are sampled')]
 mapping = proxy[proxy.index('static WORD ReliablePadButtons('):proxy.index('// [HANDCAM] Right grip')]
 hook = proxy[proxy.index('static DWORD WINAPI Hook_XiGetState('):proxy.index('// [HAPTICS] XInputSetState')]
-wiring = xr[xr.index('    OLProxy_MouseUseSample(p.buttons'):xr.index('    AcquireSRWLockExclusive(&g_pubLock);', xr.index('    OLProxy_MouseUseSample(p.buttons'))]
+# The one call, not the block around it: the [PADLATCH] lines that follow it are checked by tests/pad_press_test.py.
+wiring_line = '    OLProxy_MouseUseSample(p.buttons, p.gripL, r == XR_SUCCESS_VALUE);'
+wiring = xr[xr.index(wiring_line):xr.index(wiring_line) + len(wiring_line)]
 rewrite = prompts[prompts.index('struct ActionWord'):prompts.index('// The first few distinct rewrites')]
 interact = (ROOT / 'src/ol_interact.cpp').read_text()
 drop = interact[interact.index('            const bool dropDown ='):interact.index(';', interact.index('            const bool dropDown =')) + 1]
@@ -154,19 +156,35 @@ int main() {
     now+=11;Publish();assert(Poll()==0x2000); // retain the base gamepad extension for crouch
     now+=100;Publish();assert(Poll()==0);assert(events.empty());
     Idle();Publish(OLXR_BTN_A|OLXR_BTN_Y);assert(Poll()==0x9000);
-    // (Beta 1.1.4) left grip + X and left grip + B no longer open the notes / notebook menus; the
-    // grip is still sprint, so those presses leave the run alone.
+    // (Beta 1.1.4) left grip + X no longer opens the notes / notebook menus; the grip is still sprint,
+    // so crouch stays silent under it.
     Idle();Publish(OLXR_BTN_X,1);assert(Poll()==0x0100 && !DropRequested());
-    Idle();Publish(OLXR_BTN_B,1);assert(Poll()==0x0100);
+    // (Beta 1.2.1) [MOUSEUSE] ...but Use is NOT silent under the sprint any more. The old rule was written
+    // for the removed 1.1.4 chords, and what it did in practice was swallow the Use of every player holding
+    // the left grip - i.e. sprinting - so "opening a door does not work every time". Sprint and Use now
+    // travel together, exactly as a player expects when they run at a door.
+    Idle();events.clear();Publish(OLXR_BTN_B,1);assert(Poll()==0x0100);
+    assert((events==std::vector<bool>{true}) && g_mouseUseState.held);
+    Publish();assert((events==std::vector<bool>{true,false}));
+    // The only grip that still silences Use is the one the MOD owns this frame (a door handle, a ledge, a
+    // battery): the hands-on door has already told the game to open, so a Use on top would close it again.
+    Idle();events.clear();OLProxy_SetLeftGripOwned(1);Publish(OLXR_BTN_B,1);
+    assert(events.empty() && !g_mouseUseState.held);
+    // A press that began while Use was blocked never becomes a delayed click: the player lets go and
+    // presses again - and then it is theirs.
+    OLProxy_SetLeftGripOwned(0);Publish();Publish(OLXR_BTN_B,1);
+    assert((events==std::vector<bool>{true}));
+    Idle();assert((events==std::vector<bool>{true,false}));
     // (Beta 1.1.9) left grip + Y opens the NOTES list - D-pad left (ShowRecordingMenu), 0x0004 - not the
     // notebook's evidence tab. The documents list opens by looking at the held document instead.
-    Idle();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0004);
+    Idle();events.clear();Publish(OLXR_BTN_Y,1);assert(Poll()==0x0004);
     assert(events.empty());
-    // Releasing the modifier under a held B never creates a mouse click.
-    Publish(OLXR_BTN_B,1);Publish(OLXR_BTN_B,0);assert(events.empty());
-    Idle();Publish(OLXR_BTN_B);assert(events.size()==1);Publish(OLXR_BTN_B,1);
-    assert((events==std::vector<bool>{true,false}));Publish(OLXR_BTN_B,0);assert(events.size()==2);
-    puts("PASS: X crouch, original gamepad timing, A/Y and grip+Y only (grip+X/B removed)");
+    // Taking a grip mid-press ends the Use, and releasing that grip does not turn into a new click.
+    events.clear();OLProxy_SetLeftGripOwned(1);Publish(OLXR_BTN_B,1);Publish(OLXR_BTN_B,0);assert(events.empty());
+    OLProxy_SetLeftGripOwned(0);
+    Idle();Publish(OLXR_BTN_B);assert(events.size()==1);
+    Publish();assert((events==std::vector<bool>{true,false}));   // let go: one click, one release
+    puts("PASS: X crouch, gamepad timing, A/Y, grip+Y, and Use under sprint but not under a mod-owned grip");
 
     Idle();events.clear();gameMenu=true;Publish();Poll();
     Publish(OLXR_BTN_B);assert(Poll()==0x2000);assert(events.empty());

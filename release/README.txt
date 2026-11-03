@@ -96,6 +96,16 @@ QUEST 3 CONTROLS
   shortcut keep their original bindings. Set [Input] MouseUse=0 in outlastvr.ini to
   restore X for use and B for crouch. The control images show the old layout.
 
+  Sprinting does not take B away: run at a door and press B, it opens.
+
+  VALVE INDEX CONTROLLERS
+  The same layout on Valve's hardware - A/B on both controllers, both sticks,
+  both grips, both triggers. Valve's system button belongs to SteamVR and never
+  reaches the mod, so the pause menu is a firm press on the LEFT TRACKPAD, and
+  left grip + that press opens VR SETTINGS. Walking, turning, sprinting,
+  crouching (left A), use (right B), jumping (right A) and reload (left B) are
+  all bound; nothing about the Quest controls above changes.
+
 --------------------------------------------------------------------------------
 HANDS
 --------------------------------------------------------------------------------

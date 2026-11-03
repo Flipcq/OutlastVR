@@ -95,6 +95,11 @@ in the game's settings. Menus and the left grip + Menu shortcut keep their origi
 Set `[Input] MouseUse=0` in `outlastvr.ini` to restore X for use and B for crouch.
 The control images above and below show the original layout.
 
+**Valve Index controllers** use the same layout, with Valve's own buttons: A/B on both controllers,
+both sticks, both grips and the triggers. Valve's system button belongs to SteamVR and never reaches
+the mod, so the pause menu and **VR settings** are on a firm press on the **left trackpad** (left grip +
+that press opens VR settings). Everything below stays the same - the Quest bindings are unchanged.
+
 More hand-gesture detail is in [`release/controls/Outlast1VR_Hands_On.png`](release/controls/Outlast1VR_Hands_On.png)
 and in the [player README](release/README.txt).
 

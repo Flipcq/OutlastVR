@@ -624,3 +624,61 @@ animacao da escalada".
 - Found while editing the menu: every `OLInteract_Set()` in `ol_menu.cpp` was one index past its `Get` (the
   "Walk around for real" row read and wrote the framed viewfinder, "Catch ledges automatically" wrote index
   13, out of range, and did nothing). All of them now set the option they show.
+
+## Beta 1.2.1 changes: the jump / use press, and the Valve Index
+
+User: "Parece que o botao de pular e abrir porta nao esta sendo computado corretamente em 100% das vezes ...
+os controles da Valve nao funcionam corretamente no Mod, pesquise na internet e veja como implementar o
+funcionamento correto dos controles da Valve sem quebrar nem substituir o funcionamento dos controles atuais
+baseados no meta quest".
+
+Two separate leaks were making A (jump / vault) and B (use / open) miss, plus the two Valve Index bugs that
+were already on the roadmap. Nothing in the Quest path was moved; the only Quest-visible change is that a
+press can no longer be lost.
+
+- **`[PADLATCH]`** (`src/ol_xr.cpp`, `LatchPresses` / `LatchForget`). The pad the game polls is published by
+  the submit worker at display rate and read by UE3 on its own tick. `ReliablePadButtons` extends a press it
+  has *seen* by 100 ms, so a press that started and ended inside one slow game frame was invisible for good -
+  and the frames where that happens are the doorways, ledges and texture uploads the log already records
+  (>40 ms). Every discrete `OLXR_BTN_*` bit now stays down in the published snapshot for 150 ms
+  (`kPadPressHoldMs`), which is longer than any frame a player can still act in, so at least one poll sees it.
+  Level-triggered inputs (sticks, grips, triggers) are untouched; the mouse path keeps the raw edges (a tap
+  between two XR samples is still a down and an up in Windows' queue) and the both-stick recenter chord calls
+  `LatchForget` so a swallowed press cannot come back 150 ms later as a sprint.
+- **Use under sprint** (`src/d3d9_proxy.cpp`, `OLProxy_MouseUseSample`). The "no Use while the left grip is
+  held" rule was written for the Beta 1.1.4 chords (left grip + B / + X opened the notebook); those chords are
+  gone, and all the rule still did was swallow B of every player holding the left grip - which is sprint. So
+  nobody could open a door while running at it. The grip that silences Use now is the one the mod itself is
+  using that frame: `OLProxy_SetLeftGripOwned(ip.blockGripL)` from the interact tick (a handle, a ledge, a
+  battery, a document), fresh for 400 ms, because a hands-on door already told the game to open and a Use on
+  top of it would close it again. With no tick talking (the hands-on layer off) the old grip rule stays.
+  `MapPadButtons` was not touched: left grip + X still does not crouch, and the Y / notes chord is unchanged.
+- **`[STICKCENTER]` a pushed stick is never nothing** (`src/ol_xr.cpp`, `StickCenter`, `kStickPushed = 0.45`).
+  This is the Valve Index / Pimax "cannot walk, but the grip still works" report. An active interaction
+  profile delivers all of its bound paths, so the stick was read and then thrown away here: a runtime that
+  reports no thumb on the stick *while the stick is held down* taught the drift fix that the pushed position
+  was the rest point (`s_stickRest`), and `if (touch == 0) ox = oy = 0` then read the stick as nothing for the
+  rest of the session. Two rules now hold: a rest point is only learned from a stick that is (nearly) centred,
+  and a stick past `kStickPushed` passes through untouched even while the drift fix is armed. The genuine
+  drift fix is unchanged for a stick that really rests off centre.
+- **`[INDEXMENU]` a menu the Index can actually reach** (`src/ol_xr.cpp`). `/input/system/click` is in the
+  Index profile but "may be unavailable for application use" (OpenXR interaction profiles) and SteamVR keeps
+  it for the dashboard - Valve's own tracker says a click there never reaches an app - so on an Index there
+  was no pause menu and no way into this mod's settings. The trackpads were unused; a firm press on the LEFT
+  one (`/input/trackpad/force`, a new optional FLOAT action `menupress`, 0.40 press / 0.20 release for
+  hysteresis) now sets `OLXR_BTN_MENU`, so the release-to-Start and left-grip-chord logic that already exists
+  works unchanged. `system/click` stays bound for the runtimes that do deliver it.
+- **`[PROFILE]` one refused path cannot drop a profile** (`src/ol_xr.cpp`, `suggest`). Per the OpenXR input
+  chapter, a suggested binding outside a profile's allowlist makes `xrSuggestInteractionProfileBindings`
+  return `XR_ERROR_PATH_UNSUPPORTED` for the *whole* call, which leaves that profile with no sticks and no
+  buttons while poses may already have come from elsewhere. Every profile is now suggested twice: the full
+  set, then the same set without the paths a runtime may refuse or never deliver (haptics, stick touch,
+  `system/click`, trackpad force). A second successful call for a profile replaces the first, so the retry is
+  well defined, and both results are logged with the path count.
+- Tests: `tests/pad_press_test.py` (a tap between two polls at 10 and 5 fps, no welded presses, the chord
+  forgetting its latch), `tests/stick_center_test.py` (a lying touch sensor, no rest learned from a push, real
+  drift still fixed - it fails against the old code), `tests/xr_valve_bindings_test.py` (every bound path
+  against the OpenXR 1.1 allowlists per profile, the four face buttons, the Index menu, the two-pass retry,
+  and the Oculus Touch table pinned exactly so the Quest bindings cannot move), plus the updated
+  `tests/mouse_use_test.py` for the new grip rule.
+

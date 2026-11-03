@@ -6,6 +6,36 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
 
 ## On `main`, not in a release yet
 
+## Done in Beta 1.2.1 (input reliability and the Valve Index)
+
+- **Jump / use not registering every time.** Two separate leaks, both closed:
+  - **A press could fall between two game polls.** UE3 reads the fabricated pad on its own tick, and
+    `ReliablePadButtons` only extends a press it has already seen - so a tap that started and ended inside a
+    slow frame (the 40 ms+ frames the log records: doorways, ledges, texture uploads) never reached the game
+    at all. The publisher now holds every discrete button for 150 ms in the snapshot it publishes
+    (`[PADLATCH]`, `LatchPresses` in `src/ol_xr.cpp`), so at least one poll always sees it. The mouse path
+    keeps the raw edges, and the recenter chord clears its own latch. `tests/pad_press_test.py`.
+  - **Sprint silenced Use.** "No Use while the left grip is held" was written for the removed Beta 1.1.4
+    chords (left grip + B opened the notebook); what it did in practice was swallow B of every player who
+    was sprinting - i.e. everybody who ran at a door. Only a grip the mod itself is using that frame (a
+    handle, a ledge, a battery - `OLProxy_SetLeftGripOwned`) silences Use now. `MapPadButtons` is untouched;
+    `OLProxy_MouseUseSample` in `src/d3d9_proxy.cpp`, `tests/mouse_use_test.py`.
+- **Valve Index controllers: cannot walk, and no menu** (the item from the bug list below).
+  - **Walking.** The profile was never the problem: `StickCenter` was. A runtime that reports "no thumb" on
+    the stick while the stick is actually held down taught the drift fix that the pushed position WAS the
+    rest point, and the stick then read zero for the rest of the session. A stick past 0.45 now always
+    passes, and no rest point is learned from a pushed stick (`[STICKCENTER]`, `tests/stick_center_test.py`).
+  - **The menu.** `/input/system/click` is the runtime's button ("may be unavailable for application use",
+    and Valve's own tracker says a click there never reaches an app), so on an Index there was no way to
+    reach the pause menu or this mod's settings at all. A firm press on the **left trackpad**
+    (`/input/trackpad/force`, unused until now) is the menu there. `system/click` stays bound for runtimes
+    that do deliver it.
+  - **A refused path cannot drop the whole profile.** One path outside a profile's allowlist makes
+    `xrSuggestInteractionProfileBindings` fail for the *whole* call. Every profile is now suggested twice:
+    the full set, then the set without the paths a runtime may refuse (haptics, stick touch, system button,
+    trackpad force). `tests/xr_valve_bindings_test.py` also checks every bound path against the OpenXR 1.1
+    interaction-profile allowlists, and pins the Oculus Touch table so the Quest bindings cannot move.
+
 ## Done in Beta 1.1.9 (document menu enhancement)
 
 - **A confidential document on Miles's left shoulder.** A `Document-01` StaticMesh hangs from the
@@ -46,20 +76,10 @@ evidence for any bug: `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, overwritten 
   - `[LENSFIT]` (`src/ol_ue3.cpp`): each eye has its own off-centre frustum. This already cut the
     night-vision lamp's light once (`[NVEYES]`), so the light's screen bounds may be computed for
     a centred view.
-- **Valve Index controllers on a Pimax headset: cannot walk.** The arms move and the camcorder can
-  be grabbed, but there is no stick movement. Known so far:
-  - The `valve/index_controller` bindings in `src/ol_xr.cpp` include the thumbstick and its touch
-    sensor.
-  - The working grab means the Index profile is active.
-  - The log names the interaction profile per hand, and the `[STICKCENTER]` lines show the raw and
-    sent stick values. That is the first thing to read.
-
-  Ideas:
-  - also bind the Index trackpad to walking;
-  - retry the bindings without the optional paths (`system/click`, haptics, touch) if a runtime
-    rejects the whole profile;
-  - make sure `[STICKCENTER]` can never zero a healthy stick (`[Input] StickAutoCenter=0` turns it
-    off for a test).
+- **Valve Index controllers on a Pimax headset: cannot walk** - FIXED in Beta 1.2.1 (see
+  "Done in Beta 1.2.1"). The profile was active all along; `StickCenter` was throwing the stick away when a
+  runtime reported no thumb on it. The Index also gained a menu (left trackpad force) and a two-pass
+  suggestion that no runtime's refusal can take the whole profile down.
 - **Depth feels "a little off"**, and the **World size slider "messes with the IPD"**. World size
   (`[WORLDSIZE]`, `src/ol_ue3.cpp`) scales the eye distance and head movement together. That is how
   world scale works, but it changes the eye distance you feel. The eyes otherwise use the

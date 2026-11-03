@@ -1869,12 +1869,33 @@ static bool MouseUseContext() {
     return g_mouseUse && !g_mouseUseStopping && g_gameWnd &&
            GetForegroundWindow() == g_gameWnd && !OLMenu_Visible() && !OLUE3_InGameMenu();
 }
+// (Beta 1.2.1) [MOUSEUSE] Sprint is not a gate on Use any more - a grip the MOD owns is.
+// The old rule was "no Use while the left grip is held", written for the Beta 1.1.4 chords (left grip + B
+// and left grip + X opened the notebook). Those chords are gone, and all the rule still did was swallow the
+// Use click of every player who happened to be holding the left grip - and the left grip is SPRINT. Running
+// up to a door and pressing B did nothing at all: "opening a door does not work every time". The one grip
+// that really must not also be a Use is the grip the mod itself is using this frame (a door handle, a ledge,
+// a battery, a document), because hands-on doors already tell the game to open; B on top of that would send
+// a second open/close. The interact tick is the authority on that (OLProxy_SetLeftGripOwned, fresh for
+// 400 ms), and when it has nothing to say the old grip rule still applies - a hands-on layer that is off
+// behaves exactly as it did before.
+static volatile LONG      g_leftGripOwned = 0;
+static volatile ULONGLONG g_leftGripOwnedMs = 0;
+extern "C" void OLProxy_SetLeftGripOwned(int owned) {
+    InterlockedExchange(&g_leftGripOwned, owned ? 1 : 0);
+    g_leftGripOwnedMs = GetTickCount64();
+}
+static bool LeftGripBlocksUse(float gripL) {
+    const ULONGLONG ms = g_leftGripOwnedMs;
+    if (ms && GetTickCount64() - ms < 400) return g_leftGripOwned != 0;   // the interact tick knows
+    return gripL > 0.6f;                                                 // nothing to ask: the old rule
+}
 // Called on every RAW XR sample, before publication. Even a whole tap
 // between game polls reaches Windows as down/up; there is no 100 ms mouse tail.
 extern "C" void OLProxy_MouseUseSample(unsigned buttons, float gripL, int focused) {
     AcquireSRWLockExclusive(&g_mouseUseLock);
     g_mouseUseSampleMs = GetTickCount64();
-    const bool allowed = focused && MouseUseContext() && gripL <= 0.6f;
+    const bool allowed = focused && MouseUseContext() && !LeftGripBlocksUse(gripL);
     const bool canStart = OLUE3_GameplayActive() && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000);
     if (!focused) g_mouseUseState.Cancel(SendUseMouse);
     else g_mouseUseState.Sample((buttons & OLXR_BTN_B) != 0, allowed, canStart, SendUseMouse);
@@ -2106,6 +2127,9 @@ static DWORD WINAPI Hook_XiGetState(DWORD idx, OLXiState* st) {
         // knob or a battery (they must not also sprint or toggle the camcorder), and the presses
         // the gestures ask for (raise/lower = RB, battery inserted = Y).
         OLInteractPad ip = {}; OLInteract_Pad(p, &ip);
+        // (Beta 1.2.1) [MOUSEUSE] tell the 90 Hz Use sampler which left grips are the mod's own this frame,
+        // so a handle / ledge / battery grab does not also fire Use while plain sprint no longer blocks it.
+        OLProxy_SetLeftGripOwned(ip.blockGripL ? 1 : 0);
         if (ip.camUp >= 0) g_camcorderUp = ip.camUp != 0;
         OLXrPad pg = p;
         if (ip.blockGripL) pg.gripL = 0.0f;

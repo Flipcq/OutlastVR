@@ -80,6 +80,12 @@ Most of this mod was built and tested on a PC where the developer could not wear
 - **The log.** Everything is in `%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt`, with a `[TAG]` per
   feature. It is overwritten every launch. When players report a bug, ask for this file, and ask
   them to send it before they start the game again.
+- **The checks in `tests/`.** `python3 tests/<name>.py` (needs `g++`) compiles the real code out of
+  `src/` against synthetic Windows/OpenXR stubs and asserts the rule it is named for: stick and
+  trigger shaping, the pad press timing and the interaction-profile bindings, the climb decisions,
+  the camcorder gestures, the mouse/Use path. They are fast, they need no headset, and they are the
+  cheapest way to find out that a change broke the thing next to it. Like the rest of the mod they
+  prove the logic, not the hardware.
 
 ## House rules
 
