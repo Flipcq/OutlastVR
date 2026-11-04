@@ -673,8 +673,8 @@ namespace Outlast1VR
         // Menu (left) / Meta (right), grip.
         static readonly string[,] CallTitle =
         {
-            { "LEAN LEFT", "RELOAD (Y)", "MOVE", "USE / OPEN (X)", "PAUSE (MENU)", "SPRINT / GRAB" },
-            { "LEAN RIGHT", "CROUCH (B)", "TURN", "JUMP (A)", "QUEST MENU (META)", "TAKE CAMCORDER" },
+            { "LEAN LEFT", "RELOAD (Y)", "MOVE", "CROUCH (X)", "PAUSE (MENU)", "SPRINT / GRAB" },
+            { "LEAN RIGHT", "USE / OPEN (B)", "TURN", "JUMP (A)", "QUEST MENU (META)", "TAKE CAMCORDER" },
         };
         static readonly string[,] CallSub =
         {

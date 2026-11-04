@@ -1784,19 +1784,6 @@ namespace Outlast1VR
             box.AddRectangle(new RectangleF(-sw / 2, -sh / 2, sw, sh));
             using (Matrix m = new Matrix()) { m.Translate(scx, scy); m.Rotate(-5f); box.Transform(m); }
             stamp.Add(vr);
-            // the release, struck under it at a slightly different angle
-            GraphicsPath rel = new GraphicsPath();
-            rel.AddString(Program.Release, fam, (int)FontStyle.Bold, 26f, PointF.Empty, StringFormat.GenericTypographic);
-            RectangleF rb = rel.GetBounds();
-            float rw = rb.Width + 22, rh = rb.Height + 16, rcx = scx + 6, rcy = baseY + 40;
-            using (Matrix m = new Matrix())
-            {
-                m.Translate(rcx, rcy); m.Rotate(-2.5f); m.Translate(-(rb.X + rb.Width / 2), -(rb.Y + rb.Height / 2));
-                rel.Transform(m);
-            }
-            GraphicsPath relBox = new GraphicsPath();
-            relBox.AddRectangle(new RectangleF(-rw / 2, -rh / 2, rw, rh));
-            using (Matrix m = new Matrix()) { m.Translate(rcx, rcy); m.Rotate(-2.5f); relBox.Transform(m); }
 
             Color ink = Color.FromArgb(255, 222, 244, 222), rust = Color.FromArgb(255, 236, 104, 34);
             title = new Bitmap(TitleW, TitleH, PixelFormat.Format32bppArgb);
@@ -1808,8 +1795,6 @@ namespace Outlast1VR
                     foreach (GraphicsPath p in word) { g.FillPath(b, p); g.DrawPath(bleed, p); }
                 using (SolidBrush b = new SolidBrush(rust)) g.FillPath(b, vr);
                 using (Pen p = new Pen(rust, 5f)) { p.LineJoin = LineJoin.Miter; g.DrawPath(p, box); }
-                using (SolidBrush b = new SolidBrush(rust)) g.FillPath(b, rel);
-                using (Pen p = new Pen(rust, 3f)) { p.LineJoin = LineJoin.Miter; g.DrawPath(p, relBox); }
             }
             // distress: worn ink, holes, scratches
             int[] px = U.ReadPixels(title);
@@ -2948,85 +2933,25 @@ namespace Outlast1VR
         void DrawCredit(Graphics g, double t, double ua)
         {
             double a = ua * U.Smooth(1.95, 2.4, t); if (a < 0.01) return;
-            int x = 58, y = 616;
             if (logo != null)
             {
+                int lw = 40, lh = (int)((float)logo.Height * lw / logo.Width);
+                int x = W - lw - 16, y = 16;
                 DrawImageA(g, logo, x, y, a);
-                pen.Width = 1.5f; pen.Color = U.A(Color.FromArgb(150, 130, 230, 145), a); g.DrawEllipse(pen, x - 1, y - 1, logo.Width + 1, logo.Height + 1);
+                pen.Width = 1.5f; pen.Color = U.A(Color.FromArgb(150, 130, 230, 145), a); g.DrawEllipse(pen, x - 1, y - 1, lw + 1, lh + 1);
+                // crédito menor ao lado do logo, canto superior direito
+                using (Font fSmall = new Font(fCredit.FontFamily, 11f, FontStyle.Bold))
+                {
+                    Text(g, "VR mod made by StrikeZoneVR", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + lw + 10, y + lh / 2 - 5, true);
+                }
             }
-            int tx = logo != null ? x + logo.Width + 16 : x;
-            Text(g, "VR mod made by StrikeZoneVR", fCredit, U.A(Color.FromArgb(240, 222, 244, 222), a), tx, y + 20, true);
         }
 
         // ---------------- camcorder OSD ----------------
 
         void DrawOsd(Graphics g, double t)
         {
-            if (t > 1.12) Corners(g, 0.9);
-            if (t > 1.2)
-            {
-                bool rec = t >= 1.5;
-                if (rec)
-                {
-                    double rate = launchAt >= 0 ? 3.0 : 1.0;
-                    bool on = ((t - 1.5) * rate % 1.0) < 0.62;
-                    if (on)
-                    {
-                        sb.Color = Color.FromArgb(70, 255, 40, 30); g.FillEllipse(sb, 52, 40, 23, 23);
-                        sb.Color = RecRed; g.FillEllipse(sb, 56, 44, 15, 15);
-                    }
-                    Text(g, "REC", fRec, Osd, 80, 40, true);
-                }
-                else Text(g, "STBY", fRec, Osd, 56, 40, true);
-                Text(g, TimeCode(Math.Max(0, t - 1.5)), fTc, Osd, 150, 41, true);
-                Text(g, page == PageSettings ? "SP   TAPE 02" : page == PageControls ? "SP   TAPE 03" : "SP   TAPE 01", fOsdSm, U.A(Osd, 0.8), 58, 68, true);
-            }
-            if (t > 1.3)
-            {
-                // battery
-                pen.Width = 1.6f; pen.Color = Osd;
-                g.DrawRectangle(pen, 1178, 44, 36, 16);
-                Fill(g, Osd, 1214, 48, 4, 8);
-                for (int k = 0; k < 4; k++)
-                {
-                    bool full = k < 3 || ((int)(t * 1.5)) % 2 == 0;
-                    if (full) Fill(g, Osd, 1181 + k * 8, 47, 6, 10);
-                }
-                // night vision
-                sb.Color = Osd; g.FillRegion(sb, moon);
-                TextRight(g, "NIGHT VISION", fOsdMid, Osd, 1168, 44, true);
-                DrawSpeaker(g, t);
-                // zoom bar
-                Text(g, "T", fOsdSm, U.A(Osd, 0.8), 1228, 134, true);
-                Text(g, "W", fOsdSm, U.A(Osd, 0.8), 1228, 326, true);
-                Fill(g, U.A(Osd, 0.6), 1232, 152, 2, 170);
-                for (int k = 0; k <= 10; k++) Fill(g, U.A(Osd, 0.6), 1228, 152 + k * 17, k % 5 == 0 ? 10 : 6, 1);
-                float zy = (float)(300 + Math.Sin(t * 0.37) * 5);
-                sb.Color = Osd; g.FillPolygon(sb, new[] { new PointF(1222, zy - 5), new PointF(1222, zy + 5), new PointF(1229, zy) });
-            }
-            if (t > 1.36)
-            {
-                DateTime d = new DateTime(2013, 10, 31, 23, 57, 13).AddSeconds(Math.Max(0, t - 1.36));
-                TextRight(g, d.ToString("MMM dd yyyy", CultureInfo.InvariantCulture).ToUpperInvariant(), fOsdMid, Osd, 1222, 646, true);
-                TextRight(g, d.ToString("h:mm:ss tt", CultureInfo.InvariantCulture), fTc, Osd, 1222, 664, true);
-            }
-            if (t > 1.45 && heavyReady && page == PageMain) DrawFocus(g, t);
-        }
-
-        static string TimeCode(double s)
-        {
-            int f = (int)((s % 1.0) * 30), sec = (int)s;
-            return string.Format(CultureInfo.InvariantCulture, "{0:00}:{1:00}:{2:00}:{3:00}", sec / 3600, (sec / 60) % 60, sec % 60, f);
-        }
-
-        void Corners(Graphics g, double a)
-        {
-            pen.Width = 2.2f; pen.Color = U.A(Osd, a);
-            int e = 30, arm = 44;
-            g.DrawLine(pen, e, e, e + arm, e); g.DrawLine(pen, e, e, e, e + arm);
-            g.DrawLine(pen, W - e, e, W - e - arm, e); g.DrawLine(pen, W - e, e, W - e, e + arm);
-            g.DrawLine(pen, e, H - e, e + arm, H - e); g.DrawLine(pen, e, H - e, e, H - e - arm);
-            g.DrawLine(pen, W - e, H - e, W - e - arm, H - e); g.DrawLine(pen, W - e, H - e, W - e, H - e - arm);
+            if (t > 1.3) DrawSpeaker(g, t);
         }
 
         void DrawSpeaker(Graphics g, double t)
@@ -3048,23 +2973,6 @@ namespace Outlast1VR
                 g.DrawArc(pen, x + 8, y + 3, 9, 11, -50, 100);
                 g.DrawArc(pen, x + 8, y - 1, 15, 19, -50, 100);
             }
-        }
-
-        void DrawFocus(Graphics g, double t)
-        {
-            int sx = (int)Math.Round(Math.Sin(t * 0.61) * 5 + Math.Sin(t * 1.73 + 1.3) * 2);
-            int sy = (int)Math.Round(Math.Sin(t * 0.47 + 2.1) * 4 + Math.Sin(t * 1.29) * 1.5);
-            double c = t % 11.0;
-            double hunt = c < 1.3 ? Math.Sin(c * 14) * 0.08 * (1 - c / 1.3) : 0;
-            float cx = focusBg.X - 20 + sx, cy = focusBg.Y - 20 + sy;
-            float w = (float)(118 * (1 + hunt)), h = (float)(150 * (1 + hunt));
-            float l = cx - w / 2, r = cx + w / 2, tp = cy - h / 2, b = cy + h / 2, arm = 14;
-            pen.Width = 1.6f; pen.Color = U.A(Osd, 0.55);
-            g.DrawLine(pen, l, tp, l + arm, tp); g.DrawLine(pen, l, tp, l, tp + arm);
-            g.DrawLine(pen, r, tp, r - arm, tp); g.DrawLine(pen, r, tp, r, tp + arm);
-            g.DrawLine(pen, l, b, l + arm, b); g.DrawLine(pen, l, b, l, b - arm);
-            g.DrawLine(pen, r, b, r - arm, b); g.DrawLine(pen, r, b, r, b - arm);
-            Text(g, "AF", fOsdSm, U.A(Osd, 0.5), r + 6, tp - 2, true);
         }
 
         void DrawWindowButtons(Graphics g)
