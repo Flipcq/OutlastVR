@@ -1838,11 +1838,11 @@ namespace Outlast1VR
                         p.LineJoin = LineJoin.Round;
                         foreach (GraphicsPath gp in word) g.DrawPath(p, gp);
                     }
-                    using (Pen p = new Pen(Color.FromArgb(10, 255, 120, 40), pw)) { p.LineJoin = LineJoin.Round; g.DrawPath(p, box); g.DrawPath(p, vr); g.DrawPath(p, relBox); g.DrawPath(p, rel); }
+                    using (Pen p = new Pen(Color.FromArgb(10, 255, 120, 40), pw)) { p.LineJoin = LineJoin.Round; g.DrawPath(p, box); g.DrawPath(p, vr); }
                 }
             }
             foreach (GraphicsPath p in word) p.Dispose();
-            vr.Dispose(); box.Dispose(); rel.Dispose(); relBox.Dispose();
+            vr.Dispose(); box.Dispose();
         }
 
         public static Bitmap RoundLogo(Image src, int size)
@@ -1955,16 +1955,16 @@ namespace Outlast1VR
             "Every button and gesture on the Touch Plus controllers",
             "Apply the VR ini profile without launching",
             "Remove the mod, put the game's own settings back",
-            "Stop recording and eject the tape",
+            "",   // sem texto embaixo do EXIT
         };
         public const int BtnPlay = 0, BtnSettings = 1, BtnControls = 2, BtnInstall = 3, BtnRestore = 4, BtnExit = 5;
         public static readonly Rectangle[] Btn =
         {
-            new Rectangle(56, 244, 468, 80), new Rectangle(56, 332, 468, 50), new Rectangle(56, 388, 468, 50),
-            new Rectangle(56, 444, 468, 50), new Rectangle(56, 500, 468, 50), new Rectangle(56, 556, 468, 50),
+            new Rectangle(190, 244, 480, 80), new Rectangle(190, 332, 480, 50), new Rectangle(190, 388, 480, 50),
+            new Rectangle(190, 444, 480, 50), new Rectangle(190, 500, 480, 50), new Rectangle(190, 556, 480, 50),
         };
-        static readonly Rectangle PanelR = new Rectangle(792, 392, 432, 242);
-        static readonly Rectangle SpeakerR = new Rectangle(1000, 36, 34, 28), MinR = new Rectangle(1204, 2, 34, 24), CloseR = new Rectangle(1240, 2, 36, 24);
+        static readonly Rectangle PanelR = new Rectangle(710, 244, 440, 242);  // system check ao lado dos botões, largura ainda maior para textos caberem
+        static readonly Rectangle SpeakerR = new Rectangle(16, 36, 34, 28), MinR = new Rectangle(1204, 2, 34, 24), CloseR = new Rectangle(1240, 2, 36, 24);
         const string TapeLabel = "TAPE 01 — MOUNT MASSIVE ASYLUM, LAKE COUNTY, COLORADO";
 
         static readonly Color Osd = Color.FromArgb(240, 228, 246, 228);
@@ -2768,19 +2768,19 @@ namespace Outlast1VR
             double ts = Math.Max(0, t - 2.0);
             int n = Math.Min(TapeLabel.Length, (int)(ts * 34));
             bool cursor = n < TapeLabel.Length || ((int)(t * 2.2)) % 2 == 0;
-            Text(g, TapeLabel.Substring(0, n) + (cursor ? "█" : ""), fLabel, U.A(NvMain, ua), 60, 198, true);
-            Fill(g, U.A(Color.FromArgb(70, 120, 220, 130), ua * U.Smooth(1.9, 2.3, t)), 60, 226, 464, 1);
+            Text(g, TapeLabel.Substring(0, n) + (cursor ? "█" : ""), fLabel, U.A(NvMain, ua), W / 2 - 220, 198, true);
+            Fill(g, U.A(Color.FromArgb(70, 120, 220, 130), ua * U.Smooth(1.9, 2.3, t)), W / 2 - 232, 226, 464, 1);
             for (int i = 0; i < Btn.Length; i++) DrawButton(g, i, t, ua);
             DrawPanel(g, t, ua);
             DrawCredit(g, t, ua);
             double ha = ua * U.Smooth(2.1, 2.6, t);
-            TextCenter(g, "↑↓ SELECT    ENTER CONFIRM    M MUTE    F11 FULL SCREEN    ESC EXIT", fHint, U.A(Color.FromArgb(150, 160, 215, 168), ha), 640, 690, true);
+            TextCenter(g, "M MUTE    F11 FULL SCREEN    ESC EXIT", fHint, U.A(Color.FromArgb(150, 160, 215, 168), ha), 640, 690, true);
         }
 
         void DrawTitle(Graphics g, double t, double ua)
         {
             if (title == null) return;
-            int tx = 50, ty = 66;
+            int tx = W / 2 - Art.TitleW / 2, ty = 66;
             double gl = 0;
             if (t < 2.1) gl = 1 - U.Smooth(1.55, 2.1, t);
             double c = t % 6.3;
@@ -2834,9 +2834,6 @@ namespace Outlast1VR
             pen.Width = selected || armed ? 1.6f : 1f; pen.Color = U.A(border, a);
             g.DrawRectangle(pen, r);
             Fill(g, U.A(armed ? Amber : (selected ? Color.FromArgb(250, 160, 255, 170) : Color.FromArgb(120, 70, 140, 80)), a), r.X, r.Y, 4, r.Height);
-
-            Text(g, (i + 1).ToString("00"), fIdx, U.A(Color.FromArgb(selected ? 230 : 120, 150, 230, 160), a), r.X + 15, r.Y + (i == 0 ? 11 : 9), false);
-            Fill(g, U.A(Color.FromArgb(selected ? 120 : 50, 150, 230, 160), a), r.X + 15, r.Y + (i == 0 ? 27 : 25), 16, 1);
 
             string label = armed ? "CONFIRM UNINSTALL?" : Labels[i];
             Font lf = i == 0 ? fBtnBig : fBtn;
@@ -2903,30 +2900,35 @@ namespace Outlast1VR
             Fill(g, U.A(Color.FromArgb(70, 90, 210, 110), a), r.X + 1, r.Y + 1, r.Width - 1, 24);
             Text(g, "SYSTEM CHECK", fStatB, U.A(Hi, a), r.X + 12, r.Y + 6, false);
             TextRight(g, "CAM 01", fStatB, U.A(NvMain, a), r.Right - 12, r.Y + 6, false);
-            int y = r.Y + 34;
+            int y = r.Y + 30;
             foreach (Row row in rows)
             {
+                if (y > r.Bottom - 30) break; // não deixar texto sair da caixa
                 Color tc = row.Kind == Tone.Ok ? NvMain : row.Kind == Tone.Warn ? Amber : row.Kind == Tone.Err ? ErrC : NvDim;
                 Text(g, "[" + row.Tag + "]", fStatB, U.A(tc, a), r.X + 12, y, false);
-                Text(g, row.Key, fStatB, U.A(Color.FromArgb(230, 190, 235, 195), a), r.X + 56, y, false);
-                Text(g, row.Value, fStat, U.A(row.Kind == Tone.Info ? NvDim : Color.FromArgb(240, 214, 242, 216), a), r.X + 128, y, false);
-                y += 19;
+                Text(g, row.Key, fStatB, U.A(Color.FromArgb(230, 190, 235, 195), a), r.X + 60, y, false);
+                Text(g, row.Value, fStat, U.A(row.Kind == Tone.Info ? NvDim : Color.FromArgb(240, 214, 242, 216), a), r.X + 140, y, false);
+                y += 16;
             }
             y += 4;
-            Fill(g, U.A(Color.FromArgb(90, 110, 200, 120), a), r.X + 12, y + 7, r.Width - 24, 1);
-            Fill(g, U.A(Color.FromArgb(255, 1, 9, 4), a), r.X + 14, y, 70, 14);
-            Text(g, "TAPE LOG", fIdx, U.A(NvDim, a), r.X + 18, y, false);
-            y += 18;
-            int shown = 0, start = 0;
-            for (int i = log.Count - 1; i >= 0; i--) if (log[i].At <= t) { shown++; if (shown == 5) { start = i; break; } }
-            for (int i = start; i < log.Count; i++)
+            if (y < r.Bottom - 16)
             {
-                LogLine l = log[i]; if (l.At > t) continue;
-                int n = Math.Min(l.Text.Length, (int)((t - l.At) * 90) + 1);
-                Color lc = l.Kind == Tone.Ok ? NvMain : l.Kind == Tone.Warn ? Amber : l.Kind == Tone.Err ? ErrC : Color.FromArgb(220, 175, 215, 180);
-                string s = "> " + l.Text.Substring(0, n) + (n < l.Text.Length ? "█" : "");
-                Text(g, s, fLog, U.A(lc, a), r.X + 12, y, false);
-                y += 17;
+                Fill(g, U.A(Color.FromArgb(90, 110, 200, 120), a), r.X + 12, y + 4, r.Width - 24, 1);
+                Fill(g, U.A(Color.FromArgb(255, 1, 9, 4), a), r.X + 14, y, 70, 14);
+                Text(g, "TAPE LOG", fIdx, U.A(NvDim, a), r.X + 18, y, false);
+                y += 16;
+                int shown = 0, start = 0;
+                for (int i = log.Count - 1; i >= 0; i--) if (log[i].At <= t) { shown++; if (shown == 3) { start = i; break; } }
+                for (int i = start; i < log.Count; i++)
+                {
+                    if (y > r.Bottom - 14) break;
+                    LogLine l = log[i]; if (l.At > t) continue;
+                    int n = Math.Min(l.Text.Length, (int)((t - l.At) * 90) + 1);
+                    Color lc = l.Kind == Tone.Ok ? NvMain : l.Kind == Tone.Warn ? Amber : l.Kind == Tone.Err ? ErrC : Color.FromArgb(220, 175, 215, 180);
+                    string s = "> " + l.Text.Substring(0, n) + (n < l.Text.Length ? "█" : "");
+                    Text(g, s, fLog, U.A(lc, a), r.X + 12, y, false);
+                    y += 14;
+                }
             }
         }
 
@@ -2936,13 +2938,13 @@ namespace Outlast1VR
             if (logo != null)
             {
                 int lw = 40, lh = (int)((float)logo.Height * lw / logo.Width);
-                int x = W - lw - 16, y = 16;
+                int x = 1000, y = 30;   // canto superior direito, logo à esquerda do texto
                 DrawImageA(g, logo, x, y, a);
-                pen.Width = 1.5f; pen.Color = U.A(Color.FromArgb(150, 130, 230, 145), a); g.DrawEllipse(pen, x - 1, y - 1, lw + 1, lh + 1);
-                // crédito menor ao lado do logo, canto superior direito
-                using (Font fSmall = new Font(fCredit.FontFamily, 11f, FontStyle.Bold))
+                // crédito menor à direita do logo, canto superior direito
+                using (Font fSmall = new Font(fCredit.FontFamily, 10f, FontStyle.Bold))
                 {
-                    Text(g, "VR mod made by StrikeZoneVR", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + lw + 10, y + lh / 2 - 5, true);
+                    Text(g, "credits to the mod creator", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + lw + 30, y, true);
+                    Text(g, "StrikeZoneVR", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + lw + 30, y + 13, true);
                 }
             }
         }

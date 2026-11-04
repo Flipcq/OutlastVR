@@ -226,8 +226,6 @@ namespace Outlast1VR
                    "How much the picture is sharpened on its way to\nthe headset."),
                 T_("PICTURE", "Render", "LensFit", "Lens-shaped eyes", 1,
                    "Each eye is drawn in the Quest's own lens shape:\nsharper, same cost. Off by itself on Quest Link.\nTurn off if the picture looks off-centre."),
-                T_("PICTURE", "Render", "NightVisionSharp", "Night vision without blur", 1,
-                   "ON: the camcorder's night vision on the screen is\nsharp. OFF: the smoothed picture of before."),
                 T_("PICTURE", "Render", "FilmGrain", "Film grain", 0,
                    "Outlast's film grain. OFF: a clean picture - in a\nheadset the grain reads as blur. ON: the game's\nown found-footage look."),
                 C_("PICTURE", "Render", "DesktopMirrorFps", "Monitor picture", 30, new[] { "15 FPS", "30 FPS", "60 FPS", "EVERY FRAME" }, new double[] { 15, 30, 60, 0 },
@@ -1213,7 +1211,7 @@ namespace Outlast1VR
         // ---------------- the gestures strip ----------------
         // (Test40) the reload is a button again (Y, on the left controller); the third card is climbing
         static readonly string[] GestTitle = { "TAKE THE CAMCORDER", "LOOK THROUGH IT", "CLIMB", "OPEN A DOOR" };
-        static readonly string[] GestLine1 = { "right hand to your hip,", "bring the camcorder", "both hands on the edge,", "push it with your hand," };
+        static readonly string[] GestLine1 = { "right hand to your hip,", "bring the camcorder", "hands on the edge,", "push it with your hand," };
         static readonly string[] GestLine2 = { "squeeze the grip", "up to your eye", "squeeze and pull down", "or grab the handle" };
 
         void DrawGestures(Graphics g, double t, double a)
