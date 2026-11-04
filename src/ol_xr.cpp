@@ -1722,8 +1722,8 @@ static bool Init(UINT w, UINT h) {
                 // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
                 // EdgeFill: fill the fitted eye image's margin with the picture's own edge instead
                 // of black, so the runtime's reprojection has something to pull in when the head
-                // turns quickly. EdgeFillMargin: buy that margin on the sides where the lens reaches
-                // past the game's render by drawing the picture that much smaller (0 = off).
+                // turns quickly. There is no bought margin any more (b6a9c16): the picture keeps its
+                // exact angular size and only the eye image's own free margin is filled.
                 // PoseLeadPeriods: how many display periods ahead of the compositor's display time
                 // the camera pose is predicted (1 = every released build).
                 g_edgeFill = GetPrivateProfileIntW(L"Stream", L"EdgeFill", 1, ini) != 0;
@@ -3613,7 +3613,7 @@ static bool ShaderBlitReady() {
 // [STREAMEDGE] Defined with the fitted blit further down; this path needs it too (see BlitHalfToEye).
 static int OLR_EdgeFill(float* dx0, float* dy0, float* dx1, float* dy1,
                         float sx0, float sy0, float sx1, float sy1,
-                        float eyeW, float eyeH, int marginPct,
+                        float eyeW, float eyeH,
                         float* outSX, float* outSY, float* outSW, float* outSH);
 
 // Copy one eye's window of the captured backbuffer into that eye's swapchain image.
@@ -3624,10 +3624,9 @@ static int OLR_EdgeFill(float* dx0, float* dy0, float* dx1, float* dy1,
 // [STREAMEDGE] (Beta 1.2.1 polishing) THE MARGIN IS NOT A Quest-Link-ONLY CURE. On a runtime that
 // honours the declared frustum (SteamVR, VDXR) the fit never runs, so the eye image IS the picture
 // and there is no margin anywhere: the compositor's reprojection pulls black in at the sides on a
-// fast turn just the same, which is the same report. So the bought margin of OLR_EdgeFill is taken
-// here as well - the picture is drawn EdgeFillMargin % smaller inside the same eye image and the
-// fill stretches its edge over what is left. The declared frustum is untouched, so the cost is the
-// same few percent of field of view on every runtime instead of on one.
+// fast turn just the same, which is the same report. So the eye image's OWN free margin is filled
+// here as well - the picture keeps its exact size and angular position, and only the band the lens
+// reaches past it is stretched. The declared frustum is untouched.
 // `margin` is false for the frames that are not the immersive view at all (the theater screen and
 // the camcorder viewfinder are quads: there is nothing to reproject around them).
 static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
@@ -3831,7 +3830,7 @@ static bool BlitFitToEyeTan(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     float sX = sx0, sY = sy0, sW = sx1 - sx0, sH = sy1 - sy0;
     const int fill = g_edgeFill
         ? OLR_EdgeFill(&dX0, &dY0, &dX1, &dY1, sx0, sy0, sx1, sy1,
-                       (float)g_eyeW, (float)g_eyeH, g_edgeFillMargin, &sX, &sY, &sW, &sH)
+                       (float)g_eyeW, (float)g_eyeH, &sX, &sY, &sW, &sH)
         : 0;
     const float dX = (fill & 1) ? 0.0f : dX0;
     const float dW = (fill & 1) ? (float)g_eyeW : (dX1 - dX0);

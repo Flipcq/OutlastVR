@@ -4877,7 +4877,7 @@ static PoseGate PoseGateRead() {
     g.hook = g_poseHookOk; g.nativeHold = g_poseNativeHold; g.narrow = g_nativeNarrowFrames;
     g.inj = g_injW;
     g.blocked = !g_armDrive || !g_poseHookOk || g_poseNativeHold > 0 || g_nativeNarrowFrames > 0 ||
-                g.screen || g.injW < 0.95f || !g.controls || ArmMoveClass() == 2 || SceneWantsTheater();
+                g.screen || g.inj < 0.95f || !g.controls || ArmMoveClass() == 2 || SceneWantsTheater();
     return g;
 }
 // Is this component Miles's own? One read of the mesh pointer the solver already resolved - the
