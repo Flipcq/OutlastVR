@@ -254,6 +254,81 @@ extern "C" long OLProxy_OcclSkippedDraws();
 extern "C" void OLProxy_SetMirrorFps(int f) { InterlockedExchange(&g_mirrorFps, f < 0 ? 0 : f); Log("[OLVR][MIRRORFPS] monitor at %d presents a second%s", f, f <= 0 ? " (every frame)" : ""); }
 extern "C" long OLProxy_MirrorSkipped() { return InterlockedExchange(&g_mirrorSkipped, 0); }
 
+// -------------------------------------------------------------------------------------------
+// [PERF] Frame instrumentation and the per-frame flag snapshot (Beta 1.2.2 optimization pass)
+// -------------------------------------------------------------------------------------------
+// DRAW CALLS. The mod's four draw wrappers run on every draw the game submits, twice a frame (one
+// pass per eye), so their counters answer the question the whole performance pass is about: how
+// much of a frame is draw submission, and did a change actually remove any? The device is used
+// from UE3's render thread only, so a plain increment is safe and free; the numbers are read and
+// reset once per 5 s from the same thread by the [PERF] report in ol_xr.cpp.
+static LONG g_dcDraws = 0;            // draws that reached the real device
+static LONG g_dcOcclSkipped = 0;      // [OCCLSKIP] draws swallowed inside an occlusion query
+extern "C" long OLProxy_PresentCount() { return g_presentCount; }
+extern "C" void OLProxy_TakeDrawStats(long* draws, long* occlSkipped) {
+    if (draws) *draws = g_dcDraws;
+    if (occlSkipped) *occlSkipped = g_dcOcclSkipped;
+    g_dcDraws = 0; g_dcOcclSkipped = 0;
+}
+
+// [PERF-A4] SNAPSHOT OF THE PER-FRAME FLAGS THE DRAW WRAPPERS ASK ABOUT.
+// OLUE3_StereoMode / OLUE3_SplitActive / OLUE3_OcclBypassOn live in another translation unit, so
+// every call is a real call with a volatile read behind it - and the wrappers asked all three,
+// once per draw. Those three are frame- or session-stable by construction (a 30-frame hysteresis
+// counter, a mode chosen at init, an ini toggle), never an edge signal, so a snapshot taken once
+// per Present is exact enough and takes the calls out of the hot path. A one-frame lag on a
+// transition cannot change a verdict: g_splitFresh only falls off after 30 frames of no split.
+// [Perf] DrawFastFlags=0 restores the direct per-draw queries for an A/B.
+extern "C" int OLUE3_OcclBypassOn();
+static volatile LONG g_fastFlagsOn = 1;
+static volatile LONG g_fastFlags = 7;         // see the kFF_ bits; 7 = the shipped state at boot
+enum { kFF_OcclBypass = 1, kFF_SplitStereo = 2, kFF_SplitActive = 4 };
+static void FastFlagsRefresh() {
+    LONG f = 0;
+    if (OLUE3_OcclBypassOn()) f |= kFF_OcclBypass;
+    if (OLUE3_StereoMode() == 1) f |= kFF_SplitStereo;
+    if (OLUE3_SplitActive()) f |= kFF_SplitActive;
+    InterlockedExchange(&g_fastFlags, f);
+}
+static inline LONG FastFlags() {
+    if (!g_fastFlagsOn) FastFlagsRefresh();   // escape hatch: one refresh per ask = the old cost
+    return g_fastFlags;
+}
+extern "C" void OLProxy_SetDrawFastFlags(int on) {
+    InterlockedExchange(&g_fastFlagsOn, on ? 1 : 0);
+    FastFlagsRefresh();
+    Log("[OLVR][PERF-A4] draw-call flag snapshot %s", on ? "ON - asked once per Present"
+                                                         : "OFF - asked on every draw (the old way)");
+}
+
+// [PERF-A5] THE BACKBUFFER SURFACE, CACHED.
+// Hook_SetRenderTarget used to call GetBackBuffer - a COM call that AddRefs and Releases - on
+// every render-target change, several times a frame, only to compare two pointers. The surface
+// identity is stable while the swap chain lives, and the only thing that moves it is a device
+// Reset, which is hooked (and a new device, which is hooked too). [Perf] BackBufferCache=0
+// restores the per-call query.
+static volatile LONG g_bbCacheOn = 1;
+static IDirect3DDevice9*  g_bbCacheDev = nullptr;
+static IDirect3DSurface9* g_bbCacheSurf = nullptr;   // owns the one reference GetBackBuffer gave
+static void InvalidateBackBufferCache() {
+    if (g_bbCacheSurf) { g_bbCacheSurf->Release(); g_bbCacheSurf = nullptr; }
+    g_bbCacheDev = nullptr;
+}
+static IDirect3DSurface9* CachedBackBuffer(IDirect3DDevice9* dev) {
+    if (g_bbCacheDev == dev && g_bbCacheSurf) return g_bbCacheSurf;
+    InvalidateBackBufferCache();
+    IDirect3DSurface9* bb = nullptr;
+    if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return nullptr;
+    g_bbCacheDev = dev; g_bbCacheSurf = bb;
+    return bb;
+}
+extern "C" void OLProxy_SetBackBufferCache(int on) {
+    InterlockedExchange(&g_bbCacheOn, on ? 1 : 0);
+    if (!on) InvalidateBackBufferCache();
+    Log("[OLVR][PERF-A5] backbuffer cache %s", on ? "ON - GetBackBuffer once per device"
+                                                   : "OFF - asked on every render-target change");
+}
+
 // ---- native composite capture -----------------------------------------------------------
 // UE3 renders each split view through a full-size scene/post-process texture, then composites
 // that texture into one half of the desktop backbuffer. Reading the backbuffer therefore throws
@@ -444,10 +519,15 @@ static HRESULT STDMETHODCALLTYPE Hook_SetRenderTarget(IDirect3DDevice9* This, DW
     HRESULT hr = o_SetRenderTarget(This, idx, surf);
     if (idx == 0) {
         LONG isBb = 0;
-        IDirect3DSurface9* bb = nullptr;
-        if (SUCCEEDED(This->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
-            isBb = (bb == surf) ? 1 : 0;
-            bb->Release();
+        if (g_bbCacheOn) {
+            // [PERF-A5] one pointer comparison against the cached surface, no COM call
+            isBb = (CachedBackBuffer(This) == surf) ? 1 : 0;
+        } else {
+            IDirect3DSurface9* bb = nullptr;
+            if (SUCCEEDED(This->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+                isBb = (bb == surf) ? 1 : 0;
+                bb->Release();
+            }
         }
         InterlockedExchange(&g_rtIsBackbuffer, isBb);
         if (!isBb && surf && g_bbW > 0) {
@@ -760,7 +840,10 @@ extern "C" int OLXR_LensFitTangents(int half, float* l, float* r, float* u, floa
 
 template <class F>
 static HRESULT MirrorUiDraw(IDirect3DDevice9* dev, F&& draw) {
-    if (g_bbW < 8 || OLUE3_StereoMode() != 1 || !OLUE3_SplitActive())
+    if (g_bbW < 8) return draw();
+    // [PERF-A4] "SBS stereo and the split is live" comes from the per-Present snapshot instead of
+    // two cross-TU calls per draw (this ran for every draw of both eyes).
+    if ((FastFlags() & (kFF_SplitStereo | kFF_SplitActive)) != (kFF_SplitStereo | kFF_SplitActive))
         return draw();
     // [CPUSPLIT] (Test36) This runs for EVERY draw call of both eyes. The texture classification
     // below is four COM calls into D3D9On12; the render-state test is free and rejects nearly every
@@ -865,27 +948,35 @@ static volatile LONG g_occlSkip = 1;              // with OcclForce: skip those 
 static volatile LONG g_occlSkippedDraws = 0;
 extern "C" int OLUE3_OcclBypassOn();
 static inline bool OcclDrawSkipped() {
-    if (!g_inOcclQuery || !g_occlSkip || !OLUE3_OcclBypassOn()) return false;
+    // [PERF-A4] Two plain reads reject every ordinary draw; the cross-TU OcclForce query only
+    // happens when a query box is actually open, and comes from the per-Present snapshot.
+    if (!g_inOcclQuery || !g_occlSkip) return false;
+    if (!(FastFlags() & kFF_OcclBypass)) return false;
     InterlockedIncrement(&g_occlSkippedDraws);
+    ++g_dcOcclSkipped;
     return true;
 }
 static HRESULT STDMETHODCALLTYPE Hook_DrawPrimitive(IDirect3DDevice9* This, D3DPRIMITIVETYPE t, UINT s, UINT c) {
     if (OcclDrawSkipped()) return D3D_OK;
+    ++g_dcDraws;
     return MirrorUiDraw(This, [&] { return o_DrawPrimitive(This, t, s, c); });
 }
 static HRESULT STDMETHODCALLTYPE Hook_DrawIndexedPrimitive(IDirect3DDevice9* This, D3DPRIMITIVETYPE t,
         INT bv, UINT mi, UINT nv, UINT si, UINT pc) {
     if (OcclDrawSkipped()) return D3D_OK;
+    ++g_dcDraws;
     return MirrorUiDraw(This, [&] { return o_DrawIndexedPrimitive(This, t, bv, mi, nv, si, pc); });
 }
 static HRESULT STDMETHODCALLTYPE Hook_DrawPrimitiveUP(IDirect3DDevice9* This, D3DPRIMITIVETYPE t,
         UINT pc, const void* d, UINT stride) {
     if (OcclDrawSkipped()) return D3D_OK;
+    ++g_dcDraws;
     return MirrorUiDraw(This, [&] { return o_DrawPrimitiveUP(This, t, pc, d, stride); });
 }
 static HRESULT STDMETHODCALLTYPE Hook_DrawIndexedPrimitiveUP(IDirect3DDevice9* This, D3DPRIMITIVETYPE t,
         UINT mvi, UINT nv, UINT pc, const void* id, D3DFORMAT idf, const void* vd, UINT stride) {
     if (OcclDrawSkipped()) return D3D_OK;
+    ++g_dcDraws;
     return MirrorUiDraw(This, [&] { return o_DrawIndexedPrimitiveUP(This, t, mvi, nv, pc, id, idf, vd, stride); });
 }
 
@@ -907,6 +998,8 @@ extern "C" void   OLXR_OnDeviceLost();
 
 static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* This, const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
     LONG n = InterlockedIncrement(&g_presentCount);
+    // [PERF-A4] The snapshot the draw wrappers read for the frame that is about to be drawn.
+    FastFlagsRefresh();
     if (n == 1) {
         Log("[OLVR] first Present - frame loop is live");
         Log("[OLVR][PERF28] direct final-backbuffer capture active; expensive 3840x1080 native-eye replay disabled");
@@ -1090,6 +1183,9 @@ static void RunFullscreenFixIfDue() {
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_Reset(IDirect3DDevice9* This, D3DPRESENT_PARAMETERS* pp) {
+    // [PERF-A5] A Reset is the one thing that replaces the backbuffer surface; the cache must not
+    // outlive it (a stale pointer here would be read as "not the backbuffer" forever).
+    InvalidateBackBufferCache();
     if (pp) {
         Log("[OLVR] Reset -> %ux%u windowed=%d (monitor-rect spoofs=%ld, display-mode spoofs=%ld)",
             pp->BackBufferWidth, pp->BackBufferHeight, (int)pp->Windowed, g_dispqHits, g_admHits);
@@ -1530,10 +1626,16 @@ static void InstallDeviceHooks(IDirect3DDevice9* dev) {
     // pattern-matched. Removing
     // it costs nothing and gives those cycles back.
     Log("[OLVR] device hooks installed dev=%p (CreateQuery 118, SetRenderState 57, draws 81-84)", (void*)dev);
+    // [PERF-A4/A5] first snapshot + a first backbuffer probe, so the very first frame after install
+    // already runs the fast paths instead of the fallbacks.
+    FastFlagsRefresh();
+    if (g_bbCacheOn) CachedBackBuffer(dev);
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_CreateDevice(IDirect3D9* This, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocus,
                                                    DWORD Behavior, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice9** ppDev) {
+    // [PERF-A5] a new device means a new backbuffer; drop any surface cached for the old one.
+    InvalidateBackBufferCache();
     if (pp && g_xrAllowed && !g_keepVsync && pp->PresentationInterval != D3DPRESENT_INTERVAL_IMMEDIATE) {
         Log("[OLVR][PACING] CreateDevice PresentationInterval 0x%08lX -> IMMEDIATE", pp->PresentationInterval);
         pp->PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -2408,6 +2510,10 @@ extern "C" void OLUE3_SetSkipGammaCalibration(int v);
 static void LoadSavedSettings() {
     wchar_t ini[MAX_PATH]; if (!IniPath(ini, MAX_PATH)) return;
     wchar_t v[64];
+    // [Perf] (Beta 1.2.2 optimization pass) the proxy-side switches. A missing key means ON, which
+    // is the optimized path; 0 is the pre-1.2.2 behaviour, kept so a report can be A/B'd.
+    OLProxy_SetDrawFastFlags(GetPrivateProfileIntW(L"Perf", L"DrawFastFlags", 1, ini) ? 1 : 0);
+    OLProxy_SetBackBufferCache(GetPrivateProfileIntW(L"Perf", L"BackBufferCache", 1, ini) ? 1 : 0);
     g_mouseUse = GetPrivateProfileIntW(L"Input", L"MouseUse", 1, ini) ? 1 : 0;
     Log("[OLVR][MOUSEUSE] %s (gameplay B=left mouse, X=crouch; menus/grip shortcuts unchanged)",
         g_mouseUse ? "ON" : "OFF: legacy layout");

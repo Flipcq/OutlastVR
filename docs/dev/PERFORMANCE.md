@@ -1,0 +1,113 @@
+# Performance work - measuring before and after
+
+*Beta 1.2.2 optimization pass. For the switches themselves see `[Perf]` in
+[runtime/outlastvr.ini](../../runtime/outlastvr.ini); for how the mod works inside see
+[TECHNICAL.md](../TECHNICAL.md).*
+
+The mod renders **two views per frame** in one `ViewFamily`, which is exactly what UE3 does for split
+screen - and Epic's own guidance is blunt about what that costs:
+
+> "The two big rendering thread costs are determining visibility and then submitting draw calls to the
+> GPU. (…) the cost is doubled in split screen!"
+> — [Render Thread Profiling and Optimization](https://docs.unrealengine.com/udk/Three/RenderThreadProfilingHome.html)
+
+> "Splitscreen hits the rendering thread hard since twice as many things have to be drawn. There are
+> two main costs on the rendering thread: the number of primitive components that have to be
+> considered for rendering or *Processed Primitives*, and the total number of draw calls used to
+> render visible meshes which is *Mesh draw calls*."
+> — [Optimizing Content for Splitscreen](https://docs.unrealengine.com/udk/Three/OptimizingForSplitscreen.html)
+
+So every change in this pass is judged against **draw calls**, **processed primitives** and the
+**render thread time**, never against how it looks. Nothing here is a guess: each item below either
+has a number next to it from the mod's own log, or is waiting for one.
+
+---
+
+## 1. The mod's own numbers (`[PERF]`, every 5 s in the log)
+
+`%LOCALAPPDATA%\OutlastVR\OutlastVR_Log.txt` carries a line per 5 s. The fields that matter:
+
+| Field | Meaning | What "good" looks like |
+|---|---|---|
+| `game X fps (frame avg a max b, >25ms N, >50ms M)` | Present-to-Present interval, and how many frames were long | `avg` close to `b`, `>50ms` at 0 |
+| `present avg` | time blocked inside the game's own `Present` | a *large* value here means GPU-bound |
+| `grab` / `copy` / `pace` | frame hand-over and pacing cost on the game thread | `pace` ~0 outside stereo transitions |
+| `draws N/frame` | **draw calls the game submitted in the period** (one pass per eye) | compare before/after a change; it should not grow |
+| `split N us avg M max` | time inside the mod's own two `CalcSceneView` calls (game thread) | a few hundred µs; a large `max` is a hitch |
+| `skel N/frame (M solved)` | `UpdateSkelPose` calls vs the ones that reached the arm solver | `solved` ~1 per frame; `N` is the level's skeletal component count |
+| `fov N/frame (M cached)` | how many times per frame the engine asks for the camera angle, and how many of those were answered from the per-frame cache | `cached` close to `N` once a frame is under way |
+| `pvs N/frame` | `GetPrecomputedVisibilityData` lookups (InitViews: one per primitive per eye) | scales with primitives x 2 eyes |
+| `gpu(own cmds) X ms` | GPU time of the mod's **own** command stream (eye blits + copies) | below ~1 ms; if it grows, the bridge is the problem, not the game |
+| `[XRTIMING] loop …` | the compositor loop's cost and the real display step (13.9 = 72 Hz, 11.1 = 90 Hz) | 22.2 steps mixed in mean every second frame is synthesised |
+
+`[HITCH]` lists frames over 40 ms with the second they happened, next to whatever else the log says
+happened then.
+
+---
+
+## 2. The engine's own numbers (via the DevBridge `con` command)
+
+With `[Debug] DevBridge=1`, write `con <command>` to `%LOCALAPPDATA%\OutlastVR\dev\cmd.txt`.
+
+| Command | What it answers |
+|---|---|
+| `con stat unit` | game / draw (render thread) / GPU ms - which side is the limit **now** |
+| `con stat splitscreen` | *processed primitives* x *mesh draw calls* x *particle draw calls*: how much of the cost is per-view work |
+| `con stat initviews` | how long **visibility culling** took and how much it rejected (the single biggest per-view cost) |
+| `con stat scenerendering` | how much of the render thread is inside `RenderViewFamily` |
+| `con stat sceneupdate` | `AddLight` / primitives re-added - Epic's own example is `AddLight` called 10x a frame |
+| `con TRACKPARTICLERENDERINGSTATS`, play, then `con DUMPPARTICLERENDERINGSTATS` | which particle systems cost (two reports in the game's log directory) |
+
+Epic's splitscreen targets, for scale on a 360-class budget: 1600 mesh draw calls, 1700 processed
+primitives, 150 particle draw calls per frame at 33 ms. Particle draw calls are **~3x more expensive
+than a static mesh draw call**, and skeletal/interp actors ~2x - so 150 particle draws is not "small".
+
+A splitscreen lever the mod does **not** use yet: a primitive whose `DetailMode` is *High* is
+**not rendered at all in split screen**, which cuts both processed primitives and draw calls. Test it
+with `con scale set DetailMode 1` in a heavy area while watching `stat splitscreen` - it is a
+content-level trade (detail props disappear), so it would ship as an option, never as a default.
+
+---
+
+## 3. The protocol
+
+1. **SteamVR's null headset** (no headset needed): `[Debug] XrRuntimeJson` pointing at
+   `steamxr_win64.json`, a long screen-off timeout, `pauseCompositorOnStandby=false`.
+2. `[XR] PaceToHeadset=0` and `MaxSmoothedFrameRate=300`, so the game free-runs and the frame rate is
+   the metric. Everything else at the shipped defaults.
+3. Three fixed spots: the asylum gate (open view), the admin corridor (occluded), and the theater
+   screen (menu path). Walk them the same way every time.
+4. Three runs each; take the median of `game fps` **and** of `draws/frame`.
+5. Change **one** `[Perf]` switch at a time (`SkelFastGate=0`, `DrawFastFlags=0`, …) and repeat. A
+   switch that shows no difference in the log should not stay in the shipped ini as a claim.
+
+## 4. What this pass changed
+
+| Change | Where | Effect |
+|---|---|---|
+| draw-call counters | `d3d9_proxy.cpp` `[PERF]` | instrumentation only - produces `draws N/frame` |
+| split timing | `ol_ue3.cpp` `Hook_CalcSceneView` | instrumentation only - produces `split N us` |
+| GPU span of the mod's commands | `ol_xr.cpp` `[PERF-GPU]` | instrumentation only - produces `gpu(own cmds)` |
+| `[PERF-A4]` flag snapshot | `d3d9_proxy.cpp` | 3 cross-module calls removed **per draw call** |
+| `[PERF-A5]` backbuffer cache | `d3d9_proxy.cpp` | one COM call removed per render-target change |
+| `[PERF-D1]` skeletal gate | `ol_ue3.cpp` | the solver's gate + 3 restores removed for every non-Miles skeletal component, every frame |
+| `[PERF-D2]` lean once per frame | `ol_ue3.cpp` | one clamp/multiply pass removed per frame (small, exact) |
+| `[PERF-D3]` FOV cache | `ol_ue3.cpp` | the FOV maths removed for repeat queries in the same frame |
+| `[PERF-D4]` NV light identity | `ol_ue3.cpp` | the classification removed for lights already known |
+| `[PERF-A6]` HUD smart redraw | `ol_xr.cpp` | 1.2 MB upload + a glyph pass removed on frames whose readouts did not move |
+| `[PERF-A7]` scan time budget | `ol_ue3.cpp` | the object scan's cost per frame bounded by time instead of 4000 objects |
+
+### Investigated and deliberately NOT changed
+
+- **`Hook_GetViewPoint` (D-2, full dedupe).** The per-eye body is ~300 ns: two `cosf`/`sinf`, one
+  `ViewLeanM` and a dozen multiplies, over frame-frozen inputs. Only the lean vector is shared
+  (done); rewriting the injection to reuse the whole block across the two eye passes would put the
+  head tracking at risk for well under a microsecond a frame. Measured cost, not a guess: `split N us`
+  in the log covers the same kind of work.
+- **Dynamic shadows once per frame.** UE3 already renders one shadow map set per *view family* and
+  only registers per-view dependencies (`FSceneRenderer::GatherShadowsForPrimitives(..., ValidViews,
+  ...)`, `CreateWholeSceneProjectedShadow`). The `DynamicShadows off` +6% in the project baseline is
+  the shadows' own cost, not a duplicate - `stat scenerendering` confirms it before anything is built.
+- **The Outlast occlusion tracker.** Hooked and counted (`occl N/frame`); it is **never called** in
+  gameplay (0 calls), so there is nothing to cache there. Its counter is kept as evidence.
+

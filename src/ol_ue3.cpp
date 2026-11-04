@@ -337,6 +337,42 @@ extern "C" void OLUE3_FrameTick() {
         InterlockedExchange(&g_poseNativeHold, 0);
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// [PERF] Per-frame counters, printed with the [PERF] report in ol_xr.cpp (Beta 1.2.2 pass)
+// ---------------------------------------------------------------------------------------------
+// These are what turn "the render thread is the limit" into numbers a change can be judged by.
+// Each counter is incremented with a plain `++` by the thread that owns it and read/reset by the
+// render thread once per 5 s report, so a sample can only be lost in the instant it is taken.
+//   calcScene : µs spent this frame inside the two CalcSceneView calls the split makes (game thread)
+//   skelCalls : USkeletalMeshComponent::UpdateSkelPose calls - i.e. every skeletal component
+//   skelMiles : of those, the ones that were Miles's own component (the arm solver ran)
+//   fovCalls  : GetFovAngle answers asked for inside a view-building pass
+//   pvsCalls  : GetPrecomputedVisibilityData lookups (InitViews: one per primitive per eye)
+//   occlCalls : the Outlast occlusion tracker - 0 in gameplay, kept as evidence rather than cost
+static volatile long g_perfCalcSceneSumUs = 0, g_perfCalcSceneMaxUs = 0;
+static volatile long g_perfSkelCalls = 0, g_perfSkelMiles = 0;
+static volatile long g_perfFovCalls = 0, g_perfPvsCalls = 0, g_perfOcclCalls = 0;
+static volatile LONG g_fovCacheHits = 0;      // [PERF-D3] FOV answers taken from the cache
+// Microseconds off the performance counter, for the two places that time a span per frame.
+static inline double PerfQpcUs() {
+    static LARGE_INTEGER f = {};
+    LARGE_INTEGER t; QueryPerformanceCounter(&t);
+    if (!f.QuadPart) QueryPerformanceFrequency(&f);
+    return (double)t.QuadPart * 1e6 / (double)f.QuadPart;
+}
+extern "C" void OLUE3_TakeFrameStats(long* calcSceneSumUs, long* calcSceneMaxUs, long* skelCalls,
+                                     long* skelMiles, long* fovCalls, long* pvsCalls, long* occlCalls,
+                                     long* fovCacheHits) {
+    if (calcSceneSumUs) *calcSceneSumUs = InterlockedExchange(&g_perfCalcSceneSumUs, 0);
+    if (calcSceneMaxUs) *calcSceneMaxUs = InterlockedExchange(&g_perfCalcSceneMaxUs, 0);
+    if (skelCalls)      *skelCalls      = InterlockedExchange(&g_perfSkelCalls, 0);
+    if (skelMiles)      *skelMiles      = InterlockedExchange(&g_perfSkelMiles, 0);
+    if (fovCalls)       *fovCalls       = InterlockedExchange(&g_perfFovCalls, 0);
+    if (pvsCalls)       *pvsCalls       = InterlockedExchange(&g_perfPvsCalls, 0);
+    if (occlCalls)      *occlCalls      = InterlockedExchange(&g_perfOcclCalls, 0);
+    if (fovCacheHits)   *fovCacheHits   = InterlockedExchange(&g_fovCacheHits, 0);
+}
 extern "C" void OLUE3_GetEyeFov(float* fx, float* fy) {
     if (fx) *fx = g_fovX;
     if (fy) *fy = g_fovY;
@@ -689,10 +725,10 @@ static float CineFovWriteDeg(float targetDeg) {
     return w;
 }
 
-static float __fastcall Hook_GetFovAngle(void* self) {
-    const float real = o_GetFovAngle(self);
-    // ONLY inside the mod's own view-building passes. Aim, HUD and script logic keep the real value.
-    if (!g_cineFovOn || !g_eyePhase) return real;
+// [PERF-D3] The engine's own value in, the mod's angle out - the shipped computation, unchanged,
+// split out of the hook so it can sit behind a per-frame cache. Everything inside is a function of
+// `real` and the viewfinder zoom alone; the frame's frozen pose is not consulted here.
+static float FovModulateFrom(float real) {
     // [VIEWFINDER] (Test37) Camcorder zoom. Widening flattened it (zoom "did nothing"): while zoomed,
     // the eyes render a NARROW picture for the head-locked viewfinder, from 60 deg (1x in the 60 deg
     // frame) down to 8 deg (7.5x), following the game's own zoom factor.
@@ -737,6 +773,35 @@ static float __fastcall Hook_GetFovAngle(void* self) {
         }
         return w;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return real; }
+}
+
+// [PERF-D3] CACHE OF THE MODULATED ANGLE, ONCE PER FRAME.
+// This getter is not asked once a frame: the camera, the aim/HUD queries and the camcorder all ask
+// while a frame is being built (the note above the cinematic heuristic records a second sub-70 call
+// every frame), and in the split it is asked once per eye on top of that. The answer only changes
+// when the engine's own value or the zoom does, so the last answer is kept together with the exact
+// inputs that produced it - a mismatch on either one recomputes. [Perf] FovCache=0 asks every time,
+// which is the pre-1.2.2 behaviour, kept for an A/B.
+static volatile LONG g_fovCacheOn = 1;
+static LONG  g_fovCacheStamp = -1;                                   // [OLProxy_PresentCount]
+static float g_fovCacheReal = 0.0f, g_fovCacheZoom = -1.0f, g_fovCacheOut = 0.0f;
+extern "C" long OLProxy_PresentCount();
+
+static float __fastcall Hook_GetFovAngle(void* self) {
+    const float real = o_GetFovAngle(self);
+    // ONLY inside the mod's own view-building passes. Aim, HUD and script logic keep the real value.
+    if (!g_cineFovOn || !g_eyePhase) return real;
+    ++g_perfFovCalls;
+    if (!g_fovCacheOn) return FovModulateFrom(real);
+    const LONG stamp = OLProxy_PresentCount();
+    const float zoom = OLInteract_ViewfinderZoom();
+    if (stamp == g_fovCacheStamp && real == g_fovCacheReal && zoom == g_fovCacheZoom) {
+        ++g_fovCacheHits;
+        return g_fovCacheOut;
+    }
+    const float out = FovModulateFrom(real);
+    g_fovCacheStamp = stamp; g_fovCacheReal = real; g_fovCacheZoom = zoom; g_fovCacheOut = out;
+    return out;
 }
 
 // The mapping constant, measured live: the requested angle and what the engine actually
@@ -855,6 +920,25 @@ extern "C" void OLUE3_NvLightReport() {
     }
 }
 
+// [PERF-D4] WHICH COMPONENTS ARE THE PLAYER'S, REMEMBERED.
+// The census below settled it: a player light is the one whose rotation tracks the aim, and a
+// component never changes role inside a session. The classification (two wraps and four
+// comparisons inside an SEH guard) is done once per component and remembered, so the calls that
+// follow only apply the delta. [Perf] NvLightCache=0 re-classifies on every call.
+static volatile LONG g_nvCacheOn = 1;
+static void* volatile g_nvPlayerComp[4] = { nullptr, nullptr, nullptr, nullptr };
+static volatile LONG g_nvPlayerCompN = 0;
+static bool NvIsKnownPlayerComp(void* comp) {
+    const long n = g_nvPlayerCompN;
+    for (long i = 0; i < n && i < 4; ++i) if (g_nvPlayerComp[i] == comp) return true;
+    return false;
+}
+static void NvRememberPlayerComp(void* comp) {
+    const long n = g_nvPlayerCompN;
+    for (long i = 0; i < n && i < 4; ++i) if (g_nvPlayerComp[i] == comp) return;
+    if (n < 4) { g_nvPlayerComp[n] = comp; InterlockedExchange(&g_nvPlayerCompN, n + 1); }
+}
+
 static void __fastcall Hook_SpotSetRotation(void* comp, int* rot) {
     if (!g_nvLightOn || !rot) { o_SpotSetRot(comp, rot); return; }
     int mod[3];
@@ -864,10 +948,17 @@ static void __fastcall Hook_SpotSetRotation(void* comp, int* rot) {
         NvCensus(comp, rot);
         int dp = 0, dy = 0;
         if (g_baseViewFresh > 0 && NvHeadDelta(&dp, &dy)) {
-            const int offP = WrapUE(rot[0] - g_baseViewRot[0]);   // does the pitch track the aim?
-            const int relY = WrapUE(rot[1]);                      // is the yaw relative (~0)?
-            if (offP > -kNvPitchTolUU && offP < kNvPitchTolUU &&
-                relY > -kNvYawZeroUU  && relY < kNvYawZeroUU) {
+            bool isPlayer;
+            if (g_nvCacheOn && NvIsKnownPlayerComp(comp)) {
+                isPlayer = true;                                  // [PERF-D4] remembered
+            } else {
+                const int offP = WrapUE(rot[0] - g_baseViewRot[0]);   // does the pitch track the aim?
+                const int relY = WrapUE(rot[1]);                      // is the yaw relative (~0)?
+                isPlayer = (offP > -kNvPitchTolUU && offP < kNvPitchTolUU &&
+                            relY > -kNvYawZeroUU  && relY < kNvYawZeroUU);
+                if (isPlayer && g_nvCacheOn) NvRememberPlayerComp(comp);
+            }
+            if (isPlayer) {
                 InterlockedIncrement(&g_nvMatched);
                 { const long ph = g_eyePhase; if (ph >= 0 && ph <= 2) { InterlockedIncrement(&g_nvPhaseN[ph]); g_nvPhaseRot[ph][0] = rot[0]; g_nvPhaseRot[ph][1] = rot[1]; g_nvPhaseRot[ph][2] = rot[2]; g_nvPhaseComp[ph] = comp; } }
                 // The yaw is RELATIVE to the body, and the head yaw is also measured from the
@@ -2114,6 +2205,11 @@ static ObjScanClass g_osc[8];
 static int g_oscN = 0, g_oscCursor = 0;
 static void** g_oscData = nullptr;
 static long g_oscPasses = 0;
+// [PERF-A7] The time budget one sliced scan pass may spend per frame (µs); 0 = the fixed slice.
+static volatile LONG g_objScanBudgetUs = 250;
+static inline bool ObjScanOverBudget(double elapsedUs, long budgetUs) {
+    return budgetUs > 0 && elapsedUs > (double)budgetUs;
+}
 static int ObjScanAll(void* c, void** out, int max) {
     int n = 0; char nm[48];
     for (int i = 0; i < g_bpObjNum && n < max; ++i) {
@@ -2167,20 +2263,35 @@ extern "C" void OLUE3_ObjScanStep() {
     const int num = g_bpObjNum;
     int end = g_oscCursor + kObjScanSlice; if (end > num) end = num;
     char nm[48];
-    for (int i = g_oscCursor; i < end; ++i) {
+    // [PERF-A7] A fixed 4000 objects every frame is a bill the game pays whether or not the pass
+    // can use the answer yet - and it lands on the game thread of a frame that is already 11 ms
+    // long. The slice is now bounded by TIME as well: the loop stops once it has spent its budget
+    // and resumes at the same cursor next frame, so the pass still completes, just in more slices
+    // and without a spike. [Perf] ObjScanBudgetUs=0 restores the fixed slice.
+    const long   budgetUs = g_objScanBudgetUs;
+    const double tScan0   = budgetUs > 0 ? PerfQpcUs() : 0.0;
+    int i = g_oscCursor;
+    for (; i < end; ++i) {
         void* o = nullptr;
-        if (!BP_Read(g_bpObjs + i, &o, 8) || !o) continue;
-        void* c = ProbeReadPtr((char*)o + g_bpUNameOff + 8);
-        if (!c) continue;
-        for (int k = 0; k < g_oscN; ++k) {
-            ObjScanClass& e = g_osc[k];
-            if (c != e.cls) continue;
-            if (e.workN < kObjScanMax && !(BP_ObjName(o, nm, sizeof(nm)) && !strncmp(nm, "Default__", 9))) e.work[e.workN++] = o;
-            break;
+        if (BP_Read(g_bpObjs + i, &o, 8) && o) {
+            void* c = ProbeReadPtr((char*)o + g_bpUNameOff + 8);
+            if (c) {
+                for (int k = 0; k < g_oscN; ++k) {
+                    ObjScanClass& e = g_osc[k];
+                    if (c != e.cls) continue;
+                    if (e.workN < kObjScanMax && !(BP_ObjName(o, nm, sizeof(nm)) && !strncmp(nm, "Default__", 9))) e.work[e.workN++] = o;
+                    break;
+                }
+            }
         }
+        if ((i & 63) == 63 && ObjScanOverBudget(PerfQpcUs() - tScan0, budgetUs)) { ++i; break; }
     }
-    g_oscCursor = end;
-    if (end >= num) {
+    g_oscCursor = i;
+    // More to do: the pass continues next frame. This tests the CURSOR, not the slice end - a slice
+    // cut short by the budget on the last stretch of the table must not publish a half-filled pass.
+    if (g_oscCursor < num) return;
+    // The slice reached the end of the object table: publish this pass and start the next one.
+    {
         for (int k = 0; k < g_oscN; ++k) {
             ObjScanClass& e = g_osc[k];
             if (!e.skip) { memcpy(e.pub, e.work, (size_t)e.workN * sizeof(void*)); e.pubN = e.workN; }
@@ -2878,6 +2989,24 @@ static void ViewLeanM(float out[3]) {
         if (v < -kPosSanityM) v = -kPosSanityM; else if (v > kPosSanityM) v = kPosSanityM;
         out[i] = v * g_leanGain * g_injW / g_worldSize;   // (Beta 1.1) [WORLDSIZE]
     }
+}
+
+// [PERF-D2] The same lean vector, once per frame.
+// It is built from frame constants only - the frozen head position, the lean gain, the crouch lift,
+// the world size and the injection weight - and both eye passes of one frame ask for exactly the
+// same three numbers. The arm solver keeps calling ViewLeanM directly: it wants the live value.
+// The pose is already frozen per frame by [POSEFREEZE], so caching on the frame number is exact.
+static void ViewLeanFrame(float out[3]) {
+    static LONG  s_stamp = -1;
+    static float s_lean[3] = { 0.0f, 0.0f, 0.0f };
+    const LONG stamp = OLProxy_PresentCount();
+    if (stamp == s_stamp) {
+        out[0] = s_lean[0]; out[1] = s_lean[1]; out[2] = s_lean[2];
+        return;
+    }
+    ViewLeanM(out);
+    s_stamp = stamp;
+    s_lean[0] = out[0]; s_lean[1] = out[1]; s_lean[2] = out[2];
 }
 
 
@@ -4733,15 +4862,57 @@ static bool NativeRightHandAtFace(const IkArray& space) {
     const VIk3 d = IVSub(space.d[hand].t, space.d[eye].t);
     return IVDot(d, d) < 30.0f * 30.0f;
 }
+// [PERF-D1] "NOT THIS FRAME", EVALUATED ONCE AND SHARED.
+// Every skeletal component in a level passes through USkeletalMeshComponent::UpdateSkelPose, so
+// this hook fires once per prop that has a skeleton - not once per Miles. Before, each of those
+// paid five cross-TU calls, an always-on Interlocked counter and, whenever the arms were blocked,
+// the three global restores. Now the verdict is computed once and the per-component path is a
+// pointer comparison. [Perf] SkelFastGate=0 restores the per-component evaluation for an A/B.
+struct PoseGate { bool blocked, screen, controls; long hook, nativeHold, narrow; float inj; };
+static volatile long g_skelFastGate = 1;      // [PERF-D1] [Perf] SkelFastGate
+static PoseGate PoseGateRead() {
+    PoseGate g = {};
+    g.screen   = OLXR_ScreenActive() != 0;
+    g.controls = OLXR_MotionControlsReady() != 0;
+    g.hook = g_poseHookOk; g.nativeHold = g_poseNativeHold; g.narrow = g_nativeNarrowFrames;
+    g.inj = g_injW;
+    g.blocked = !g_armDrive || !g_poseHookOk || g_poseNativeHold > 0 || g_nativeNarrowFrames > 0 ||
+                g.screen || g.injW < 0.95f || !g.controls || ArmMoveClass() == 2 || SceneWantsTheater();
+    return g;
+}
+// Is this component Miles's own? One read of the mesh pointer the solver already resolved - the
+// cheapest test there is, and it latches [PHYSCROUCH] the same way the old inline block did.
+static bool PoseIsMilesComponent(void* comp) {
+    if (!g_poseMesh) return true;          // nothing resolved yet: keep the old full path for all
+    void* mesh = nullptr;
+    __try { mesh = *(void**)((char*)comp + 0x238); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (mesh != g_poseMesh) return false;
+    g_milesComp = comp; InterlockedExchange(&g_milesCompFresh, 30);
+    return true;
+}
+// The three restores belong to the blocked branch and are global, not per component: when the arms
+// are blocked they still have to happen, but once a frame is enough (this is the only thing the
+// skipped components used to do for the mod).
+static void PoseRestoresIfBlocked() {
+    static long s_doneFrame = -1;
+    const long frame = OLProxy_PresentCount();
+    if (frame == s_doneFrame) return;
+    s_doneFrame = frame;
+    if (!PoseGateRead().blocked) return;
+    g_poseRamp[0] = g_poseRamp[1] = 0.0f;
+    CamRestore();        // [HOLSTER] the game's own camcorder state while the arms are blocked
+    BatteryRestore();    // [BATTERY] nothing of ours may stay on screen
+    DocumentRestore();   // [DOCUMENT] nothing of ours may stay on screen
+}
+
 static bool PoseApplyVisible(void* comp) {
-    const bool screen=OLXR_ScreenActive()!=0;
-    const bool controls=OLXR_MotionControlsReady()!=0;
-    if (!g_armDrive || !g_poseHookOk || g_poseNativeHold > 0 || g_nativeNarrowFrames > 0 ||
-        screen || g_injW < 0.95f || !controls || ArmMoveClass() == 2 || SceneWantsTheater()) {
+    const PoseGate pg = PoseGateRead();
+    if (pg.blocked) {
         static long blocked=0; const long count=InterlockedIncrement(&blocked);
         if (g_armDrive && (count==1 || (count%600)==0)) {
             char l[240]; sprintf_s(l,"[OLVR][VISIBLEIK] blocked: hook=%ld nativeHold=%ld narrow=%ld screen=%d inj=%.2f controls=%d calls=%ld",
-                g_poseHookOk,g_poseNativeHold,g_nativeNarrowFrames,screen?1:0,g_injW,controls?1:0,count);
+                pg.hook,pg.nativeHold,pg.narrow,pg.screen?1:0,pg.inj,pg.controls?1:0,count);
             OLProxyLog(l);
         }
         g_poseRamp[0] = g_poseRamp[1] = 0.0f;
@@ -5269,6 +5440,12 @@ static void __fastcall Hook_PoseCompose(void* comp) {
 
 static void __fastcall Hook_SkelUpdate(void* comp, float deltaTime, int tickFaceFx) {
     o_SkelUpdate(comp, deltaTime, tickFaceFx);
+    ++g_perfSkelCalls;
+    if (g_poseRecompose) return;
+    // [PERF-D1] Everything that is not Miles's own component leaves here: one read of the mesh
+    // pointer instead of the full gate, the counter and the three restores. The restores are
+    // global, so they are kept at once per frame for the components that are skipped.
+    if (g_skelFastGate && !PoseIsMilesComponent(comp)) { PoseRestoresIfBlocked(); return; }
     // [PHYSCROUCH] Remember Miles's component whatever the arm solver decides this frame.
     if (g_poseMesh) {
         __try {
@@ -5277,7 +5454,8 @@ static void __fastcall Hook_SkelUpdate(void* comp, float deltaTime, int tickFace
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
-    if (!g_poseRecompose) PoseApplyVisible(comp);
+    ++g_perfSkelMiles;
+    PoseApplyVisible(comp);
 }
 
 // ---- [LOOKUSE] use what you look at (Test34) ------------------------------------------------------
@@ -6854,7 +7032,7 @@ static void __fastcall Hook_GetViewPoint(void* actor, float* outLoc, int* outRot
             if (g_headPos && OLXR_PosArmed()) {
                 // Same numbers the arm solver uses ([PHASE1] ViewLeanM), crouch lift included;
                 // with no lift this is exactly the previous clamp * LeanGain * injW.
-                float lean[3]; ViewLeanM(lean);
+                float lean[3]; ViewLeanFrame(lean);   // [PERF-D2] once per frame, both eyes reuse it
                 const float dR = lean[0] * kMetersToUU;                 // +right
                 const float dU = lean[1] * kMetersToUU;                 // +up
                 const float dF = -lean[2] * kMetersToUU;                // XR -z = forward, 1:1
@@ -6915,6 +7093,7 @@ static volatile long g_occlCalls = 0, g_occlForced = 0;
 static unsigned long long __fastcall Hook_OcclUpdate(void* tracker, void* p2, void* p3, void* view,
                                                      unsigned long long p5, unsigned long long p6) {
     long n = InterlockedIncrement(&g_occlCalls);
+    ++g_perfOcclCalls;
     if (n == 1) OLProxyLog("[OLVR][OCCL] occlusion tracker is LIVE (first UpdateAndGetCoverage call)");
     return o_OcclUpdate(tracker, p2, p3, view, p5, p6);
 }
@@ -6946,6 +7125,7 @@ static volatile long g_pvsCalls = 0, g_pvsForced = 0;
 // flicker unchanged. Passive counter only now.
 static long long __fastcall Hook_PvsGet(void* state, void* view, void* scene) {
     long n = InterlockedIncrement(&g_pvsCalls);
+    ++g_perfPvsCalls;
     if (n == 1) OLProxyLog("[OLVR][PVS] precomputed visibility is LIVE (first lookup)");
     // [FRAMETAG] Render thread, once per view of the frame being drawn: the view is the renderer's
     // copy of the FSceneView, so its matrices identify which game frame this is.
@@ -7304,6 +7484,9 @@ static void* __fastcall Hook_CalcSceneView(void* self, void* family, void* outLo
                 void** firstOut  = g_buildRightFirst ? &right : &left;
                 void** secondOut = g_buildRightFirst ? &left  : &right;
 
+                // [PERF] The two view builds are the mod's own game-thread cost per frame. Timed
+                // here (two QPC reads a frame) so a change to the split can be judged against it.
+                const double tSplit0 = PerfQpcUs();
                 if (SafeWriteRect(self, firstRect)) {
                     InterlockedExchange(&g_eyePhase, firstPhase);
                     *firstOut = o_CalcSceneView(self, family, outLoc, outRot, viewport, drawer);
@@ -7312,6 +7495,11 @@ static void* __fastcall Hook_CalcSceneView(void* self, void* family, void* outLo
                     InterlockedExchange(&g_eyePhase, secondPhase);
                     if (g_stateR) SafeWritePtr(self, kViewStateOff, g_stateR);
                     *secondOut = o_CalcSceneView(self, family, outLoc, outRot, viewport, drawer);
+                }
+                {
+                    const long us = (long)(PerfQpcUs() - tSplit0);
+                    g_perfCalcSceneSumUs += us;
+                    if (us > g_perfCalcSceneMaxUs) g_perfCalcSceneMaxUs = us;
                 }
                 InterlockedExchange(&g_eyePhase, 0);
                 if (g_stateR && stateL) SafeWritePtr(self, kViewStateOff, stateL);   // ALWAYS restore
@@ -7508,6 +7696,18 @@ static void ReadConfig() {
     GetPrivateProfileStringW(L"Stage3", L"OcclPrologue", L"", hex, 80, ini);
     g_occlWantLen = ParseHexInto(hex, g_occlWantBytes, 32);
     g_occlForce = GetPrivateProfileIntW(L"Stage3", L"OcclForce", 0, ini) ? 1 : 0;
+    // [Perf] (Beta 1.2.2 optimization pass) the engine-side switches. A missing key means ON, which
+    // is the optimized path; 0 is the pre-1.2.2 behaviour, kept so a report can be A/B'd by hand.
+    g_skelFastGate    = GetPrivateProfileIntW(L"Perf", L"SkelFastGate", 1, ini) ? 1 : 0;
+    g_fovCacheOn      = GetPrivateProfileIntW(L"Perf", L"FovCache", 1, ini) ? 1 : 0;
+    g_nvCacheOn       = GetPrivateProfileIntW(L"Perf", L"NvLightCache", 1, ini) ? 1 : 0;
+    { LONG b = (LONG)GetPrivateProfileIntW(L"Perf", L"ObjScanBudgetUs", 250, ini);
+      if (b < 0) b = 0; if (b > 5000) b = 5000;
+      g_objScanBudgetUs = b; }
+    { char l[200]; sprintf_s(l, "[OLVR][PERF] switches: skelGate=%ld fovCache=%ld nvCache=%ld objScanBudget=%ldus "
+                                "(0 = off; all in [Perf] of outlastvr.ini)",
+                             g_skelFastGate, g_fovCacheOn, g_nvCacheOn, g_objScanBudgetUs);
+      OLProxyLog(l); }
     g_cineFovOn = GetPrivateProfileIntW(L"Stage3", L"CineFov", 1, ini) ? 1 : 0;   // [CINEFOV]
     g_wideFov = GetPrivateProfileIntW(L"Render", L"WideFov", 0, ini) ? 1 : 0;     // [WIDEFOV]
     g_grainOn = GetPrivateProfileIntW(L"Render", L"FilmGrain", 0, ini) ? 1 : 0;   // (Test47) [GRAIN]

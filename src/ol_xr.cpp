@@ -1608,6 +1608,57 @@ static bool     g_paceToHeadset = true;
 static bool     g_asyncReadback = true;    // [ASYNCREAD] see PublishBackbufferAsync
 static bool     g_zeroCopy = true;         // [ZEROCOPY] see PublishZeroCopy (needs the D3D9On12 device)
 
+// [PERF-GPU] (Beta 1.2.2 pass) How much GPU time the mod's OWN commands cost - the two eye blits,
+// the copy into the swapchain images, the HUD uploads. A disjoint timestamp pair brackets the frame's
+// command stream and is read one frame later with DONOTFLUSH, so nothing is ever waited for: a
+// measurement that has not completed simply does not replace the previous one. Without this, a
+// "GPU-bound" claim rests only on Present blocking, which cannot separate the game's render from the
+// mod's own work. Worker thread only.
+static ID3D11Query* g_gpuDisjoint = nullptr;
+static ID3D11Query* g_gpuBegin    = nullptr;
+static ID3D11Query* g_gpuEnd      = nullptr;
+static bool         g_gpuQArmed   = false;
+static bool         g_gpuQDead    = false; // creation failed once: never retry, never spam
+static volatile LONG g_gpuMsX10   = 0;     // last completed span, in 0.1 ms (0 = no sample yet)
+static volatile LONG g_hudSmartOn = 1;     // [PERF-A6] [Perf] HudSmart - skip unchanged readouts
+extern "C" long OLXR_PerfGpuMsX10() { return g_gpuMsX10; }
+static void GpuTimerSample() {             // never waits, never flushes
+    if (!g_ctx || !g_gpuDisjoint || !g_gpuBegin || !g_gpuEnd || g_gpuQArmed || g_gpuQDead) return;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj = {};
+    if (g_ctx->GetData(g_gpuDisjoint, &dj, sizeof(dj), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;
+    if (dj.Disjoint || !dj.Frequency) return;
+    UINT64 a = 0, b = 0;
+    if (g_ctx->GetData(g_gpuBegin, &a, sizeof(a), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;
+    if (g_ctx->GetData(g_gpuEnd,   &b, sizeof(b), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return;
+    if (b > a) InterlockedExchange(&g_gpuMsX10, (LONG)((b - a) * 10000ull / dj.Frequency));
+}
+static void GpuTimerStart() {
+    if (!g_ctx || !g_d3d11 || g_gpuQArmed || g_gpuQDead) return;
+    if (!g_gpuDisjoint) {
+        D3D11_QUERY_DESC qd = { D3D11_QUERY_TIMESTAMP_DISJOINT, 0 };
+        D3D11_QUERY_DESC qt = { D3D11_QUERY_TIMESTAMP, 0 };
+        // One failure is enough: a device that cannot make these queries will not make them on the
+        // next frame either, and retrying three creations per frame is worse than the measurement.
+        if (FAILED(g_d3d11->CreateQuery(&qd, &g_gpuDisjoint)) || !g_gpuDisjoint ||
+            FAILED(g_d3d11->CreateQuery(&qt, &g_gpuBegin)) || !g_gpuBegin ||
+            FAILED(g_d3d11->CreateQuery(&qt, &g_gpuEnd)) || !g_gpuEnd) {
+            g_gpuQDead = true;
+            XLOG("[OLVR][PERF] GPU timing unavailable on this device - the rest of [PERF] is unaffected");
+            return;
+        }
+        XLOG("[OLVR][PERF] GPU timing ready (disjoint timestamp pair around the frame's commands)");
+    }
+    g_ctx->Begin(g_gpuDisjoint);
+    g_ctx->End(g_gpuBegin);
+    g_gpuQArmed = true;
+}
+static void GpuTimerStop() {
+    if (!g_gpuQArmed || !g_ctx) return;
+    g_ctx->End(g_gpuEnd);
+    g_ctx->End(g_gpuDisjoint);
+    g_gpuQArmed = false;
+}
+
 // Create a D3D11 device on the adapter OpenXR requires (matched by LUID).
 static bool CreateD3D11OnAdapter(const LUID& luid) {
     IDXGIFactory1* factory = nullptr;
@@ -1662,6 +1713,12 @@ static bool Init(UINT w, UINT h) {
                 g_asyncReadback = GetPrivateProfileIntW(L"XR", L"AsyncReadback", 1, ini) != 0;
                 g_zeroCopy = GetPrivateProfileIntW(L"XR", L"ZeroCopy", 1, ini) != 0;
                 g_latchOn = GetPrivateProfileIntW(L"XR", L"FramePoseLatch", 1, ini) ? 1 : 0;      // [FRAMETAG]
+                // [Perf] (Beta 1.2.2 optimization pass) the bridge-side switches. A missing key means
+                // ON, which is the optimized path; 0 restores the pre-1.2.2 behaviour for an A/B.
+                { const bool smart = GetPrivateProfileIntW(L"Perf", L"HudSmart", 1, ini) != 0;
+                  InterlockedExchange(&g_hudSmartOn, smart ? 1 : 0);
+                  XLOG("[OLVR][PERF] camcorder HUD redraw %s", smart ? "only when a readout changes"
+                                                                     : "every frame (the old way)"); }
                 // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
                 // EdgeFill: fill the fitted eye image's margin with the picture's own edge instead
                 // of black, so the runtime's reprojection has something to pull in when the head
@@ -3947,7 +4004,28 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
             g_hudInitialized.assign(g_hudInitialized.size(),false);
         }
     }
-    OLCamHud::Top(g_hudCanvas,state,g_hudText);
+    // [PERF-A6] THE READOUTS ARE REDRAWN ONLY WHEN THEY CHANGE.
+    // The dynamic band is 1920x160 px = 1.2 MB, it used to be rebuilt glyph by glyph and
+    // re-uploaded on EVERY compositor frame - including the ~40% of frames that carry the same game
+    // image ([HELDFRAME]) and every frame in which no readout moved. The state that drew the canvas
+    // is remembered and compared field by field (no padding in the comparison); a swapchain image
+    // that has never been written is still filled in full. [Perf] HudSmart=0 redraws every frame.
+    static OLCamcorderHudState s_drawn = {};
+    static bool s_drawnValid = false;
+    static bool s_styleDirty = false;
+    {   // a style change invalidates the canvas the comparison is about
+        static int s_lastStyle = -1;
+        if (state.style != s_lastStyle) { s_lastStyle = state.style; s_styleDirty = true; }
+    }
+    const bool stateChanged = !g_hudSmartOn || s_styleDirty || !s_drawnValid ||
+        state.energy != s_drawn.energy || state.zoom != s_drawn.zoom ||
+        state.recordingSeconds != s_drawn.recordingSeconds || state.spares != s_drawn.spares ||
+        state.capacity != s_drawn.capacity || state.nightVision != s_drawn.nightVision ||
+        state.visible != s_drawn.visible;
+    if (stateChanged) {
+        OLCamHud::Top(g_hudCanvas,state,g_hudText);
+        s_drawn = state; s_drawnValid = true; s_styleDirty = false;
+    }
     if (!g_hudText.ok) { g_hudFailed = true; return false; }
     uint32_t index = 0;
     XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
@@ -3958,13 +4036,16 @@ static bool CamcorderHudLayer(const OLCamcorderHudState& state, XrCompositionLay
         // Do not release an image whose wait failed. Stand down until session teardown.
         g_hudFailed = true; return false;
     }
-    D3D11_BOX box = {0,OLCamHud::DynamicTop,0,OLCamHud::Width,
-        OLCamHud::DynamicTop+OLCamHud::DynamicHeight,1};
-    const uint8_t* pixels = g_hudCanvas.pixels.data();
-    if (g_hudInitialized[index]) pixels += size_t(OLCamHud::Width)*OLCamHud::DynamicTop*4;
-    g_ctx->UpdateSubresource(g_hudImages[index].texture,0,g_hudInitialized[index] ? &box : nullptr,
-        pixels,OLCamHud::Width*4,0);
-    g_hudInitialized[index] = true;
+    // [PERF-A6] An image that already carries these readouts needs no upload at all.
+    if (stateChanged || !g_hudInitialized[index]) {
+        D3D11_BOX box = {0,OLCamHud::DynamicTop,0,OLCamHud::Width,
+            OLCamHud::DynamicTop+OLCamHud::DynamicHeight,1};
+        const uint8_t* pixels = g_hudCanvas.pixels.data();
+        if (g_hudInitialized[index]) pixels += size_t(OLCamHud::Width)*OLCamHud::DynamicTop*4;
+        g_ctx->UpdateSubresource(g_hudImages[index].texture,0,g_hudInitialized[index] ? &box : nullptr,
+            pixels,OLCamHud::Width*4,0);
+        g_hudInitialized[index] = true;
+    }
     XrSwapchainImageReleaseInfo ri = {}; ri.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO_VALUE;
     if (!XrSucceeded(g_fn.releaseSwapchainImage(g_hudSc,&ri))) { g_hudFailed = true; return false; }
     q.type = XR_TYPE_COMPOSITION_LAYER_QUAD_VALUE;
@@ -4994,6 +5075,10 @@ static bool BlitToSwapchain() {
 
 // [PERF] Present-to-Present interval and the 5 s report. Runs whether or not a session is up, so
 // a flat run measures the game alone.
+extern "C" void OLProxy_TakeDrawStats(long* draws, long* occlSkipped);          // d3d9_proxy.cpp
+extern "C" void OLUE3_TakeFrameStats(long* calcSceneSumUs, long* calcSceneMaxUs, long* skelCalls,
+                                     long* skelMiles, long* fovCalls, long* pvsCalls, long* occlCalls,
+                                     long* fovCacheHits);
 // (Test46) [HITCH] when each long frame happened (seconds on the log's clock) - a pattern ("every 10 s")
 // shows up next to whatever else the log says happened then.
 extern "C" double OLProxy_LogTime();
@@ -5032,6 +5117,29 @@ static void PerfFrame() {
          (g_zcState > 0 ? "zero-copy (GPU hand-over)" : (g_asyncReadback ? "async readback" : "readback")),
          (g_zcSkipped || g_exSkipped) ? " - some frames not sent, all shared frames busy" : "", InterlockedExchange(&g_heldEyeFrames, 0) / secs);
     g_zcSkipped = 0; g_exSkipped = 0;
+    // [PERF] (Beta 1.2.2 pass) The per-frame numbers the optimization work is judged by:
+    //   draws   - draw calls the game submitted in this period (two passes a frame: one per eye).
+    //             This is the number that moves if a second-eye pass or its culling is ever skipped.
+    //   split   - µs inside the mod's own two CalcSceneView calls (game thread), average + worst.
+    //   skel    - UpdateSkelPose calls (every skeletal component in the level) and how many of
+    //             them were Miles's, i.e. how many reached the arm solver's gate.
+    //   fov/pvs - how many times per frame the engine asks for the camera angle and for PVS data;
+    //             both run per eye and per primitive, so they show the split's real shape.
+    //   gpu     - GPU time of the mod's OWN commands (eye blits + the copies into the images).
+    {
+        long draws = 0, occlSkipped = 0;
+        OLProxy_TakeDrawStats(&draws, &occlSkipped);
+        long splitUs = 0, splitMax = 0, skel = 0, skelMiles = 0, fov = 0, pvs = 0, occl = 0, fovHits = 0;
+        OLUE3_TakeFrameStats(&splitUs, &splitMax, &skel, &skelMiles, &fov, &pvs, &occl, &fovHits);
+        const double frames = g_pfFrame.n > 0 ? (double)g_pfFrame.n : 1.0;
+        XLOG("[OLVR][PERF] draws %.0f/frame (%.0f occl-skipped) | split %.0f us avg %.0f max | "
+             "skel %.1f/frame (%lu solved) | fov %.1f/frame (%lu cached), pvs %.1f/frame, "
+             "occl %.1f/frame | gpu(own cmds) %.1f ms",
+             draws / frames, occlSkipped / frames, splitUs / frames, (double)splitMax,
+             (double)skel / frames, (unsigned long)skelMiles, (double)fov / frames,
+             (unsigned long)fovHits, (double)pvs / frames, (double)occl / frames,
+             (double)OLXR_PerfGpuMsX10() / 10.0);
+    }
     OLProxy_ExStatReport();   // (Test47) [EXSTAT] the game's resource creates / locks this period
     XLOG("[OLVR][XRTIMING] loop avg %.2f max %.2f | begin avg %.2f max %.2f | end avg %.2f max %.2f | "
          "display step avg %.2f max %.2f ms",
@@ -5182,6 +5290,9 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
         const double db = PerfNowMs() - tb;
         AcquireSRWLockExclusive(&g_pfLock); g_pfBegin.Add(db); ReleaseSRWLockExclusive(&g_pfLock);
     }
+    // [PERF-GPU] read last frame's measurement (never waits), then bracket this frame's commands.
+    GpuTimerSample();
+    GpuTimerStart();
 
     // [XRINPUT] Controllers, on the worker, once per frame, at the same predicted display time
     // the head pose uses - so hands and head are sampled for the same instant. This is the ONLY
@@ -6210,6 +6321,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
     // success if the result is discarded (SteamVR validates and rejects; Meta forgives). The
     // result also rides the periodic log below, so a run answers this without a repro recipe.
     const double te = PerfNowMs();
+    GpuTimerStop();          // [PERF-GPU] end of the mod's own commands for this frame
     const XrResult efr = g_fn.endFrame(g_session, &fei);
     OLInteract_CamcorderHudSubmitted(camcorderShown && XrSucceeded(efr));
     {
