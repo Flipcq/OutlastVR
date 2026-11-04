@@ -40,6 +40,11 @@ has a number next to it from the mod's own log, or is waiting for one.
 | `gpu(own cmds) X ms` | GPU time of the mod's **own** command stream (eye blits + copies) | below ~1 ms; if it grows, the bridge is the problem, not the game |
 | `[XRTIMING] loop …` | the compositor loop's cost and the real display step (13.9 = 72 Hz, 11.1 = 90 Hz) | 22.2 steps mixed in mean every second frame is synthesised |
 
+Phase 3 adds one boot line each: `[PERF-A1]` says whether the 1 ms timer, the worker boost and
+the optional process boost are on; `[PERF-A2]` says which pacing wait is in use; and `[PERF-A8]`
+logs the moment the bridge takes the monitor over (`bridge owns the monitor: WxH`), or the reason
+it handed it back.
+
 `[HITCH]` lists frames over 40 ms with the second they happened, next to whatever else the log says
 happened then.
 
@@ -96,6 +101,23 @@ content-level trade (detail props disappear), so it would ship as an option, nev
 | `[PERF-D4]` NV light identity | `ol_ue3.cpp` | the classification removed for lights already known |
 | `[PERF-A6]` HUD smart redraw | `ol_xr.cpp` | 1.2 MB upload + a glyph pass removed on frames whose readouts did not move |
 | `[PERF-A7]` scan time budget | `ol_ue3.cpp` | the object scan's cost per frame bounded by time instead of 4000 objects |
+
+### Phase 3 - threading and synchronisation
+
+| Change | Where | Effect |
+|---|---|---|
+| `[PERF-A1]` timer + scheduling | `ol_xr.cpp` `Init` / `WorkerMain` | `timeBeginPeriod(1)` for this process (Sleep(1) is 1 ms again), the XR worker at `THREAD_PRIORITY_TIME_CRITICAL` with the EcoQoS opt-out, optional `ABOVE_NORMAL` process priority |
+| `[PERF-A2]` waking wait | `ol_xr.cpp` `PaceToHeadset` | the render thread blocks in `WaitOnAddress` on `g_conSeq` instead of spinning (`YieldProcessor`) through the last 1.5 ms of the budget |
+| `[PERF-A8]` monitor on the bridge | `ol_xr.cpp` `MonitorPresent`, `d3d9_proxy.cpp` `Hook_Present` | while stereo is live the D3D11 worker draws the left eye straight into a DXGI monitor swap chain and presents with `DO_NOT_WAIT`; the render thread does neither the two full-frame `StretchRect` calls nor the windowed Present |
+
+A8 keeps the old path as a live fallback: the proxy only stands down when the bridge has
+presented recently - `OLXR_MonitorActive()` allows 400 ms, lengthened to two monitor intervals
+when `[Render] DesktopMirrorFps` is very low - so a stopped worker, a refused swap chain
+(`CreateSwapChain` on the game's HWND), a non-windowed mode, or a headset going to sleep all
+return to `DrawOneEyeDesktopMirror` + `o_Present` on the next frame. The swap chain is
+bitblt (`DXGI_SWAP_EFFECT_DISCARD`) on purpose: it can coexist with the game's D3D9 window, so
+the fallback can hand the window straight back. While A8 is live, `present avg` in `[PERF]` is 0
+because this thread is not presenting - that is the point, not a regression.
 
 ### Investigated and deliberately NOT changed
 

@@ -41,6 +41,7 @@
 #include <d3d9on12.h>
 #include <dxgi.h>
 #include <wincodec.h>
+#include <timeapi.h>
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
@@ -345,7 +346,7 @@ static UINT            g_pubW = 0, g_pubH = 0, g_pubPitch = 0;
 static uint64_t        g_pubSeq = 0;       // bumped once per published game frame
 static XrPosef         g_pubPose = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 static LONG            g_pubPoseValid = 0;
-static uint64_t        g_conSeq = 0;       // last seq the worker uploaded into g_uploadTex
+static volatile uint64_t g_conSeq = 0;      // last seq the worker uploaded into g_uploadTex
 static XrPosef         g_conPose = { { 0, 0, 0, 1 }, { 0, 0, 0 } };
 static LONG            g_conPoseValid = 0;
 // [FOVLATCH] The rendered FOV must travel WITH the image, for the same reason the pose does.
@@ -1605,6 +1606,7 @@ static volatile LONG g_displayPeriodUs = 0;                // from xrWaitFrame, 
 // moves. Before publishing a new frame, wait (up to about one display period) for the worker to
 // have taken the previous one. A game slower than the headset never waits.
 static bool     g_paceToHeadset = true;
+static volatile LONG g_paceWait = 1;       // [PERF-A2] 1 = WaitOnAddress, 0 = the old spin
 static bool     g_asyncReadback = true;    // [ASYNCREAD] see PublishBackbufferAsync
 static bool     g_zeroCopy = true;         // [ZEROCOPY] see PublishZeroCopy (needs the D3D9On12 device)
 
@@ -1658,6 +1660,93 @@ static void GpuTimerStop() {
     g_ctx->End(g_gpuDisjoint);
     g_gpuQArmed = false;
 }
+
+// [PERF-A1] TIMER RESOLUTION, THREAD PRIORITY, EcoQoS. (Beta 1.2.2 optimization pass, phase 3)
+//
+// PaceToHeadset waits for the bridge in millisecond steps. Since Windows 10 2004 the timer
+// resolution is a PER-PROCESS setting: a process that never asks for 1 ms runs on the default
+// ~15.6 ms tick, so Sleep(1) can sleep 15.6 ms - longer than the whole 1.25-period budget, and
+// the wait that was meant to miss the deadline by a hair misses it by a display interval.
+// timeBeginPeriod(1) is scoped to this process and costs nothing measurable on a desktop;
+// [Perf] TimerResolution=0 restores the old tick for an A/B.
+//
+// The worker owns every xrWaitFrame/xrEndFrame call, so its wake-up jitter is the compositor's
+// jitter. THREAD_PRIORITY_TIME_CRITICAL puts it ahead of ordinary game work, and the EcoQoS
+// opt-out matters on laptops and battery-powered handhelds, where Windows otherwise parks a
+// thread that only wakes every 11 ms in the efficiency class and adds wake-up latency.
+// [Perf] ThreadPriority=0 and [Perf] ProcessPriority=0 restore the defaults.
+static volatile LONG g_timerResOn = 1;
+static volatile LONG g_threadPrioOn = 1;
+static volatile LONG g_processPrioOn = 0;
+static volatile LONG g_timerResRaised = 0;
+
+static void PerfRaiseTimerResolution() {
+    if (!g_timerResOn) return;
+    if (InterlockedCompareExchange(&g_timerResRaised, 1, 0) != 0) return;
+    const MMRESULT r = timeBeginPeriod(1);
+    if (r == TIMERR_NOERROR)
+        XLOG("[OLVR][PERF-A1] timer resolution 1 ms for this process (Sleep(1) no longer rounds to ~15.6 ms)");
+    else
+        XLOG("[OLVR][PERF-A1] timeBeginPeriod(1) failed r=%u - pacing keeps the default tick", (unsigned)r);
+}
+
+static void PerfBoostCurrentThread(const char* why) {
+    if (g_threadPrioOn && !SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+        static volatile LONG logged = 0;
+        if (InterlockedCompareExchange(&logged, 1, 0) == 0)
+            XLOG("[OLVR][PERF-A1] SetThreadPriority(%s) failed err=%lu", why, GetLastError());
+    }
+    // ControlMask = "execution speed is under control", StateMask = 0 = "never throttle".
+    // Pre-Windows-10-1709 systems do not know the information class; the failure is harmless.
+    THREAD_POWER_THROTTLING_STATE st = {};
+    st.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    st.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    st.StateMask = 0;
+    static volatile LONG logged = 0;
+    if (!SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &st, sizeof(st))) {
+        if (InterlockedCompareExchange(&logged, 1, 0) == 0)
+            XLOG("[OLVR][PERF-A1] ThreadPowerThrottling opt-out unavailable err=%lu (fine before Win10 1709)", GetLastError());
+    } else if (InterlockedCompareExchange(&logged, 1, 0) == 0) {
+        XLOG("[OLVR][PERF-A1] %s thread: TIME_CRITICAL, EcoQoS opted out", why);
+    }
+}
+
+static void PerfRaiseProcessPriority() {
+    if (!g_processPrioOn) return;
+    if (!SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS))
+        XLOG("[OLVR][PERF-A1] SetPriorityClass failed err=%lu", GetLastError());
+    else
+        XLOG("[OLVR][PERF-A1] process priority ABOVE_NORMAL ([Perf] ProcessPriority=1)");
+}
+
+// [PERF-A8] THE MONITOR, PRESENTED BY THE BRIDGE. (Beta 1.2.2 optimization pass, phase 3)
+//
+// The old desktop preview ran on the game's render thread: two full-frame StretchRect calls in
+// DrawOneEyeDesktopMirror (left half -> a private RT -> the whole backbuffer) plus the windowed
+// Present of the resulting 3456x1824 frame. Both land on the thread that the rest of this pass
+// exists to protect, and the second copy only exists to overwrite the right half of a frame the
+// headset has already consumed.
+//
+// The bridge already holds the frame in g_uploadTex. A DXGI swap chain can be created on the
+// SAME game window the D3D9 swap chain uses, so while this path is live the render thread does
+// neither the blow-up nor the windowed Present: the worker draws the left eye into the monitor
+// swap chain at [Render] DesktopMirrorFps and presents with DO_NOT_WAIT. When it is not live
+// (not split, not windowed, headset asleep, swap chain failed, or no present in 400 ms) the
+// proxy falls back to exactly the old path, so the monitor can never be left blank by this.
+// [Perf] BridgeMirror=0 restores the old path for an A/B.
+//
+// Verified end to end on this machine (RTX 3060, 2026-11): a D3D9 windowed swap chain on an HWND
+// shows red; a DXGI bitblt swap chain created on that same HWND then shows blue; and the next
+// D3D9 Present shows green again with the DXGI chain still alive. The API accepting the create
+// was never the whole question - the pixels arriving was.
+static volatile LONG   g_bridgeMirrorOn = 1;
+static IDXGISwapChain* g_monSc = nullptr;
+static HWND            g_monHwnd = nullptr;
+static UINT            g_monW = 0, g_monH = 0;
+static volatile LONG   g_monLive = 0;
+static volatile LONG64 g_monLastTick = 0;      // GetTickCount64 of the last successful Present
+static volatile LONG   g_monFails = 0;
+static volatile LONG64 g_monRetryTick = 0;     // don't re-attempt CreateSwapChain before this
 
 // Create a D3D11 device on the adapter OpenXR requires (matched by LUID).
 static bool CreateD3D11OnAdapter(const LUID& luid) {
@@ -1719,6 +1808,19 @@ static bool Init(UINT w, UINT h) {
                   InterlockedExchange(&g_hudSmartOn, smart ? 1 : 0);
                   XLOG("[OLVR][PERF] camcorder HUD redraw %s", smart ? "only when a readout changes"
                                                                      : "every frame (the old way)"); }
+                // [PERF-A1] timer resolution / scheduling, and [PERF-A2] the pacing wait.
+                g_timerResOn    = GetPrivateProfileIntW(L"Perf", L"TimerResolution", 1, ini) ? 1 : 0;
+                g_threadPrioOn  = GetPrivateProfileIntW(L"Perf", L"ThreadPriority", 1, ini) ? 1 : 0;
+                g_processPrioOn = GetPrivateProfileIntW(L"Perf", L"ProcessPriority", 0, ini) ? 1 : 0;
+                g_paceWait      = GetPrivateProfileIntW(L"Perf", L"PaceWait", 1, ini) ? 1 : 0;
+                g_bridgeMirrorOn = GetPrivateProfileIntW(L"Perf", L"BridgeMirror", 1, ini) ? 1 : 0;
+                XLOG("[OLVR][PERF-A1] timer=%ld thread=%ld process=%ld | [PERF-A2] pacing wait=%s | [PERF-A8] bridge monitor=%s",
+                     g_timerResOn, g_threadPrioOn, g_processPrioOn,
+                     g_paceWait ? "WaitOnAddress (no spin)" : "the old spin",
+                     g_bridgeMirrorOn ? "on (render thread does neither the blow-up nor the Present)"
+                                      : "off (the old render-thread mirror)");
+                PerfRaiseTimerResolution();
+                PerfRaiseProcessPriority();
                 // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
                 // EdgeFill: fill the fitted eye image's margin with the picture's own edge instead
                 // of black, so the runtime's reprojection has something to pull in when the head
@@ -3073,6 +3175,7 @@ static void ConsumeUpload() {
     ReleaseSRWLockShared(&g_pubLock);
     if (!seq || seq == g_conSeq) return;
     if (w != g_w || h != g_h) { if (!RebuildForSize(w, h)) return; }
+    bool advanced = false;                 // [PERF-A2] did this frame actually reach the bridge
     AcquireSRWLockShared(&g_pubLock);
     if (g_pubZcSlot >= 0) {
         // [ZEROCOPY] the frame is on the GPU already
@@ -3081,6 +3184,7 @@ static void ConsumeUpload() {
             if (ZcWorkerTake(g_pubZcSlot)) {
                 g_conSeq = g_pubSeq; g_conPose = g_pubPose; g_conPoseValid = g_pubPoseValid;
                 g_conFovX = g_pubFovX; g_conFovY = g_pubFovY; g_conLensFit = g_pubLensFit;
+                advanced = true;
                 const double dt = PerfNowMs() - t0;
                 AcquireSRWLockExclusive(&g_pfLock); g_pfUpload.Add(dt); ++g_pfXrNew; ReleaseSRWLockExclusive(&g_pfLock);
             }
@@ -3092,6 +3196,7 @@ static void ConsumeUpload() {
             if (ExWorkerTake(g_pubExSlot)) {
                 g_conSeq = g_pubSeq; g_conPose = g_pubPose; g_conPoseValid = g_pubPoseValid;
                 g_conFovX = g_pubFovX; g_conFovY = g_pubFovY; g_conLensFit = g_pubLensFit;
+                advanced = true;
                 const double dt = PerfNowMs() - t0;
                 AcquireSRWLockExclusive(&g_pfLock); g_pfUpload.Add(dt); ++g_pfXrNew; ReleaseSRWLockExclusive(&g_pfLock);
             }
@@ -3101,10 +3206,13 @@ static void ConsumeUpload() {
         if (g_devUpload) g_ctx->UpdateSubresource(g_uploadTex, 0, nullptr, g_pubPixels.data(), g_pubPitch, 0);
         g_conSeq = g_pubSeq; g_conPose = g_pubPose; g_conPoseValid = g_pubPoseValid;
         g_conFovX = g_pubFovX; g_conFovY = g_pubFovY; g_conLensFit = g_pubLensFit;
+        advanced = true;
         const double dt = PerfNowMs() - t0;
         AcquireSRWLockExclusive(&g_pfLock); g_pfUpload.Add(dt); ++g_pfXrNew; ReleaseSRWLockExclusive(&g_pfLock);
     }
     ReleaseSRWLockShared(&g_pubLock);
+    // [PERF-A2] the game's render thread may be blocked in PaceToHeadset on this exact value.
+    if (advanced) WakeByAddressAll((void*)&g_conSeq);
 }
 
 extern "C" int  OLUE3_StereoMode();          // 0 none, 1 SBS split, 2 SFR, 3 AER
@@ -3608,6 +3716,173 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
 // True when the shader path can run at all.
 static bool ShaderBlitReady() {
     return EnsureGammaPipeline() && BuildGammaLut();
+}
+
+// ---- [PERF-A8] the bridge's own monitor presentation (see the note by g_bridgeMirrorOn) ----
+extern "C" HWND OLProxy_GameWindow();
+extern "C" int  OLProxy_IsWindowed();
+extern "C" long OLProxy_MirrorFps();
+extern "C" int  OLProxy_MirrorOneEye();
+
+static void MonitorReleaseSwapchain() {
+    if (g_monSc) { g_monSc->Release(); g_monSc = nullptr; }
+    g_monHwnd = nullptr;
+    g_monW = g_monH = 0;
+}
+
+// Recreated only when the window or the client size changes; DXGI requires every backbuffer
+// reference to be gone before ResizeBuffers, and this path holds none between calls.
+static bool MonitorEnsureSwapchain(HWND hwnd, UINT w, UINT h) {
+    if (g_monSc && g_monHwnd == hwnd && g_monW == w && g_monH == h) return true;
+    // A refused create is not going to start working on the next frame; retry on a slow timer so
+    // a mode change can still recover without paying a CreateSwapChain every 33 ms.
+    const LONG64 now = (LONG64)GetTickCount64();
+    const LONG64 retry = (LONG64)InterlockedCompareExchange64((volatile LONG64*)&g_monRetryTick, 0, 0);
+    if (retry && now < retry) return false;
+    MonitorReleaseSwapchain();
+    // The factory MUST come from this device's own adapter: the bridge's D3D11 device is created
+    // on the OpenXR LUID, which is not necessarily the primary/adapter 0 one DXGI would default to
+    // (hybrid laptops, a virtual display in the mix), and CreateSwapChain rejects a device from a
+    // different factory with E_INVALIDARG.
+    IDXGIFactory1* fac = nullptr;
+    IDXGIDevice* dxdev = nullptr;
+    IDXGIAdapter* ad = nullptr;
+    if (SUCCEEDED(g_d3d11->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxdev)) && dxdev) {
+        if (SUCCEEDED(dxdev->GetAdapter(&ad)) && ad) ad->GetParent(__uuidof(IDXGIFactory1), (void**)&fac);
+    }
+    if (!fac && FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&fac))) fac = nullptr;
+    if (ad) ad->Release();
+    if (dxdev) dxdev->Release();
+    if (!fac) return false;
+    DXGI_SWAP_CHAIN_DESC sd = {};
+    sd.BufferCount = 2;
+    sd.BufferDesc.Width = w; sd.BufferDesc.Height = h;
+    sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sd.OutputWindow = hwnd;
+    sd.SampleDesc.Count = 1;
+    sd.Windowed = TRUE;
+    // Bitblt model on purpose: it coexists with the game's D3D9 window the same way it did
+    // before this pass, and the fallback can hand the window straight back to o_Present.
+    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    const HRESULT hr = fac->CreateSwapChain(g_d3d11, &sd, &g_monSc);
+    fac->Release();
+    if (FAILED(hr) || !g_monSc) {
+        if (InterlockedIncrement(&g_monFails) == 1)
+            XLOG("[OLVR][PERF-A8] monitor swapchain create FAILED hr=0x%08lX - keeping the render-thread mirror",
+                 (unsigned long)hr);
+        g_monSc = nullptr;
+        InterlockedExchange64((volatile LONG64*)&g_monRetryTick, now + 2000);
+        return false;
+    }
+    InterlockedExchange64((volatile LONG64*)&g_monRetryTick, 0);
+    g_monW = w; g_monH = h; g_monHwnd = hwnd;
+    XLOG("[OLVR][PERF-A8] bridge owns the monitor: %ux%u bitblt swapchain on the game window", w, h);
+    return true;
+}
+
+// The eye blit's own shader and LUT, drawn straight into the monitor image. No scratch target:
+// the picture fills the whole buffer, so there is no black border to preserve, and reusing
+// GammaDraw would make its size-keyed scratch thrash with the eye path on non-sRGB runtimes.
+static bool MonitorDraw(ID3D11Texture2D* dst, UINT dstW, UINT dstH, bool oneEye) {
+    if (!g_uploadTex || !g_w || !g_h || !g_blitCB) return false;
+    if (!ShaderBlitReady()) return false;
+    ID3D11RenderTargetView* rtv = nullptr;
+    if (FAILED(g_d3d11->CreateRenderTargetView(dst, nullptr, &rtv)) || !rtv) return false;
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (FAILED(g_d3d11->CreateShaderResourceView(g_uploadTex, nullptr, &srv)) || !srv) {
+        rtv->Release(); return false;
+    }
+    // [Render] DesktopMirrorOneEye=0 asks for the raw side-by-side frame, exactly as the old
+    // render-thread path presented it; 1 (the default) blows the left eye up to fill the window.
+    const UINT  boxW = oneEye ? g_w / 2 : g_w;
+    const float cb[12] = { 0.0f, 0.0f,
+                           (float)boxW / (float)g_w, 1.0f,
+                           0.5f / (float)g_w, ((float)boxW - 0.5f) / (float)g_w,
+                           1.0f / (float)g_w, 1.0f / (float)g_h,
+                           0.0f, 0.0f,             // a preview: bilinear, no sharpening
+                           1.0f - g_presentFade,
+                           0.0f };
+    g_ctx->UpdateSubresource(g_blitCB, 0, nullptr, cb, 0, 0);
+    ID3D11ShaderResourceView* srvs[2] = { srv, g_lutSRVSrgbEnc ? g_lutSRVSrgbEnc : g_lutSRV };
+    D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)dstW, (float)dstH, 0.0f, 1.0f };
+    const float blendFactor[4] = { 0, 0, 0, 0 };
+    g_ctx->IASetInputLayout(nullptr);
+    g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_ctx->VSSetShader(g_blitVS, nullptr, 0);
+    g_ctx->VSSetConstantBuffers(0, 1, &g_blitCB);
+    g_ctx->PSSetShader(g_blitPS, nullptr, 0);
+    g_ctx->PSSetConstantBuffers(0, 1, &g_blitCB);
+    g_ctx->PSSetShaderResources(0, 2, srvs);
+    g_ctx->PSSetSamplers(0, 1, &g_blitSamp);
+    g_ctx->OMSetBlendState(g_blitBlend, blendFactor, 0xffffffff);
+    g_ctx->OMSetDepthStencilState(g_blitDepth, 0);
+    g_ctx->OMSetRenderTargets(1, &rtv, nullptr);
+    g_ctx->RSSetState(g_blitRaster);
+    g_ctx->RSSetViewports(1, &vp);
+    g_ctx->Draw(3, 0);
+    ID3D11ShaderResourceView* nul[2] = { nullptr, nullptr };
+    ID3D11RenderTargetView* nulrt = nullptr;
+    g_ctx->PSSetShaderResources(0, 2, nul);
+    g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
+    srv->Release();
+    rtv->Release();
+    return true;
+}
+
+// Called from the worker: it owns g_ctx and already has the frame. Never waits on the GPU.
+static void MonitorPresent() {
+    if (!g_bridgeMirrorOn || !g_useWorker || !g_running) {
+        InterlockedExchange(&g_monLive, 0);
+        return;
+    }
+    const bool split = OLUE3_SplitActive() && OLUE3_StereoMode() == 1;
+    HWND hwnd = OLProxy_GameWindow();
+    if (!split || !hwnd || !g_conSeq || !OLProxy_IsWindowed() || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+        if (InterlockedExchange(&g_monLive, 0))
+            XLOG("[OLVR][PERF-A8] monitor back to the game's own Present (not split / not windowed)");
+        return;
+    }
+    RECT rc = {};
+    if (!GetClientRect(hwnd, &rc)) return;
+    const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
+    if (w < 64 || h < 64) return;
+    const LONG fps = OLProxy_MirrorFps();
+    if (fps > 0) {
+        const LONG64 last = (LONG64)InterlockedCompareExchange64((volatile LONG64*)&g_monLastTick, 0, 0);
+        if (last && (LONG64)GetTickCount64() - last < (LONG64)(1000 / fps) - 1) return;
+    }
+    if (!MonitorEnsureSwapchain(hwnd, w, h)) return;
+    ID3D11Texture2D* back = nullptr;
+    if (FAILED(g_monSc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&back)) || !back) return;
+    const bool drawn = MonitorDraw(back, w, h, OLProxy_MirrorOneEye() != 0);
+    back->Release();
+    if (!drawn) return;
+    const HRESULT hr = g_monSc->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+    if (SUCCEEDED(hr) || hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+        if (hr != DXGI_ERROR_WAS_STILL_DRAWING) {
+            InterlockedExchange64((volatile LONG64*)&g_monLastTick, (LONG64)GetTickCount64());
+            if (InterlockedExchange(&g_monLive, 1) == 0)
+                XLOG("[OLVR][PERF-A8] bridge now presents the monitor at %ld fps - render thread is out of that path", fps);
+        }
+    } else if (InterlockedIncrement(&g_monFails) % 300 == 1) {
+        XLOG("[OLVR][PERF-A8] monitor Present failed hr=0x%08lX", (unsigned long)hr);
+    }
+}
+
+// The proxy asks this once per Present. True only while the bridge has really been presenting:
+// a stopped worker, a failed swap chain or a split ending all return to the old path within the
+// watchdog window, so the monitor is never left showing a stale frame. The window is 400 ms, but
+// it must also cover two monitor intervals when [Render] DesktopMirrorFps is set very low - at
+// 2 fps a fixed 400 ms would expire between two legitimate presents and flap between the paths.
+extern "C" int OLXR_MonitorActive() {
+    if (!g_bridgeMirrorOn || !g_monLive) return 0;
+    const LONG64 last = (LONG64)InterlockedCompareExchange64((volatile LONG64*)&g_monLastTick, 0, 0);
+    if (!last) return 0;
+    LONG64 tol = 400;
+    const LONG fps = OLProxy_MirrorFps();
+    if (fps > 0) { const LONG64 two = 2000 / (LONG64)fps + 100; if (two > tol) tol = two; }
+    return ((LONG64)GetTickCount64() - last) < tol ? 1 : 0;
 }
 
 // [STREAMEDGE] Defined with the fitted blit further down; this path needs it too (see BlitHalfToEye).
@@ -5189,18 +5464,36 @@ static void PerfFrame() {
 }
 
 // [PACING] see g_paceToHeadset. Waits only while the previous frame is still unconsumed.
+//
+// [PERF-A2] The wait used to be Sleep(1) plus a YieldProcessor() spin in the last 1.5 ms. That
+// spin runs on the game's RENDER thread - the thread the whole performance pass is trying to
+// protect - and burned a core exactly when draw submission needed it. WaitOnAddress blocks
+// until the bridge publishes g_conSeq and wakes on the same cache line, so the thread sleeps
+// instead of spinning and still wakes within microseconds. The deadline is kept as a hard
+// ceiling: if the bridge never answers, the frame is published anyway, exactly as before.
+// [Perf] PaceWait=0 restores the spin for an A/B.
 static void PaceToHeadset() {
     const LONG periodUs = g_displayPeriodUs;
     if (!g_paceToHeadset || !g_running || periodUs <= 0) return;
     const double t0 = PerfNowMs(), limit = t0 + periodUs / 1000.0 * 1.25;
     for (;;) {
         AcquireSRWLockShared(&g_pubLock);
-        const bool taken = g_pubSeq == 0 || g_conSeq >= g_pubSeq;
+        const uint64_t want = g_pubSeq;
+        const uint64_t done = g_conSeq;
         ReleaseSRWLockShared(&g_pubLock);
-        if (taken) break;
+        if (want == 0 || done >= want) break;
         const double now = PerfNowMs();
         if (now >= limit) break;
-        if (limit - now > 1.5) Sleep(1); else YieldProcessor();
+        if (!g_paceWait) {                       // [PERF-A2] the old path, for the A/B
+            if (limit - now > 1.5) Sleep(1); else YieldProcessor();
+            continue;
+        }
+        DWORD waitMs = (DWORD)(limit - now);
+        if (waitMs == 0) waitMs = 1;
+        // Lost-wakeup safe by construction: WaitOnAddress compares the value at the address
+        // before blocking, so a g_conSeq bump between the read above and this call returns
+        // immediately instead of sleeping for the rest of the budget.
+        WaitOnAddress((volatile void*)&g_conSeq, (void*)&done, sizeof(done), waitMs);
     }
     g_pfPace.Add(PerfNowMs() - t0);
 }
@@ -6421,6 +6714,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
 // [SUBMITTHREAD] The worker: a clean loop whose only blocking cost is waitFrame itself, so the
 // compositor sees its cadence answered every single interval no matter what the game is doing.
 static DWORD WINAPI WorkerMain(LPVOID) {
+    PerfBoostCurrentThread("XR worker");   // [PERF-A1] compositor deadline lives on this thread
     while (!g_workerStop) {
         // [EXITGUARD] Step OUT of the OpenXR runtime as soon as the game stops presenting.
         // When the game closes, Windows tears the process down while this thread may be parked
@@ -6435,6 +6729,7 @@ static DWORD WINAPI WorkerMain(LPVOID) {
         if (g_dead) break;
         if (!g_running) { OLProxy_MouseUseSample(0, 0, 0); Sleep(10); continue; }
         ConsumeUpload();
+        MonitorPresent();   // [PERF-A8] the monitor rides this thread now, never the render thread
         if (!RunXrFrame(nullptr, g_conSeq != 0)) { OLProxy_MouseUseSample(0, 0, 0); Sleep(20); }
     }
     OLProxy_MouseUseSample(0, 0, 0);

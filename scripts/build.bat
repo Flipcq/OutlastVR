@@ -45,7 +45,7 @@ cl /nologo /O2 /MT /LD /EHsc /I"%MH%\include" /I"%MH%\src\hde" /I"%IMGUI%" /I"%I
   "%IMGUI%\imgui.cpp" "%IMGUI%\imgui_draw.cpp" "%IMGUI%\imgui_tables.cpp" "%IMGUI%\imgui_widgets.cpp" ^
   "%IMGUI%\backends\imgui_impl_dx9.cpp" ^
   "%MH%\src\hde\hde64.c" "%MH%\src\buffer.c" "%MH%\src\hook.c" "%MH%\src\trampoline.c" ^
-  /Fe:"%OUTDIR%\d3d9.dll" /link user32.lib gdi32.lib ole32.lib windowscodecs.lib shell32.lib d3d11.lib dxgi.lib xinput.lib ^
+  /Fe:"%OUTDIR%\d3d9.dll" /link user32.lib gdi32.lib ole32.lib windowscodecs.lib shell32.lib d3d11.lib dxgi.lib xinput.lib winmm.lib synchronization.lib ^
   /DEF:"%SRC%\d3d9_proxy.def" /MAP:"%OUTDIR%\d3d9.map"
 if errorlevel 1 ( echo [build] compile/link FAILED & exit /b 1 )
 

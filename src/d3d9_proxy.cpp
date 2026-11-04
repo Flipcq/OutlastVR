@@ -994,6 +994,7 @@ static void RunFullscreenFixIfDue();   // [FSFIX] fullscreen re-assert, defined 
 static void HiResNudge(long presentCount);   // [HIRES] defined with Hook_Reset below
 extern "C" double OLXR_PerfNowMs();
 extern "C" void   OLXR_PerfNotePresent(double ms);
+extern "C" int    OLXR_MonitorActive();      // [PERF-A8] the bridge is presenting the monitor
 extern "C" void   OLXR_OnDeviceLost();
 
 static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* This, const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
@@ -1050,6 +1051,19 @@ static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* This, const RECT
     // command buffer, so the GPU starts on the frame as before. Menus, loading and the theater (no stereo
     // split) present every frame.
     const bool split = OLUE3_SplitActive() && OLUE3_StereoMode() == 1;
+    // [PERF-A8] (Beta 1.2.2) While the D3D11 worker owns the monitor (it drew and presented this
+    // frame's left eye on its own swap chain, off this thread), the render thread does neither
+    // the one-eye StretchRects nor the windowed Present. It still flushes, so the GPU starts on
+    // the frame exactly as before. The bridge stops counting as live shortly after its last
+    // present (400 ms, or two monitor intervals at a very low DesktopMirrorFps), which drops
+    // straight back into the old path below.
+    if (split && g_xrAllowed && g_xrEnabled && OLXR_MonitorActive()) {
+        static IDirect3DQuery9* s_flushA8 = nullptr;
+        if (!s_flushA8) This->CreateQuery(D3DQUERYTYPE_EVENT, &s_flushA8);
+        if (s_flushA8) { s_flushA8->Issue(D3DISSUE_END); s_flushA8->GetData(nullptr, 0, D3DGETDATA_FLUSH); }
+        InterlockedIncrement(&g_mirrorSkipped);
+        return D3D_OK;
+    }
     const LONG mfps = g_mirrorFps;
     if (split && mfps > 0 && g_xrAllowed && g_xrEnabled) {
         static double s_lastMs = 0.0;
@@ -1137,6 +1151,15 @@ static LONG g_fsFixCount     = 0;            // attempts since the last windowed
 // the WM_SIZE so its scene viewport, UI and backbuffer all change together.
 static volatile LONG g_highResWindow = 1;
 static LONG g_leaveExclusiveAtPresent = 0;
+
+// [PERF-A8] What the D3D11 bridge needs to present the monitor itself: the window it draws into,
+// whether that window is really windowed (an exclusive swap chain cannot be shared with DXGI),
+// the same [Render] DesktopMirrorFps the render-thread path used, and whether the preview is the
+// one-eye blow-up or the raw side-by-side frame (DesktopMirrorOneEye).
+extern "C" HWND OLProxy_GameWindow() { return g_gameWnd; }
+extern "C" int  OLProxy_IsWindowed() { return g_isWindowed ? 1 : 0; }
+extern "C" long OLProxy_MirrorFps()  { return g_mirrorFps; }
+extern "C" int  OLProxy_MirrorOneEye() { return g_desktopMirrorOneEye ? 1 : 0; }
 
 static void SendFullscreenToggle(const char* why) {
     if (!g_gameWnd) { Log("[OLVR][FSFIX] no game window yet - cannot toggle"); return; }
