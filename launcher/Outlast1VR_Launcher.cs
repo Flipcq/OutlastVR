@@ -2915,7 +2915,7 @@ namespace Outlast1VR
             double a = ua * U.Smooth(1.95, 2.4, t); if (a < 0.01) return;
             using (Font fSmall = new Font(fCredit.FontFamily, 10f, FontStyle.Bold))
             {
-                float x = 1070f, y = 30f;
+                float x = 960f, y = 30f;
                 string line1 = "credits to the original mod creator";
                 float w1 = Measure(g, line1, fSmall);
                 Text(g, line1, fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x, y, true);
