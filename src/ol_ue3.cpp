@@ -7130,8 +7130,10 @@ static int EyeOfView(const void* view, int* newPrimaryPass) {
 // not depend on the order the renderer walks primitives in. It is invalidated once per Present
 // (OLUE3_PerfFrameBoundary, called by the d3d9 proxy's Present hook, on the render thread), so a
 // cell pointer from an older frame can never be handed out - nothing here survives past its frame.
-// [Perf] PvsShare=0 asks the engine for both eyes, the pre-1.2.2 way.
-static volatile LONG g_pvsShareOn = 1;
+// [Perf] PvsShare=0 asks the engine for both eyes, the pre-1.2.2 way. That is the SHIPPED value:
+// the first session with it on (2026-11-05) reported props blinking in front of the player and this
+// key was one of the two changes in play, so it is off until a session A/Bs it on its own.
+static volatile LONG g_pvsShareOn = 0;
 enum { kPvsShareSlots = 1024 };                 // power of two; the table never grows past it
 struct PvsShareEntry { const void* state; long long data; long gen; };
 static PvsShareEntry g_pvsShareTab[kPvsShareSlots];
@@ -7841,7 +7843,8 @@ static void ReadConfig() {
       if (b < 0) b = 0; if (b > 5000) b = 5000;
       g_objScanBudgetUs = b; }
     // [PVSSHARE] (phase 5, B2) the second eye takes the first eye's precomputed-visibility answer.
-    g_pvsShareOn      = GetPrivateProfileIntW(L"Perf", L"PvsShare", 1, ini) ? 1 : 0;
+    // Ships 0: see the note where g_pvsShareOn is declared.
+    g_pvsShareOn      = GetPrivateProfileIntW(L"Perf", L"PvsShare", 0, ini) ? 1 : 0;
     { char l[200]; sprintf_s(l, "[OLVR][PERF] switches: skelGate=%ld fovCache=%ld nvCache=%ld objScanBudget=%ldus "
                                 "pvsShare=%ld (0 = off; all in [Perf] of outlastvr.ini)",
                              g_skelFastGate, g_fovCacheOn, g_nvCacheOn, g_objScanBudgetUs, g_pvsShareOn);

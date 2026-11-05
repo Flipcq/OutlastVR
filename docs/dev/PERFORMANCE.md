@@ -38,7 +38,7 @@ has a number next to it from the mod's own log, or is waiting for one.
 | `fov N/frame (M cached)` | how many times per frame the engine asks for the camera angle, and how many of those were answered from the per-frame cache | `cached` close to `N` once a frame is under way |
 | `pvs N/frame` | `GetPrecomputedVisibilityData` lookups (InitViews: one per primitive per eye) | scales with primitives x 2 eyes |
 | `gpu(own cmds) X ms` | GPU time of the mod's **own** command stream (eye blits + copies) | below ~1 ms; if it grows, the bridge is the problem, not the game |
-| `occl per-eye: …` | how each occlusion answer was made: `fresh` from the GPU, `stale` from that eye's previous frame (the read did not wait), `first-read` (nothing to fall back on), `reused` (the 2nd eye took the 1st eye's verdict, C1), plus **one pass time per eye** and the PVS sharing counts | `first-read` near 0 after the first seconds; `stale` nonzero while the GPU is a frame behind (normal); pass L and R within a few tens of µs of each other |
+| `occl per-eye: …` | how each occlusion answer was made: `fresh` from the GPU, `stale` from that eye's previous frame (the read did not wait), `first-read` (nothing to fall back on), `reused` (the 2nd eye took the 1st eye's verdict, C1), plus **one pass time per eye** and the PVS sharing counts; verdict changes per eye (`L`/`R`) and how many the `[OCCLHOLD]` stabiliser swallowed (`held`) | `first-read` near 0 after the first seconds; `stale` nonzero while the GPU is a frame behind (normal); pass L and R within a few tens of µs of each other; `held` nonzero when the stabiliser is active |
 | `[XRTIMING] loop …` | the compositor loop's cost and the real display step (13.9 = 72 Hz, 11.1 = 90 Hz) | 22.2 steps mixed in mean every second frame is synthesised |
 
 Phase 3 adds one boot line each: `[PERF-A1]` says whether the 1 ms timer, the worker boost and
@@ -46,10 +46,7 @@ the optional process boost are on; `[PERF-A2]` says which pacing wait is in use;
 logs the moment the bridge takes the monitor over (`bridge owns the monitor: WxH`), or the reason
 it handed it back. Phase 4 adds `[PERF-A3]` (is the shared frame sampled in place, or is the copy
 still there) and `[PERF-B8]` (is the direct draw on), plus a one-off line the first time each lane
-really runs. Phase 5 adds `[OCCLPEREYE]` (is each eye keeping its own occlusion answer - the default
-- or is the old force-visible behaviour back), `[PVSSHARE]` (does the second eye reuse the first
-eye's precomputed-visibility answer), `[VISREUSE]` (armed or idle, and why) and `[PERF-UNIONFRUSTUM]`
-(one frustum for both eyes or one each).
+really runs. Phase 5 adds `[OCCLPEREYE]` (is each eye keeping its own occlusion answer - ships OFF by default; the old force-visible behaviour stays), `[OCCLHOLD]` (holds a one-frame "culled" back so no single GPU frame can blink a prop out; ships ON), `[PVSSHARE]` (does the second eye reuse the first eye's precomputed-visibility answer - ships OFF), `[VISREUSE]` (armed or idle, and why) and `[PERF-UNIONFRUSTUM]` (one frustum for both eyes or one each).
 
 `[HITCH]` lists frames over 40 ms with the second they happened, next to whatever else the log says
 happened then.

@@ -53,9 +53,13 @@ def block(signature, src=None):
 
 # ------------------------------------------------------------ 1. the switches, ini and code agree
 # (key, default in the ini, default the code asks for, source file)
+# Phase 5 SHIPS the two that change visibility verdicts OFF: the first session with them on
+# (2026-11-05) reported props blinking, so the proven 1.2.2 behaviour stays the default and the
+# per-eye path is what a session turns on to A/B (with [Perf] OcclHold holding the blink back).
 SWITCHES = [
-    ('OcclPerEye',   '1',  '1',  PROXY),
-    ('PvsShare',     '1',  '1',  UE3),
+    ('OcclPerEye',   '0',  '0',  PROXY),
+    ('OcclHold',     '1',  '1',  PROXY),
+    ('PvsShare',     '0',  '0',  UE3),
     ('VisReuse',     '0',  '0',  PROXY),
     ('UnionFrustum', '0',  '0',  XR),
     ('UnionNearUU',  '10', '10', XR),
@@ -64,7 +68,7 @@ for key, ini_default, code_default, src in SWITCHES:
     assert f'{key}={ini_default}' in INI, f'{key}={ini_default} missing from the shipped ini'
     pat = re.compile(r'L"Perf",\s*L"%s",\s*%s' % (key, code_default))
     assert pat.search(src), f'{key} is not read as [Perf] {key}={code_default} in the passed source'
-print('ini/code defaults: OcclPerEye=1, PvsShare=1, VisReuse=0, UnionFrustum=0, UnionNearUU=10')
+print('ini/code defaults: OcclPerEye=0, OcclHold=1, PvsShare=0, VisReuse=0, UnionFrustum=0, UnionNearUU=10')
 
 # ------------------------------------------------------------------------------ 2. the stubs
 stub = r'''
@@ -106,6 +110,7 @@ extern "C" double OLXR_PerfNowMs() { return g_fakeNowMs; }
 PER_EYE = PROXY[PROXY.index('static volatile LONG g_vpX = 0, g_vpW = 0;'):
                PROXY.index('// [OCCLSKIP] (Test46) With OcclForce')]
 READ_PLAN = block('static int OcclReadPlan(int pollOk, int haveThisEye)')
+HOLD = block('static int OcclHoldKeep(DWORD prevOut, DWORD nowReal, int hold)')
 
 per_eye_checks = r'''
 int main() {
@@ -127,6 +132,18 @@ int main() {
     run = 0;
     assert(OcclStaleOk(&run) == 1);
     assert(OcclStaleOk(nullptr) == 0);
+
+    // ---- B1 / OCCLHOLD: the blink held back one frame ---------------------------------------
+    // visible -> always believed; visible->culled needs TWO consecutive zeros.
+    // Hold ON: (visible, culled) -> hold visible; (culled, culled) -> culled.
+    assert(OcclHoldKeep(1, 0, 1) == 1);   // hold the visible verdict
+    assert(OcclHoldKeep(0, 0, 1) == 0);   // second zero: believe it
+    assert(OcclHoldKeep(1, 5, 1) == 0);   // real is visible: no hold
+    assert(OcclHoldKeep(1, 0, 0) == 0);   // hold off: report raw
+    assert(OcclHoldKeep(0, 0, 0) == 0);
+    assert(OcclHoldKeep(0, 5, 1) == 0);   // was culled, now visible: no hold
+    // Hold OFF must not freeze: a fresh visible verdict always passes through.
+    assert(OcclHoldKeep(0, 5, 0) == 0);
 
     // ---- B1: one entry per query, and one answer per eye -------------------------------------
     IDirect3DQuery9* q1 = (IDirect3DQuery9*)(uintptr_t)0x100000;
@@ -225,7 +242,7 @@ int main() {
 with tempfile.TemporaryDirectory() as td:
     src = Path(td) / 't.cpp'
     exe = Path(td) / 't.exe'
-    src.write_text(stub + '\n' + PER_EYE + '\n' + READ_PLAN + '\n' + per_eye_checks)
+    src.write_text(stub + '\n' + PER_EYE + '\n' + READ_PLAN + '\n' + HOLD + '\n' + per_eye_checks)
     subprocess.run(['g++', '-std=c++17', '-O1', '-Wall', '-Wno-unused-function',
                     '-o', str(exe), str(src)], check=True)
     out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout

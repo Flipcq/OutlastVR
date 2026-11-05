@@ -5687,7 +5687,8 @@ static bool BlitToSwapchain() {
 // a flat run measures the game alone.
 extern "C" void OLProxy_TakeDrawStats(long* draws, long* occlSkipped);          // d3d9_proxy.cpp
 extern "C" void OLProxy_TakeOcclStats(long* fresh, long* stale, long* blocked, long* reused,
-                                      long* noSlot, long* usL, long* usR, long* nL, long* nR);
+                                      long* noSlot, long* usL, long* usR, long* nL, long* nR,
+                                      long* flipL, long* flipR, long* held);
 extern "C" void OLUE3_TakeVisibilityStats(long* pvsServed, long* pvsMiss, long* pvsFull,
                                           long* eyePrimary, long* eyeSecondary);
 extern "C" void OLUE3_TakeFrameStats(long* calcSceneSumUs, long* calcSceneMaxUs, long* skelCalls,
@@ -5759,18 +5760,21 @@ static void PerfFrame() {
         // "reused" is the second eye taking the first eye's verdict (C1, off by default), and the
         // two pass times are what one eye's run of occlusion reads actually took.
         long oFresh = 0, oStale = 0, oBlocked = 0, oReused = 0, oNoSlot = 0;
-        long usL = 0, usR = 0, nL = 0, nR = 0;
-        OLProxy_TakeOcclStats(&oFresh, &oStale, &oBlocked, &oReused, &oNoSlot, &usL, &usR, &nL, &nR);
+        long usL = 0, usR = 0, nL = 0, nR = 0, flipL = 0, flipR = 0, held = 0;
+        OLProxy_TakeOcclStats(&oFresh, &oStale, &oBlocked, &oReused, &oNoSlot, &usL, &usR, &nL, &nR,
+                              &flipL, &flipR, &held);
         long pvsServed = 0, pvsMiss = 0, pvsFull = 0, eyePri = 0, eyeSec = 0;
         OLUE3_TakeVisibilityStats(&pvsServed, &pvsMiss, &pvsFull, &eyePri, &eyeSec);
         XLOG("[OLVR][PERF] occl per-eye: %.0f fresh + %.0f stale (no wait) + %.0f first-read, "
              "%.0f reused, %.0f no slot | pass L %.0f us (%.1f/frame) R %.0f us (%.1f/frame) | "
-             "pvs shared %.0f, asked %.0f | view eye primary/secondary %ld/%ld",
+             "pvs shared %.0f, asked %.0f | view eye primary/secondary %ld/%ld | "
+             "verdict changes L %.0f R %.0f/frame, held %.0f",
              (double)oFresh / frames, (double)oStale / frames, (double)oBlocked / frames,
              (double)oReused / frames, (double)oNoSlot / frames,
              nL > 0 ? (double)usL / (double)nL : 0.0, (double)nL / frames,
              nR > 0 ? (double)usR / (double)nR : 0.0, (double)nR / frames,
-             (double)pvsServed / frames, (double)pvsMiss / frames, eyePri, eyeSec);
+             (double)pvsServed / frames, (double)pvsMiss / frames, eyePri, eyeSec,
+             (double)flipL / frames, (double)flipR / frames, (double)held / frames);
     }
     OLProxy_ExStatReport();   // (Test47) [EXSTAT] the game's resource creates / locks this period
     XLOG("[OLVR][XRTIMING] loop avg %.2f max %.2f | begin avg %.2f max %.2f | end avg %.2f max %.2f | "
