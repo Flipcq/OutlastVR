@@ -5783,6 +5783,9 @@ void OLXR_OnPresent(IDirect3DDevice9* dev) {
         if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
         D3DSURFACE_DESC sd; bb->GetDesc(&sd); bb->Release();
         if (sd.Width < 64 || sd.Height < 64) return;    // not a real scene yet
+        // [SYNCLOG] A one-line marker that the bridge was reached at all: everything phase 1-4 added to
+        // this file lives behind this point, so its absence in a log means the mod never got here.
+        XLOG("[OLVR][XR] first Present (%ux%u): bringing the headset bridge up", sd.Width, sd.Height);
         if (!Init(sd.Width, sd.Height)) return;
     }
 
