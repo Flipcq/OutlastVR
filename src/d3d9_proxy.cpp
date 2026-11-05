@@ -1428,39 +1428,63 @@ static volatile LONG g_occlEyePass = -1;   // which eye's pass is open (the [PER
 static double g_occlPassT0 = 0.0, g_occlPassUs[2] = { 0.0, 0.0 };
 static long   g_occlPassN[2] = { 0, 0 };
 static LONG g_occlFresh = 0, g_occlStale = 0, g_occlBlocked = 0, g_occlReused = 0, g_occlNoSlot = 0;
-static volatile LONG g_occlHold = 1;      // [OCCLHOLD] hold a one-frame "culled" back (see OcclHoldKeep)
-static LONG g_occlHeld = 0, g_occlFlip[2] = { 0, 0 };   // blinks held, and verdict changes per eye
+static volatile LONG g_occlHold = 1;      // [OCCLHOLD] two "culled" answers before a prop may vanish
+static volatile LONG g_occlProve = 1;     // [OCCLPROVE] a "culled" must be PROVEN (see OcclCullProven)
+static LONG g_occlHeld = 0, g_occlFlip[2] = { 0, 0 };   // culls held back, and verdict changes per eye
+static LONG g_occlUnproven = 0;           // culls refused because the value could not be trusted
 
-// The eye of the pass being drawn. The engine's own viewport, when it sets one per view, is the
+// The eye of the pass being drawn. The engine's own viewport, when it sets ONE PER VIEW, is the
 // most direct statement there is; the matrix compare behind g_olRenderEye is the general case.
+// Only a viewport that really covers one half of the frame counts as that statement: a shadow map,
+// a scene capture or the mod's own UI quad is some other size and says nothing about the eye.
 static inline int OcclEyeFromViewport() {
     const LONG half = (LONG)(g_bbW / 2);
     const LONG x = g_vpX, w = g_vpW;
-    if (half > 0 && w > 0 && w < (LONG)g_bbW) {
+    if (half > 16 && w >= half - 4 && w <= half + 4) {
         if (x >= half) return 1;
-        if (x + w <= half) return 0;
+        if (x + w <= half + 4) return 0;
     }
     return (int)g_olRenderEye;
 }
 
-// The per-eye answer table. A D3D9 query object belongs to one view, so its eye is stable; the
-// table is fixed-size and never grows (a pool bigger than this simply asks the device, see below).
-//   ans      the last REAL answer from the GPU (the fallback a stale read reports)
-//   out      the verdict the ENGINE was told (ans, unless [OCCLHOLD] held a blink back)
-//   have     this eye has seen at least one answer
-//   staleRun consecutive reads answered from the previous frame: a query whose answer never arrives
-//            (a GPU that is never flushed, a driver that parks it) must not freeze a verdict
-//            forever, so after kOcclStaleLimit the read is allowed to wait the way the engine asked.
+// The per-eye answer table. The table is fixed-size and never grows (a pool bigger than this simply
+// asks the device, see below).
+//   ans       the last REAL answer this eye's own box produced (the fallback a stale read reports)
+//   out       the verdict the ENGINE was told (ans, unless a "culled" was held back)
+//   have      this eye has seen at least one answer
+//   staleRun  consecutive reads answered from the previous frame: a query whose answer never arrives
+//             (a GPU that is never flushed, a driver that parks it) must not freeze a verdict
+//             forever, so after kOcclStaleLimit the read is allowed to wait the way the engine asked.
+//   cullRun   was this eye's previous REAL answer a "culled"?: the memory the two-consecutive rule
+//             reads. (It must be the answer, NOT the verdict the engine was told: a told verdict
+//             latches, and a latched "visible" would mean nothing is ever culled again.)
+//   pendEye   which eye's box produced the value sitting in the query right now (-1 = taken)
+//   issues    BEGINs into the object since the last read. A second BEGIN before anybody reads means
+//             the value that arrives describes the SECOND box (two views, or a recycled pool slot,
+//             which this file already documents) and the first box's answer is gone.
+//   readers   reads of the object since the last BEGIN. The value is one statement; the second read
+//             of it is not a statement about this frame's box any more.
 enum { kOcclSlots = 512, kOcclStaleLimit = 4 };                 // power of two
-struct OcclSlot { IDirect3DQuery9* q; DWORD ans[2]; DWORD out[2]; LONG have[2]; LONG staleRun[2]; };
+struct OcclSlot {
+    IDirect3DQuery9* q;
+    DWORD ans[2]; DWORD out[2];
+    LONG have[2]; LONG staleRun[2]; LONG cullRun[2];
+    LONG pendEye; LONG issues; LONG readers;
+};
+static void OcclSlotInit(OcclSlot* s) {
+    if (!s) return;
+    s->have[0] = s->have[1] = 0;
+    s->ans[0] = s->ans[1] = 0;
+    s->out[0] = s->out[1] = 0;
+    s->staleRun[0] = s->staleRun[1] = 0;
+    s->cullRun[0] = s->cullRun[1] = 0;
+    s->pendEye = -1;
+    s->issues = 0;
+    s->readers = 0;
+}
 static OcclSlot g_occlTab[kOcclSlots];
 static void OcclTableReset() {
-    for (int i = 0; i < kOcclSlots; ++i) {
-        g_occlTab[i].q = nullptr; g_occlTab[i].have[0] = g_occlTab[i].have[1] = 0;
-        g_occlTab[i].ans[0] = g_occlTab[i].ans[1] = 0;
-        g_occlTab[i].out[0] = g_occlTab[i].out[1] = 0;
-        g_occlTab[i].staleRun[0] = g_occlTab[i].staleRun[1] = 0;
-    }
+    for (int i = 0; i < kOcclSlots; ++i) { g_occlTab[i].q = nullptr; OcclSlotInit(&g_occlTab[i]); }
     InterlockedExchange(&g_occlEyePass, -1);
     g_occlPassN[0] = g_occlPassN[1] = 0;
     g_occlPassUs[0] = g_occlPassUs[1] = 0.0;
@@ -1474,10 +1498,7 @@ static OcclSlot* OcclSlotFor(IDirect3DQuery9* q, bool create) {
         if (!g_occlTab[i].q) {
             if (!create) return nullptr;
             g_occlTab[i].q = q;
-            g_occlTab[i].have[0] = g_occlTab[i].have[1] = 0;
-            g_occlTab[i].ans[0] = g_occlTab[i].ans[1] = 0;
-            g_occlTab[i].out[0] = g_occlTab[i].out[1] = 0;
-            g_occlTab[i].staleRun[0] = g_occlTab[i].staleRun[1] = 0;
+            OcclSlotInit(&g_occlTab[i]);
             return &g_occlTab[i];
         }
     }
@@ -1542,6 +1563,31 @@ static inline void VisReuseRecord(int eye, DWORD v) {
     ++g_visIdx;
 }
 
+// [OCCLPEREYE] WHO IS DRAWING INTO THIS QUERY. A D3D9 occlusion query is ONE result slot: the value
+// in it belongs to the last box that was drawn inside it, not to whoever reads it next. So the
+// object is opened with the eye that is about to draw (at BEGIN, which is also where the eye's pass
+// opens) and, more to the point, the opening is COUNTED: if a second BEGIN lands on the same object
+// before anybody has read the value, the value that eventually arrives describes the SECOND box -
+// and the first box's answer is gone. That is the mechanism this file already documents at the top
+// of the occlusion section ("the query handles come from a pool shared per scene and recycled per
+// frame - with TWO views per frame the second view can fetch results that belong to other queries,
+// so its verdicts are garbage and props strobe"). Phase 5 shipped without noticing it, which is
+// exactly the blink the field reported: a "0 pixels" that belongs to another box culling a prop
+// that is right in front of the player.
+static void OcclBeginIssue(IDirect3DQuery9* q) {
+    const int e = OcclEyeNow();               // opens this eye's pass
+    OcclSlot* s = OcclSlotFor(q, true);
+    if (!s) return;
+    // A read closes the cycle: the box about to be drawn starts a fresh one.
+    if (s->readers > 0) { s->issues = 0; s->readers = 0; }
+    if (s->issues < 8) ++s->issues;            // saturating: only "one" vs "more than one" matters
+    s->pendEye = e;
+}
+static void OcclEndIssue(IDirect3DQuery9* q) {
+    OcclSlot* s = OcclSlotFor(q, false);
+    if (s) s->pendEye = (LONG)g_occlEyePass;   // the pass that drew the box
+}
+
 // [OCCLPEREYE] The engine's viewport, mirrored so the eye of a query costs two loads instead of a
 // COM call per query. The mod's own UI mirror changes the viewport for its own draws and restores
 // it - an occlusion box is never a UI draw, so nothing that reaches the query path sees a
@@ -1560,9 +1606,10 @@ static HRESULT STDMETHODCALLTYPE Hook_QueryIssue(IDirect3DQuery9* This, DWORD fl
     if (This && This->GetType() == D3DQUERYTYPE_OCCLUSION) {
         if (flags & D3DISSUE_BEGIN) {
             InterlockedExchange(&g_inOcclQuery, 1);
-            if (g_occlPerEye) OcclEyeNow();       // [OCCLPEREYE] opens this eye's pass
+            if (g_occlPerEye) OcclBeginIssue(This);   // [OCCLPEREYE] opens this eye's pass
         } else if (flags & D3DISSUE_END) {
             InterlockedExchange(&g_inOcclQuery, 0);
+            if (g_occlPerEye) OcclEndIssue(This);     // [OCCLPEREYE] the box that just landed in it
         }
     }
     return o_QueryIssue(This, flags);
@@ -1570,31 +1617,48 @@ static HRESULT STDMETHODCALLTYPE Hook_QueryIssue(IDirect3DQuery9* This, DWORD fl
 // What one occlusion read does, given what the device said and what this eye already has. Kept as
 // its own function because it is the whole rule of B1 in one place, and because
 // tests/perf_visibility_test.py compiles exactly this code:
-//   0 = the device has a fresh answer, keep it       1 = answer with this eye's previous frame
-//   2 = nothing to fall back on, ask the device the way the engine asked (a real wait, once)
-static int OcclReadPlan(int pollOk, int haveThisEye) {
-    if (pollOk) return 0;
+//   0 = report the value just read (it is this eye's own box)
+//   1 = report this eye's previous answer (the value in the object is somebody else's, or the GPU
+//       has not finished: the one-frame-old answer UE3 is built around)
+//   2 = nothing at all for this eye yet: ask the device the way the engine asked (a real wait, once)
+static int OcclReadPlan(int pollReady, int ownerIsEye, int haveThisEye) {
+    if (pollReady && ownerIsEye) return 0;
     if (haveThisEye) return 1;
+    if (pollReady) return 0;      // no history of its own: the device's answer is the best there is
     return 2;
 }
 
-// [OCCLHOLD] (B1, second half) THE BLINK, HELD BACK ONE FRAME.
+// [OCCLPROVE] (B1, second half) A "CULLED" MUST BE EARNED.
+// The engine culls a mesh when a query answers "0 pixels" for its test box. A wrong "visible" only
+// costs pixels; a wrong "culled" makes a prop in front of the player disappear for a frame and come
+// back on the next - the "images blinking" report. So the value that may hide something has to be
+// provably about the box the engine just drew, which means all of:
+//   nowCulled    the answer itself says "0 pixels"
+//   trusted      the value in the object states this eye's own box: it was produced by this eye and
+//                nobody opened (or read) the object again since - a single slot, a single statement
+//   cullRun      with [OCCLHOLD], this eye's previous REAL answer was a "culled" too, so a single
+//                noisy frame can never blink a prop out
+// [Perf] OcclProve=0 reports every verdict raw, which is the A/B for the proof itself.
+// 1 = this verdict may hide the prop; 0 = the engine must be told "visible".
+static int OcclCullProven(int prove, int trusted, int cullRun, int nowCulled, int hold) {
+    if (!nowCulled) return 0;                 // the GPU says visible: no argument, and no cost
+    if (prove && !trusted) return 0;          // not this box's answer: it may not hide anything
+    if (hold <= 0) return 1;                  // raw verdicts (the honest A/B)
+    return cullRun ? 1 : 0;                   // two consecutive "0 pixels" from this eye
+}
+
+// [OCCLHOLD] WHY THE MEMORY IS THE *REAL* ANSWER. (The rule itself lives in OcclCullProven above;
+// this is the field history behind the "cullRun" cell of the table, and the reason the read path
+// below writes it from the GPU's answer instead of from the verdict the engine was told.)
 // With real per-eye answers the engine culls on its own verdicts again - and a single noisy "0
 // pixels" frame (a box half off screen, a depth-test tie, the GPU answering a frame late) makes a
 // solid prop disappear for one frame and come back on the next: exactly the "images blinking in
-// front of me" the field report of 2026-11-05 described. The rule below is deliberately asymmetric:
-//   visible -> always believed     (a wrong "visible" only costs pixels)
-//   visible -> culled   needs TWO consecutive zeros   (a wrong "culled" makes a prop vanish)
-// So one frame cannot blink anything out, while a prop that really went behind a wall is culled on
-// the next frame - the engine is already a frame behind by design, so this adds no visible lag.
-// [Perf] OcclHold=0 reports every verdict raw, which is what a session should A/B against.
-// 1 = keep the previous (visible) verdict; 0 = report the new one.
-static int OcclHoldKeep(DWORD prevOut, DWORD nowReal, int hold) {
-    if (hold <= 0) return 0;
-    if (nowReal != 0) return 0;   // the GPU says visible: no argument
-    if (prevOut == 0) return 0;   // already culled last frame: this is the second zero, believe it
-    return 1;                     // was visible, now culled: hold it for one frame
-}
+// front of me" the field report of 2026-11-05 described. So "culled" has to be earned twice, while
+// "visible" is always believed (a wrong "visible" only costs pixels). Phase 5 first wrote that rule
+// against the verdict it had already *reported*: that latches - once a prop had been reported
+// visible, the next zero was compared with the held "visible" for ever and nothing was ever culled
+// again - so on a headset it both blinked (for the queries whose first answer arrived as a zero)
+// and threw the culling away.
 
 static HRESULT STDMETHODCALLTYPE Hook_QueryGetData(IDirect3DQuery9* This, void* pData, DWORD size, DWORD flags) {
     if (!This) return o_QueryGetData(This, pData, size, flags);
@@ -1610,42 +1674,75 @@ static HRESULT STDMETHODCALLTYPE Hook_QueryGetData(IDirect3DQuery9* This, void* 
         if (g_visReuse && eye == 1 && (FastFlags() & kFF_VisReuse)) {
             DWORD v = 0;
             if (VisReuseTake(&v)) {
+                if (s->readers < 8) ++s->readers;   // this read still closes the object's cycle
                 *(DWORD*)pData = v;
                 InterlockedIncrement(&g_occlReused);
                 return S_OK;
             }
         }
-        const HRESULT hr = o_QueryGetData(This, pData, size, flags & ~(DWORD)D3DGETDATA_FLUSH);
-        const int plan = OcclReadPlan(hr == S_OK ? 1 : 0, s->have[eye]);
+        // [OCCLPEREYE] ONE RESULT SLOT, ONE STATEMENT. The value in the object belongs to the last
+        // box drawn into it, so it can only speak for the box in front of us when exactly ONE box
+        // was drawn since anybody last read it, and it has not been read yet this cycle. A second
+        // BEGIN (the other view, or a recycled pool handle) or a repeat read means the value on
+        // offer describes something else - so it is not even fetched: the engine is told "lots of
+        // pixels" and the prop stays. That is the 2026-11-05 blink, refused at the source.
+        const LONG owner = (s->pendEye >= 0) ? s->pendEye : (LONG)eye;
+        const int ownerIsEye = (owner == (LONG)eye) ? 1 : 0;
+        const int shared = (s->issues > 1 || s->readers > 0) ? 1 : 0;
+        const int trusted = (!shared && ownerIsEye) ? 1 : 0;
         DWORD real = 0;
-        if (plan == 0) {
-            real = *(const DWORD*)pData;
-            s->staleRun[eye] = 0;
-            InterlockedIncrement(&g_occlFresh);
-        } else if (plan == 1 && OcclStaleOk(&s->staleRun[eye])) {
-            // Not finished by the GPU: this eye's previous frame is the answer, which is the age
-            // UE3's own occlusion culling is built around.
-            real = s->ans[eye];
-            InterlockedIncrement(&g_occlStale);
+        if (shared) {
+            InterlockedIncrement(&g_occlUnproven);
+            real = 0x7FFFFF;                    // visible, and not a single wait spent on it
         } else {
-            // Nothing to fall back on (the query's first read), or an answer that has stopped
-            // arriving: ask the device the way the engine did.
-            InterlockedIncrement(&g_occlBlocked);
-            const HRESULT hr2 = o_QueryGetData(This, pData, size, flags);
-            s->staleRun[eye] = 0;
-            if (hr2 != S_OK) return hr2;
-            real = *(const DWORD*)pData;
+            const HRESULT hr = o_QueryGetData(This, pData, size, flags & ~(DWORD)D3DGETDATA_FLUSH);
+            const int ready = (hr == S_OK) ? 1 : 0;
+            if (ready) {
+                const DWORD got = *(const DWORD*)pData;
+                // The answer is filed against the eye that PRODUCED it, never against the eye that
+                // is merely asking: that mix-up is what made the two eyes hand the engine
+                // alternating verdicts for the same prop.
+                s->ans[owner] = got; s->have[owner] = 1; s->staleRun[owner] = 0;
+                s->pendEye = -1;                 // the value has been taken
+                InterlockedIncrement(&g_occlFresh);
+            }
+            const int plan = OcclReadPlan(ready, ownerIsEye, s->have[eye]);
+            if (plan == 0) {
+                real = *(const DWORD*)pData;
+                s->staleRun[eye] = 0;
+            } else if (plan == 1 && OcclStaleOk(&s->staleRun[eye])) {
+                // Not finished by the GPU, or the value in it belongs to the other eye's box: this
+                // eye's own previous answer is the answer, the age UE3's culling is built for.
+                real = s->ans[eye];
+                InterlockedIncrement(&g_occlStale);
+            } else {
+                // Nothing to fall back on (the query's first read), or an answer that has stopped
+                // arriving: ask the device the way the engine did.
+                InterlockedIncrement(&g_occlBlocked);
+                const HRESULT hr2 = o_QueryGetData(This, pData, size, flags);
+                s->staleRun[eye] = 0;
+                if (hr2 != S_OK) return hr2;
+                real = *(const DWORD*)pData;
+                s->ans[eye] = real; s->have[eye] = 1;
+            }
         }
-        // [OCCLHOLD] the verdict the engine is told. `out` is what it was told last time, so a blink
-        // (visible -> culled in one frame) is reported one frame late, and never the other way.
+        if (s->readers < 8) ++s->readers;        // this value has been handed out
+        // [OCCLPROVE] / [OCCLHOLD] the verdict the engine is told. A "culled" is published only when
+        // it is proven to be about the box the engine just drew (this eye's own single statement,
+        // and - with OcclHold - the second zero in a row); everything else is reported as "lots of
+        // pixels", which is what OcclForce has been telling the engine since 1.2.1 and what makes a
+        // prop impossible to blink out.
+        const int nowCulled = (real == 0) ? 1 : 0;
+        const int prevCulled = s->cullRun[eye] ? 1 : 0;
         DWORD tell = real;
-        if (s->have[eye] && OcclHoldKeep(s->out[eye], real, g_occlHold)) {
-            tell = s->out[eye];
+        if (nowCulled && !OcclCullProven(g_occlProve != 0, trusted, prevCulled, 1, g_occlHold)) {
+            tell = 0x7FFFFF;                    // "many pixels": the engine must not cull on this one
             InterlockedIncrement(&g_occlHeld);
         }
+        if (trusted) s->cullRun[eye] = nowCulled;   // the memory the two-zero rule reads
         if (s->have[eye] && ((s->out[eye] != 0) != (tell != 0)))
             InterlockedIncrement(&g_occlFlip[eye]);
-        s->ans[eye] = real; s->out[eye] = tell; s->have[eye] = 1;
+        s->out[eye] = tell;
         *(DWORD*)pData = tell;
         VisReuseRecord(eye, tell);
         return S_OK;
@@ -1665,8 +1762,9 @@ static HRESULT STDMETHODCALLTYPE Hook_QueryGetData(IDirect3DQuery9* This, void* 
 
 // [Perf] OcclPerEye (B1). ON is the per-eye path above; OFF restores exactly the 1.2.2 behaviour,
 // where [Stage3] OcclForce and [Render] OcclusionSkip own every occlusion answer. It ships OFF: the
-// first session with it on (2026-11-05) showed props blinking, which is the noise [OCCLHOLD] now
-// holds back - re-enable it to A/B that.
+// first session with it on (2026-11-05) showed props blinking. That blink is now answered in code,
+// not by a default - see [OCCLPROVE] (a "culled" must belong to the box the engine just drew) and
+// [OCCLHOLD] (two zeros in a row) - so turning it on is the A/B for the whole per-eye path.
 extern "C" void OLProxy_SetOcclPerEye(int on) {
     InterlockedExchange(&g_occlPerEye, on ? 1 : 0);
     OcclTableReset();
@@ -1675,13 +1773,24 @@ extern "C" void OLProxy_SetOcclPerEye(int on) {
           "OcclForce's force-visible and OcclusionSkip's box skipping stand down"
         : "OFF - OcclForce/OcclusionSkip own the occlusion queries again (the pre-1.2.2 way)");
 }
-// [Perf] OcclHold (B1): 1 = a "culled" that arrives one frame after a "visible" is not reported, so
-// no single frame can blink a solid prop out. 0 = every verdict raw (the honest A/B).
+// [Perf] OcclHold (B1): 1 = a prop needs TWO consecutive "0 pixels" answers from this eye before it
+// may disappear, so no single frame can blink it out. 0 = a single zero is enough (the honest A/B).
 extern "C" void OLProxy_SetOcclHold(int on) {
     InterlockedExchange(&g_occlHold, on ? 1 : 0);
     Log("[OLVR][OCCLHOLD] %s", on
         ? "ON - a prop needs two consecutive 'culled' answers to disappear (one frame cannot blink it)"
-        : "OFF - every occlusion verdict is reported as the GPU gives it");
+        : "OFF - one 'culled' answer is enough to hide a prop");
+}
+// [Perf] OcclProve (B1): 1 = a "culled" is only believed when the value provably describes the box
+// the engine just drew (this eye's own answer, and the object was not opened again since its value
+// was read). 0 = every verdict the GPU gives is passed on raw - the pre-1.2.2 shape, and the A/B
+// that reproduces the 2026-11-05 blink on demand.
+extern "C" void OLProxy_SetOcclProve(int on) {
+    InterlockedExchange(&g_occlProve, on ? 1 : 0);
+    Log("[OLVR][OCCLPROVE] %s", on
+        ? "ON - a 'culled' must be this eye's own, unre-issued answer (a shared or recycled query "
+          "object cannot hide a prop)"
+        : "OFF - raw GPU verdicts: a query object two views drew into can hide a prop again (blink A/B)");
 }
 // [Perf] VisReuse (C1). The second eye's verdicts come from the first eye's pass, and its test boxes
 // are not drawn. That is only sound with the union frustum on ([Perf] UnionFrustum), so the live gate
@@ -1696,11 +1805,12 @@ extern "C" void OLProxy_SetVisReuse(int on) {
         (on && !unionOn) ? " (IDLE until [Perf] UnionFrustum=1: C1 needs C2)" : "");
 }
 // What the [PERF] report publishes: how the answers were produced, how long each eye's pass took,
-// and - the two numbers that diagnose the 2026-11-05 blink - how often a verdict CHANGED per eye and
-// how many of those changes the [OCCLHOLD] stabiliser swallowed.
+// and - the numbers that diagnose the 2026-11-05 blink - how often a verdict CHANGED per eye, how
+// many "culled" answers were refused, and how many of those were refused because the value could
+// not be proven to be this box's (another eye's or a re-issued query object's).
 extern "C" void OLProxy_TakeOcclStats(long* fresh, long* stale, long* blocked, long* reused,
                                       long* noSlot, long* usL, long* usR, long* nL, long* nR,
-                                      long* flipL, long* flipR, long* held) {
+                                      long* flipL, long* flipR, long* held, long* unproven) {
     if (fresh)   { *fresh   = g_occlFresh;   g_occlFresh = 0; }
     if (stale)   { *stale   = g_occlStale;   g_occlStale = 0; }
     if (blocked) { *blocked = g_occlBlocked; g_occlBlocked = 0; }
@@ -1709,6 +1819,7 @@ extern "C" void OLProxy_TakeOcclStats(long* fresh, long* stale, long* blocked, l
     if (flipL)   { *flipL   = g_occlFlip[0]; g_occlFlip[0] = 0; }
     if (flipR)   { *flipR   = g_occlFlip[1]; g_occlFlip[1] = 0; }
     if (held)    { *held    = g_occlHeld;    g_occlHeld = 0; }
+    if (unproven){ *unproven= g_occlUnproven;g_occlUnproven = 0; }
     if (usL) *usL = (long)g_occlPassUs[0]; if (usR) *usR = (long)g_occlPassUs[1];
     if (nL)  *nL  = g_occlPassN[0];        if (nR)  *nR  = g_occlPassN[1];
     g_occlPassUs[0] = g_occlPassUs[1] = 0.0;
@@ -1728,7 +1839,7 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateQuery(IDirect3DDevice9* This, D3DQUE
         // [OCCLPEREYE] A D3D address can be recycled by the runtime: a new query that lands on the
         // slot of a released one must not inherit that one's answers.
         OcclSlot* s = OcclSlotFor(*ppQ, false);
-        if (s) { s->have[0] = 0; s->have[1] = 0; }
+        if (s) OcclSlotInit(s);
         if (InterlockedCompareExchange(&g_queryVtblHooked, 1, 0) == 0) {
             void** qvt = *(void***)*ppQ;    // shared by all IDirect3DQuery9 instances
             o_QueryGetData = (QueryGetData_t)HookSlot(qvt, 7, (void*)&Hook_QueryGetData);
@@ -2880,10 +2991,13 @@ static void LoadSavedSettings() {
     OLProxy_SetDrawFastFlags(GetPrivateProfileIntW(L"Perf", L"DrawFastFlags", 1, ini) ? 1 : 0);
     OLProxy_SetBackBufferCache(GetPrivateProfileIntW(L"Perf", L"BackBufferCache", 1, ini) ? 1 : 0);
     // [OCCLPEREYE] / [VISREUSE] (phase 5) the two visibility switches. OcclPerEye ships OFF: the first
-    // session with it on showed props blinking (the noise [OCCLHOLD] now holds back), so the proven
-    // 1.2.2 behaviour stays the default and the per-eye path is what a session turns ON to A/B.
+    // session with it on showed props blinking, so the proven 1.2.2 behaviour stays the default and
+    // the per-eye path is what a session turns ON to A/B. The blink itself is answered in code now
+    // ([OCCLPROVE] refuses a "culled" that cannot be proven to be this box's, [OCCLHOLD] needs two
+    // zeros in a row), so that A/B is meaningful instead of a choice between culling and blinking.
     OLProxy_SetOcclPerEye(GetPrivateProfileIntW(L"Perf", L"OcclPerEye", 0, ini) ? 1 : 0);
     OLProxy_SetOcclHold(GetPrivateProfileIntW(L"Perf", L"OcclHold", 1, ini) ? 1 : 0);
+    OLProxy_SetOcclProve(GetPrivateProfileIntW(L"Perf", L"OcclProve", 1, ini) ? 1 : 0);
     OLProxy_SetVisReuse(GetPrivateProfileIntW(L"Perf", L"VisReuse", 0, ini) ? 1 : 0);
     g_mouseUse = GetPrivateProfileIntW(L"Input", L"MouseUse", 1, ini) ? 1 : 0;
     Log("[OLVR][MOUSEUSE] %s (gameplay B=left mouse, X=crouch; menus/grip shortcuts unchanged)",

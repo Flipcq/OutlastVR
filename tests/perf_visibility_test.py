@@ -55,10 +55,13 @@ def block(signature, src=None):
 # (key, default in the ini, default the code asks for, source file)
 # Phase 5 SHIPS the two that change visibility verdicts OFF: the first session with them on
 # (2026-11-05) reported props blinking, so the proven 1.2.2 behaviour stays the default and the
-# per-eye path is what a session turns on to A/B (with [Perf] OcclHold holding the blink back).
+# per-eye path is what a session turns on to A/B. The blink itself is answered in code - [OCCLPROVE]
+# refuses a "culled" that cannot be proven to belong to the box the engine just drew, and [OCCLHOLD]
+# needs two zeros in a row - so both of those ship ON.
 SWITCHES = [
     ('OcclPerEye',   '0',  '0',  PROXY),
     ('OcclHold',     '1',  '1',  PROXY),
+    ('OcclProve',    '1',  '1',  PROXY),
     ('PvsShare',     '0',  '0',  UE3),
     ('VisReuse',     '0',  '0',  PROXY),
     ('UnionFrustum', '0',  '0',  XR),
@@ -68,7 +71,8 @@ for key, ini_default, code_default, src in SWITCHES:
     assert f'{key}={ini_default}' in INI, f'{key}={ini_default} missing from the shipped ini'
     pat = re.compile(r'L"Perf",\s*L"%s",\s*%s' % (key, code_default))
     assert pat.search(src), f'{key} is not read as [Perf] {key}={code_default} in the passed source'
-print('ini/code defaults: OcclPerEye=0, OcclHold=1, PvsShare=0, VisReuse=0, UnionFrustum=0, UnionNearUU=10')
+print('ini/code defaults: OcclPerEye=0, OcclHold=1, OcclProve=1, PvsShare=0, VisReuse=0, '
+      'UnionFrustum=0, UnionNearUU=10')
 
 # ------------------------------------------------------------------------------ 2. the stubs
 stub = r'''
@@ -86,10 +90,21 @@ using LONG = long;
 #define S_OK 0L
 #define S_FALSE 1L
 #define STDMETHODCALLTYPE
-struct IDirect3DQuery9 { };
+struct IDirect3DQuery9 { DWORD type; DWORD GetType() const { return type; } };
 struct IDirect3DDevice9 { };
 struct D3DVIEWPORT9 { UINT X, Y, Width, Height, MinZ, MaxZ; };
 typedef HRESULT (STDMETHODCALLTYPE *SetViewport_t)(IDirect3DDevice9*, const D3DVIEWPORT9*);
+// the query object as the read path sees it (GetType + the device's GetData)
+#define D3DQUERYTYPE_OCCLUSION 8
+#define D3DGETDATA_FLUSH 1
+typedef HRESULT (STDMETHODCALLTYPE *QueryGetData_t)(IDirect3DQuery9*, void*, DWORD, DWORD);
+static QueryGetData_t o_QueryGetData = nullptr;
+static DWORD g_fakeValue = 0;               // what the "GPU" answers
+static HRESULT g_fakeHr = S_OK;             // S_FALSE = the GPU has not finished
+static HRESULT STDMETHODCALLTYPE StubQueryGetData(IDirect3DQuery9*, void* p, DWORD sz, DWORD) {
+    if (g_fakeHr == S_OK && p && sz >= sizeof(DWORD)) *(DWORD*)p = g_fakeValue;
+    return g_fakeHr;
+}
 
 // what the code under test reads from the rest of the mod
 static volatile LONG g_occlPerEye = 1;      // [Perf] OcclPerEye
@@ -98,8 +113,15 @@ static volatile LONG g_sawPrimaryEye = 0;   // [VISREUSE] guard: the primary vie
 static volatile long g_olRenderEye = 0;     // ol_ue3.cpp: which view the renderer is drawing
 static UINT g_bbW = 2000;                   // the frame's width, as the proxy sees it
 static double g_fakeNowMs = 0.0;
+static volatile LONG g_occlSkip = 1;        // [OCCLSKIP]
+static volatile LONG g_hwqForced = 0;
+static int g_occlForceOn = 0;               // [Stage3] OcclForce
+static LONG g_fastFlags = 0;                // the per-Present snapshot
 static HRESULT STDMETHODCALLTYPE StubSetViewport(IDirect3DDevice9*, const D3DVIEWPORT9*) { return S_OK; }
 extern "C" double OLXR_PerfNowMs() { return g_fakeNowMs; }
+extern "C" int OLUE3_OcclBypassOn() { return g_occlForceOn; }
+static inline LONG FastFlags() { return g_fastFlags; }
+enum { kFF_VisReuse = 8 };
 #define InterlockedExchange(p, v) (*(p) = (v))
 #define InterlockedIncrement(p)   (++*(p))
 '''
@@ -109,20 +131,26 @@ extern "C" double OLXR_PerfNowMs() { return g_fakeNowMs; }
 # it reads from the rest of the mod is stubbed above, so this is the real code that runs per query.
 PER_EYE = PROXY[PROXY.index('static volatile LONG g_vpX = 0, g_vpW = 0;'):
                PROXY.index('// [OCCLSKIP] (Test46) With OcclForce')]
-READ_PLAN = block('static int OcclReadPlan(int pollOk, int haveThisEye)')
-HOLD = block('static int OcclHoldKeep(DWORD prevOut, DWORD nowReal, int hold)')
+READ_PLAN = block('static int OcclReadPlan(int pollReady, int ownerIsEye, int haveThisEye)')
+CULL = block('static int OcclCullProven(int prove, int trusted, int cullRun, int nowCulled, int hold)')
+READ_PATH = block('static HRESULT STDMETHODCALLTYPE Hook_QueryGetData(IDirect3DQuery9* This, '
+                  'void* pData, DWORD size, DWORD flags)')
 
 per_eye_checks = r'''
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
-    // ---- B1: the decision table -------------------------------------------------------------
-    // A fresh answer is used as it is; a query the GPU has not finished answers with this eye's
-    // previous frame; a query that has no previous frame yet asks the device exactly once.
-    assert(OcclReadPlan(1, 0) == 0);
-    assert(OcclReadPlan(1, 1) == 0);
-    assert(OcclReadPlan(0, 1) == 1);
-    assert(OcclReadPlan(0, 0) == 2);
+    // ---- B1: the read plan ------------------------------------------------------------------
+    // A fresh value produced by THIS eye's box is used as it is; when the value in the object
+    // belongs to the other eye (or the GPU has not finished) the answer is this eye's own previous
+    // one; a query with no history at all asks the device exactly once.
+    assert(OcclReadPlan(1, 1, 0) == 0);
+    assert(OcclReadPlan(1, 1, 1) == 0);
+    assert(OcclReadPlan(1, 0, 1) == 1);   // the other eye's box: never this eye's answer
+    assert(OcclReadPlan(0, 0, 1) == 1);
+    assert(OcclReadPlan(0, 1, 1) == 1);   // not finished by the GPU
+    assert(OcclReadPlan(0, 0, 0) == 2);   // nothing at all: ask the device
+    assert(OcclReadPlan(1, 0, 0) == 0);   // no history of its own: the device's answer is the best there is
 
     // An answer that stops arriving must not freeze a verdict: after kOcclStaleLimit consecutive
     // stale reads the caller has to ask the device the way the engine did, and the counter restarts.
@@ -133,17 +161,78 @@ int main() {
     assert(OcclStaleOk(&run) == 1);
     assert(OcclStaleOk(nullptr) == 0);
 
-    // ---- B1 / OCCLHOLD: the blink held back one frame ---------------------------------------
-    // visible -> always believed; visible->culled needs TWO consecutive zeros.
-    // Hold ON: (visible, culled) -> hold visible; (culled, culled) -> culled.
-    assert(OcclHoldKeep(1, 0, 1) == 1);   // hold the visible verdict
-    assert(OcclHoldKeep(0, 0, 1) == 0);   // second zero: believe it
-    assert(OcclHoldKeep(1, 5, 1) == 0);   // real is visible: no hold
-    assert(OcclHoldKeep(1, 0, 0) == 0);   // hold off: report raw
-    assert(OcclHoldKeep(0, 0, 0) == 0);
-    assert(OcclHoldKeep(0, 5, 1) == 0);   // was culled, now visible: no hold
-    // Hold OFF must not freeze: a fresh visible verdict always passes through.
-    assert(OcclHoldKeep(0, 5, 0) == 0);
+    // ---- B1 / OCCLPROVE / OCCLHOLD: a "culled" must be earned --------------------------------
+    // OcclCullProven(prove, trusted, cullRun, nowCulled, hold)
+    // The sound case: a trusted value (this eye's own single statement), the second zero in a row.
+    assert(OcclCullProven(1, 1, 1, 1, 1) == 1);
+    assert(OcclCullProven(1, 1, 0, 1, 1) == 0);   // first zero after a visible: held
+    assert(OcclCullProven(1, 1, 1, 0, 1) == 0);   // the GPU says visible: always believed
+    // The value does not describe the box the engine just drew (another eye, or a re-issued /
+    // already-read object): it may not hide anything, whichever the hold remembers.
+    assert(OcclCullProven(1, 0, 1, 1, 1) == 0);
+    assert(OcclCullProven(1, 0, 0, 1, 1) == 0);
+    assert(OcclCullProven(1, 0, 1, 0, 1) == 0);
+    // The A/B switches, and the fact that turning the proof off does NOT disable the hold.
+    assert(OcclCullProven(0, 0, 0, 1, 1) == 0);   // raw verdicts, hold still needs two zeros
+    assert(OcclCullProven(0, 0, 1, 1, 1) == 1);
+    assert(OcclCullProven(0, 0, 0, 1, 0) == 1);   // raw verdicts and no hold: phase-5 as shipped
+    assert(OcclCullProven(1, 1, 0, 1, 0) == 1);   // proof on, stabiliser off
+
+    // ---- the scenario the field reported, driven through the REAL read path ------------------
+    OcclTableReset();
+    g_occlPerEye = 1; g_occlProve = 1; g_occlHold = 1; g_visReuse = 0; g_bbW = 2000;
+    g_occlEyePass = -1; g_fastFlags = 0; g_occlForceOn = 0;
+    o_QueryGetData = StubQueryGetData;
+    g_fakeHr = S_OK;
+    IDirect3DQuery9 q;
+    q.type = D3DQUERYTYPE_OCCLUSION;
+    DWORD got = 1234;
+
+    // TWO VIEWS, ONE QUERY OBJECT: the left pass draws its box, the right pass draws its box into
+    // the SAME object, and only then does anybody read. The GPU says "0 pixels" - and neither eye
+    // may be told that, because the zero belongs to a box nobody can name any more.
+    g_vpX = 0;    g_vpW = 1000; OcclBeginIssue(&q); OcclEndIssue(&q);
+    g_vpX = 1000;               OcclBeginIssue(&q); OcclEndIssue(&q);
+    g_fakeValue = 0;
+    got = 1234;
+    assert(Hook_QueryGetData(&q, &got, sizeof(got), 0) == S_OK);
+    assert(got == 0x7FFFFF);                 // "lots of pixels": the prop stays
+    got = 1234;
+    assert(Hook_QueryGetData(&q, &got, sizeof(got), 0) == S_OK);
+    assert(got == 0x7FFFFF);                 // and the second reader is not told it either
+
+    // The same object next frame: the read closed the cycle, but the two views keep opening it, so
+    // it never becomes trustworthy - the blink stays impossible for as long as the contention does.
+    g_vpX = 0;    OcclBeginIssue(&q); OcclEndIssue(&q);
+    g_vpX = 1000; OcclBeginIssue(&q); OcclEndIssue(&q);
+    got = 1234;
+    assert(Hook_QueryGetData(&q, &got, sizeof(got), 0) == S_OK);
+    assert(got == 0x7FFFFF);
+
+    // ONE VIEW PER OBJECT (the shape that is provably sound): the box is drawn, the value is read,
+    // and a real "0 pixels" is believed - on the second zero, as [OCCLHOLD] says.
+    OcclTableReset();
+    g_vpX = 0; g_vpW = 1000;
+    OcclBeginIssue(&q); OcclEndIssue(&q);
+    got = 1234;
+    assert(Hook_QueryGetData(&q, &got, sizeof(got), 0) == S_OK);
+    assert(got == 0x7FFFFF);                 // first zero: held
+    OcclBeginIssue(&q); OcclEndIssue(&q);    // next frame, same eye
+    got = 1234;
+    assert(Hook_QueryGetData(&q, &got, sizeof(got), 0) == S_OK);
+    assert(got == 0);                        // second zero: the prop may go
+    g_fakeValue = 500;                       // ... and a visible answer is believed at once
+    OcclBeginIssue(&q); OcclEndIssue(&q);
+    got = 1234;
+    assert(Hook_QueryGetData(&q, &got, sizeof(got), 0) == S_OK);
+    assert(got == 500);
+
+    // A recycled D3D address must not inherit the answers of the object that used to live there.
+    OcclSlot* ss = OcclSlotFor(&q, false);
+    assert(ss != nullptr);
+    OcclSlotInit(ss);
+    assert(ss->have[0] == 0 && ss->have[1] == 0 && ss->issues == 0 && ss->readers == 0 &&
+           ss->pendEye == -1);
 
     // ---- B1: one entry per query, and one answer per eye -------------------------------------
     IDirect3DQuery9* q1 = (IDirect3DQuery9*)(uintptr_t)0x100000;
@@ -182,6 +271,13 @@ int main() {
     g_vpX = 0;    g_vpW = 2000;                 // full frame: no opinion
     g_olRenderEye = 1;           assert(OcclEyeFromViewport() == 1);
     g_olRenderEye = 0;           assert(OcclEyeFromViewport() == 0);
+    // Nor does any OTHER size: a shadow map, a scene capture or the mod's own UI quad happens
+    // between two views, and reading it as "the left eye" would file that eye's answers wrongly.
+    g_olRenderEye = 1;
+    g_vpX = 0;    g_vpW = 1024;  assert(OcclEyeFromViewport() == 1);   // a shadow map, left corner
+    g_vpX = 0;    g_vpW = 640;   assert(OcclEyeFromViewport() == 1);
+    g_vpX = 0;    g_vpW = 0;     assert(OcclEyeFromViewport() == 1);
+    g_olRenderEye = 0;
 
     // ---- C1's guard: only a frame that really saw the primary view may skip the 2nd eye's boxes
     g_vpW = 1000;                // a per-view viewport is in force again
@@ -242,7 +338,8 @@ int main() {
 with tempfile.TemporaryDirectory() as td:
     src = Path(td) / 't.cpp'
     exe = Path(td) / 't.exe'
-    src.write_text(stub + '\n' + PER_EYE + '\n' + READ_PLAN + '\n' + HOLD + '\n' + per_eye_checks)
+    src.write_text(stub + '\n' + PER_EYE + '\n' + READ_PLAN + '\n' + CULL + '\n' + READ_PATH + '\n' +
+                   per_eye_checks)
     subprocess.run(['g++', '-std=c++17', '-O1', '-Wall', '-Wno-unused-function',
                     '-o', str(exe), str(src)], check=True)
     out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
@@ -386,6 +483,24 @@ assert 'flags & ~(DWORD)D3DGETDATA_FLUSH' in body, 'a read can flush and stall a
 assert body.index('flags & ~(DWORD)D3DGETDATA_FLUSH') < body.index('OLUE3_OcclBypassOn()'), \
     'the per-eye path no longer comes first'
 assert '0x7FFFFF' in body.split('OLUE3_OcclBypassOn()')[1], 'the force-visible fallback was removed'
+# [OCCLPROVE] (the 2026-11-05 blink): a "culled" is only published when the value provably
+# describes the box the engine just drew, and the answer is filed against the eye that produced it.
+assert 'OcclCullProven(g_occlProve != 0, trusted, prevCulled, 1, g_occlHold)' in body, \
+    'the read path no longer proves a "culled" before hiding a prop with it'
+assert 'const int shared = (s->issues > 1 || s->readers > 0) ? 1 : 0;' in body, \
+    'the read path no longer notices an object that was re-opened or already read'
+assert 'if (s->readers < 8) ++s->readers;' in body, 'a read no longer closes the cycle'
+assert 's->ans[owner] = got' in body, 'a GPU value is filed against the asking eye, not its owner'
+assert 'if (trusted) s->cullRun[eye] = nowCulled;' in body, \
+    'the two-zero rule lost its memory (or reads the latched told verdict again)'
+issue = block('static HRESULT STDMETHODCALLTYPE Hook_QueryIssue(IDirect3DQuery9* This, DWORD flags)')
+assert 'OcclBeginIssue(This);' in issue and 'OcclEndIssue(This);' in issue, \
+    'the issue hooks no longer record which eye drew into a query'
+assert 'if (s) OcclSlotInit(s);' in PROXY, \
+    'a recreated query can inherit the answers of the object that used to live at that address'
+# The [PERF] line publishes what the proof refused, which is what tells a session whether the two
+# views really are fighting over one query object.
+assert 'unproven' in XR and 'held %.0f (unproven %.0f)' in XR, '[PERF] lost the unproven counter'
 # The boxes ARE the answer while the per-eye path runs: only C1's second eye may skip them.
 skip = block('static inline bool OcclDrawSkipped()')
 assert 'if (g_occlPerEye) {' in skip, 'the box test no longer knows about the per-eye path'

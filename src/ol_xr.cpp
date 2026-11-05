@@ -5688,7 +5688,7 @@ static bool BlitToSwapchain() {
 extern "C" void OLProxy_TakeDrawStats(long* draws, long* occlSkipped);          // d3d9_proxy.cpp
 extern "C" void OLProxy_TakeOcclStats(long* fresh, long* stale, long* blocked, long* reused,
                                       long* noSlot, long* usL, long* usR, long* nL, long* nR,
-                                      long* flipL, long* flipR, long* held);
+                                      long* flipL, long* flipR, long* held, long* unproven);
 extern "C" void OLUE3_TakeVisibilityStats(long* pvsServed, long* pvsMiss, long* pvsFull,
                                           long* eyePrimary, long* eyeSecondary);
 extern "C" void OLUE3_TakeFrameStats(long* calcSceneSumUs, long* calcSceneMaxUs, long* skelCalls,
@@ -5758,23 +5758,27 @@ static void PerfFrame() {
         // work is judged by. "fresh" answers came from the GPU, "stale" from this eye's previous
         // frame (the read did not wait), "blocked" is the fallback of a query's very first read,
         // "reused" is the second eye taking the first eye's verdict (C1, off by default), and the
-        // two pass times are what one eye's run of occlusion reads actually took.
+        // two pass times are what one eye's run of occlusion reads actually took. "held" is how
+        // many "culled" answers were refused, and "unproven" how many of those were refused because
+        // the value could not be proven to be this box's at all ([OCCLPROVE]) - the number that says
+        // whether the two views really are fighting over one query object.
         long oFresh = 0, oStale = 0, oBlocked = 0, oReused = 0, oNoSlot = 0;
-        long usL = 0, usR = 0, nL = 0, nR = 0, flipL = 0, flipR = 0, held = 0;
+        long usL = 0, usR = 0, nL = 0, nR = 0, flipL = 0, flipR = 0, held = 0, unproven = 0;
         OLProxy_TakeOcclStats(&oFresh, &oStale, &oBlocked, &oReused, &oNoSlot, &usL, &usR, &nL, &nR,
-                              &flipL, &flipR, &held);
+                              &flipL, &flipR, &held, &unproven);
         long pvsServed = 0, pvsMiss = 0, pvsFull = 0, eyePri = 0, eyeSec = 0;
         OLUE3_TakeVisibilityStats(&pvsServed, &pvsMiss, &pvsFull, &eyePri, &eyeSec);
         XLOG("[OLVR][PERF] occl per-eye: %.0f fresh + %.0f stale (no wait) + %.0f first-read, "
              "%.0f reused, %.0f no slot | pass L %.0f us (%.1f/frame) R %.0f us (%.1f/frame) | "
              "pvs shared %.0f, asked %.0f | view eye primary/secondary %ld/%ld | "
-             "verdict changes L %.0f R %.0f/frame, held %.0f",
+             "verdict changes L %.0f R %.0f/frame, held %.0f (unproven %.0f)",
              (double)oFresh / frames, (double)oStale / frames, (double)oBlocked / frames,
              (double)oReused / frames, (double)oNoSlot / frames,
              nL > 0 ? (double)usL / (double)nL : 0.0, (double)nL / frames,
              nR > 0 ? (double)usR / (double)nR : 0.0, (double)nR / frames,
              (double)pvsServed / frames, (double)pvsMiss / frames, eyePri, eyeSec,
-             (double)flipL / frames, (double)flipR / frames, (double)held / frames);
+             (double)flipL / frames, (double)flipR / frames, (double)held / frames,
+             (double)unproven / frames);
     }
     OLProxy_ExStatReport();   // (Test47) [EXSTAT] the game's resource creates / locks this period
     XLOG("[OLVR][XRTIMING] loop avg %.2f max %.2f | begin avg %.2f max %.2f | end avg %.2f max %.2f | "
