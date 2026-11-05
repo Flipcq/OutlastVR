@@ -772,7 +772,7 @@ namespace Outlast1VR
         // then every mod file. README.txt / TESTER NOTES.txt only when they are ours; the launcher removes itself
         // after it closes (Program.SelfDeleteOnExit). Before, with no saved settings it did nothing at all -
         // the DLLs stayed - and it always left the launcher, the ini, the .bat, the logo and the README.
-        static readonly string[] ModFiles = { "d3d9.dll", "openxr_loader.dll", "outlastvr.ini", "Outlast-VR.bat", "strikezone_logo.jpg" };
+        static readonly string[] ModFiles = { "d3d9.dll", "openxr_loader.dll", "outlastvr.ini", "Outlast-VR.bat" };
         static readonly string[] ModTexts = { "README.txt", "TESTER NOTES.txt" };
 
         public static bool Restore(string cfg, string gameDir, List<Msg> r, bool dry)
@@ -1984,7 +1984,7 @@ namespace Outlast1VR
         double skipOff, holdOff, lastRaw, previewT, lastStatus;
 
         // assets
-        Bitmap outBuf, bandBuf, tmpBuf, overlay, fogA, fogB, bgLit, bgDark, title, titleGlow, titleRed, titleCyan, logo;
+        Bitmap outBuf, bandBuf, tmpBuf, overlay, fogA, fogB, bgLit, bgDark, title, titleGlow, titleRed, titleCyan;
         Bitmap[] noiseTiles, staticTiles;
         volatile bool heavyReady;
         PointF focusBg, eyeL, eyeR;
@@ -2033,7 +2033,6 @@ namespace Outlast1VR
             st = Status.Read(gameDir);
             BuildRows();
             if (!preview) muted = ReadMuted();
-            LoadLogo();
             string splash = forceProcedural ? null : SysInfo.FindSplash(gameDir);
             if (preview) BuildHeavy(splash);
             else ThreadPool.QueueUserWorkItem(delegate { BuildHeavy(splash); });
@@ -2080,27 +2079,6 @@ namespace Outlast1VR
                 if (bgLit == null) { bgLit = new Bitmap(Art.BW, Art.BH, PixelFormat.Format32bppPArgb); using (Graphics g = Graphics.FromImage(bgLit)) g.Clear(Color.FromArgb(4, 14, 7)); bgDark = bgLit; }
             }
             heavyReady = true;
-        }
-
-        void LoadLogo()
-        {
-            Image src = null;
-            try
-            {
-                string p = Path.Combine(Program.AppDir(), "strikezone_logo.jpg");
-                if (File.Exists(p)) using (Image i = Image.FromFile(p)) src = new Bitmap(i);
-            }
-            catch { src = null; }
-            if (src == null)
-            {
-                try
-                {
-                    using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("Outlast1VR.strikezone_logo.jpg"))
-                        if (s != null) using (Image i = Image.FromStream(s)) src = new Bitmap(i);
-                }
-                catch { src = null; }
-            }
-            if (src != null) { logo = Art.RoundLogo(src, 60); src.Dispose(); }
         }
 
         // ---------------- clock ----------------
@@ -2935,17 +2913,14 @@ namespace Outlast1VR
         void DrawCredit(Graphics g, double t, double ua)
         {
             double a = ua * U.Smooth(1.95, 2.4, t); if (a < 0.01) return;
-            if (logo != null)
+            using (Font fSmall = new Font(fCredit.FontFamily, 10f, FontStyle.Bold))
             {
-                int lw = 40, lh = (int)((float)logo.Height * lw / logo.Width);
-                int x = 1000, y = 30;   // canto superior direito, logo à esquerda do texto
-                DrawImageA(g, logo, x, y, a);
-                // crédito menor à direita do logo, canto superior direito
-                using (Font fSmall = new Font(fCredit.FontFamily, 10f, FontStyle.Bold))
-                {
-                    Text(g, "credits to the mod creator", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + lw + 30, y, true);
-                    Text(g, "StrikeZoneVR", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + lw + 30, y + 13, true);
-                }
+                float x = 1070f, y = 30f;
+                string line1 = "credits to the original mod creator";
+                float w1 = Measure(g, line1, fSmall);
+                Text(g, line1, fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x, y, true);
+                // StrikeZoneVR embaixo, centralizado em relação à linha acima
+                TextCenter(g, "StrikeZoneVR", fSmall, U.A(Color.FromArgb(180, 150, 190, 130), a), x + w1 / 2f, y + 13f, true);
             }
         }
 
