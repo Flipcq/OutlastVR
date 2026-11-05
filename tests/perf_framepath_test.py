@@ -46,19 +46,19 @@ def block(signature):
 
 
 # ---------------------------------------------------------------- the switches, ini and code agree
-# SharedFrameDirect and DirectSwapchain both ship OFF: each one changes what the GPU does with the
-# frame, and neither has been cleared on hardware. ViewCache is the transparent one, so it ships on.
-SWITCHES = [('SharedFrameDirect', '0'), ('DirectSwapchain', '0'), ('ViewCache', '1')]
+# SharedFrameDirect ships ON (with its own automatic fallback), DirectSwapchain stays OFF, and
+# ViewCache ships on because it is the transparent part of A3.
+SWITCHES = [('SharedFrameDirect', '1'), ('DirectSwapchain', '0'), ('ViewCache', '1')]
 for key, default in SWITCHES:
     assert f'{key}={default}' in INI, f'{key}={default} missing from the shipped ini'
     pat = re.compile(r'L"Perf",\s*L"%s",\s*%s' % (key, default))
     assert pat.search(XR), f'{key} is not read as [Perf] {key}={default} in the code'
-print('ini/code defaults: SharedFrameDirect=0, DirectSwapchain=0, ViewCache=1')
+print('ini/code defaults: SharedFrameDirect=1, DirectSwapchain=0, ViewCache=1')
 
 # With SharedFrameDirect off, "the frame" must be exactly the upload texture: the phase-4 indirection
 # has to be invisible, or the 0 setting would not restore the 1.2.2 path.
-assert 'static volatile LONG   g_sharedFrameDirect = 0;' in XR, \
-    'SharedFrameDirect no longer ships off - the in-place read is not validated on hardware'
+assert 'static volatile LONG   g_sharedFrameDirect = 1;' in XR, \
+    'SharedFrameDirect no longer ships on - the validated hardware path is not the default'
 assert 'return g_frameTex ? g_frameTex : g_uploadTex;' in XR, 'FrameTex lost its fallback to the upload texture'
 
 # --------------------------------------------------- 1. A3: the picture is read where it lies

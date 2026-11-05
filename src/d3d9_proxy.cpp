@@ -101,13 +101,6 @@ extern "C" void OLDev_Init(const wchar_t* ini);
 extern "C" void OLDev_OnPresent(IDirect3DDevice9* dev, long presentCount);
 extern "C" int  OLDev_Pad(WORD* buttons, float* lx, float* ly, float* rx, float* ry);
 
-// [SYNCLOG] Every line goes into a memory buffer and a writer thread puts it on disk every 200 ms
-// (the [ASYNCLOG] note above). That is right for play, and wrong for a crash: the lines written in the
-// last 200 ms die with the process - exactly the lines that say where it died. [Debug] SyncLog=1
-// writes and flushes each line as it happens, so the last line of the file IS the last thing the mod
-// did. Only for diagnosis; it puts a disk write in the middle of a frame.
-static volatile LONG g_syncLog = 0;
-
 static void Log(const char* fmt, ...) {
     if (!g_log) return;
     char line[4096];
@@ -119,12 +112,6 @@ static void Log(const char* fmt, ...) {
     if (m < 0) m = (int)strlen(line + n);
     n += m; line[n++] = '\n';
     EnterCriticalSection(&g_cs);
-    if (g_syncLog) {   // the writer thread never sees a full buffer in this mode, so no interleaving
-        fwrite(line, 1, (size_t)n, g_log);
-        fflush(g_log);
-        LeaveCriticalSection(&g_cs);
-        return;
-    }
     if (g_logLen + n > g_logCap) {
         size_t cap = g_logCap ? g_logCap * 2 : 65536;
         while (cap < g_logLen + n) cap *= 2;
@@ -213,23 +200,8 @@ static BOOL WINAPI Hook_GetMonitorInfoA(HMONITOR h, LPMONITORINFO mi) {
 typedef HRESULT (STDMETHODCALLTYPE *GetAdapterDisplayMode_t)(IDirect3D9*, UINT, D3DDISPLAYMODE*);
 static GetAdapterDisplayMode_t o_GetAdapterDisplayMode = nullptr;
 static volatile LONG g_admHits = 0;
-static volatile LONG g_admCalls = 0;
 static HRESULT STDMETHODCALLTYPE Hook_GetAdapterDisplayMode(IDirect3D9* This, UINT adapter, D3DDISPLAYMODE* m) {
-    // [CRASHLOG] The first few calls are logged whatever they answer: this is the only function of ours
-    // the game runs between getting the device object and calling CreateDevice, so a log that stops
-    // right after "hooks installed" is either the game dying in its own code or dying in here - and
-    // without this line the two are indistinguishable.
-    const LONG call = InterlockedIncrement(&g_admCalls);
-    if (call <= 3) Log("[OLVR][SCREQ] GetAdapterDisplayMode(adapter=%u) entered", adapter);
-    HRESULT hr = D3DERR_INVALIDCALL;
-    DWORD ex = 0;
-    __try { hr = o_GetAdapterDisplayMode(This, adapter, m); }
-    __except (ex = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
-        // A device-level fault used to take the whole game with it, leaving no evidence at all.
-        Log("[OLVR][SCREQ] EXCEPTION 0x%08lX inside GetAdapterDisplayMode - the real D3D9 call faulted",
-            ex);
-        return D3DERR_INVALIDCALL;
-    }
+    HRESULT hr = o_GetAdapterDisplayMode(This, adapter, m);
     if (SUCCEEDED(hr) && m && g_spoofArmed &&
         ((LONG)m->Width < g_reqW || (LONG)m->Height < g_reqH)) {
         LONG n = InterlockedIncrement(&g_admHits);
@@ -238,9 +210,6 @@ static HRESULT STDMETHODCALLTYPE Hook_GetAdapterDisplayMode(IDirect3D9* This, UI
                 adapter, m->Width, m->Height, g_reqW, g_reqH);
         m->Width = (UINT)g_reqW; m->Height = (UINT)g_reqH;
     }
-    if (call <= 3)
-        Log("[OLVR][SCREQ] GetAdapterDisplayMode(adapter=%u) hr=0x%08lX -> %ux%u @%uHz", adapter, hr,
-            m ? m->Width : 0u, m ? m->Height : 0u, m ? m->RefreshRate : 0u);
     return hr;
 }
 
@@ -1697,11 +1666,6 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateDevice(IDirect3D9* This, UINT Adapte
     HRESULT hr;
     if (g_d3d9Ex && pp && ppDev) {
         // [D3D9EX] The Ex device, so resources can be shared with the headset bridge.
-        // [SYNCLOG] the line BEFORE the call too: without it a death inside CreateDeviceEx looks the
-        // same as a death before it, because the result line is only written once the call returns.
-        Log("[OLVR][D3D9EX] CreateDeviceEx entering: %ux%u fmt=%d windowed=%d interval=0x%08lX behavior=0x%08lX",
-            pp->BackBufferWidth, pp->BackBufferHeight, (int)pp->BackBufferFormat, pp->Windowed,
-            pp->PresentationInterval, Behavior);
         D3DDISPLAYMODEEX fm = {}; fm.Size = sizeof(fm);
         fm.Width = pp->BackBufferWidth; fm.Height = pp->BackBufferHeight;
         fm.RefreshRate = pp->FullScreen_RefreshRateInHz; fm.Format = pp->BackBufferFormat;
@@ -1781,11 +1745,6 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT SDKVersion) {
                 InterlockedExchange(&g_d3d9Ex, 1);
                 Log("[OLVR][D3D9EX] Direct3DCreate9 sdk=%u -> Direct3DCreate9Ex %p", SDKVersion, (void*)ex);
                 InstallD3D9Hook(ex);
-                // [CRASHLOG] The hand-over, so the next line of the log is whatever the game asks for
-                // first. A log that ends HERE means the game died inside its own D3D9 calls (device
-                // caps, adapter modes...) before it ever reached CreateDevice - no code of this mod
-                // runs in between except the GetAdapterDisplayMode/W hooks, and those log too.
-                Log("[OLVR][D3D9EX] handing the IDirect3D9Ex to the game (pid %lu)", GetCurrentProcessId());
                 return ex;
             }
             Log("[OLVR][D3D9EX] Direct3DCreate9Ex unavailable (hr=0x%08lX)", hr);
@@ -2727,17 +2686,6 @@ static void ReadXrConfig() {
     wchar_t val[32] = { 0 };
     GetPrivateProfileStringW(L"XR", L"Enabled", L"1", val, 32, ini);
     g_xrAllowed = (_wcsicmp(val, L"0") == 0 || _wcsicmp(val, L"false") == 0) ? 0 : 1;
-    // [SYNCLOG] turn it on BEFORE anything else can die, and get the lines already buffered onto disk
-    // first (from here on the writer thread has nothing to do).
-    if (GetPrivateProfileIntW(L"Debug", L"SyncLog", 0, ini)) {
-        EnterCriticalSection(&g_cs);
-        if (g_logLen && g_logBuf && g_log) { fwrite(g_logBuf, 1, g_logLen, g_log); fflush(g_log); }
-        g_logLen = 0;
-        InterlockedExchange(&g_syncLog, 1);
-        LeaveCriticalSection(&g_cs);
-        Log("[OLVR][SYNCLOG] every line is flushed as it is written ([Debug] SyncLog=1) - the last "
-            "line of this file is the last thing the mod did");
-    }
     Log("[OLVR] XR %s (outlastvr.ini [XR] Enabled)", g_xrAllowed ? "ENABLED" : "DISABLED - flat, no headset needed");
     // [PACING] In VR the game must present on the HEADSET's clock (xrWaitFrame), not the
     // monitor's. With the game's own vsync live there are TWO serial blocking waits on two

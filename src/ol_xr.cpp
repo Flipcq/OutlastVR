@@ -142,7 +142,7 @@ static long long g_frame = 0;
 // Neither half has a [Perf] switch of its own: the cache is the same object the code already created
 // and dropped inside the same call (nothing about the draw changes), and reading the shared frame in
 // place falls back to the copy by itself. The two switches phase 4 does add are [Perf]
-// SharedFrameDirect (this path; OFF by default until a headset run clears it) and [Perf]
+// SharedFrameDirect (the in-place read, on with an automatic fallback) and [Perf]
 // DirectSwapchain (B8, also off by default).
 static ID3D11Texture2D* g_frameTex = nullptr;    // [PERF-A3] the picture being shown, or null
 static inline ID3D11Texture2D* FrameTex() { return g_frameTex ? g_frameTex : g_uploadTex; }
@@ -1861,25 +1861,20 @@ static volatile LONG64 g_monRetryTick = 0;     // don't re-attempt CreateSwapCha
 // SharedFrameDirect is item A3: with [EXSHARE] the bridge opens the game's shared frame as a D3D11
 // texture and used to COPY it into g_uploadTex before every blit - 36 MB a frame of pure VRAM
 // bandwidth. Sampling the shared texture in place removes the copy; the slot is still held until the
-// frame's draws are queued (ExDirectRelease), so the game cannot overwrite what is being read, and a
-// GPU/runtime that cannot make a shader-resource view on a shared frame drops back to the copy by
-// itself.
+// frame's draws are queued (ExDirectRelease), so the game cannot overwrite what is being read.
 //
-// It ships OFF. Not because the code is unsure of its bookkeeping, but because it is the one change in
-// this pass that makes the GPU read D3D9Ex shared memory instead of the bridge's own texture, and that
-// has to be validated on real hardware before it becomes the default: on the first hardware run the
-// game started and closed, which is what a device-level fault looks like from the outside, and no
-// source-level fault is visible in this path. 0 = the copy, i.e. exactly the 1.2.2 frame path before
-// phase 4 (FrameTex() is then permanently g_uploadTex). Turn it to 1 and send the log: the first line
-// `[PERF-A3] the shared frame is read in place` says the lane really engaged.
+// It ships ON, with its own fallback: a GPU or runtime that cannot make a shader-resource view on a
+// shared frame drops to the copy by itself, once, and says so in the log. 0 = always copy, which is
+// exactly the 1.2.2 frame path before phase 4 (FrameTex() is then permanently g_uploadTex) - so a
+// report of a wrong or missing picture can be bisected with one key instead of a rebuild.
 //
 // DirectSwapchain is item B8: draw the eye blit's shader straight into the acquired OpenXR swapchain
 // image instead of the g_blitTmp scratch plus a CopyResource, which removes the other 36 MB a frame.
-// Also opt-in, for the same reason plus its own history: a direct-render attempt in this project once
-// produced a scrambled picture while every D3D call reported success, and the likeliest explanation is
-// the one OlrDirectViewFormat now handles by construction (a typeless swapchain image, or an sRGB view
-// over non-sRGB bytes). Off = the shipped path, byte for byte, with the copy as an automatic fallback.
-static volatile LONG   g_sharedFrameDirect = 0;
+// This one stays opt-in, because a direct-render attempt in this project once produced a scrambled
+// picture while every D3D call reported success, and the likeliest explanation is the one
+// OlrDirectViewFormat now handles by construction (a typeless swapchain image, or an sRGB view over
+// non-sRGB bytes). Off = the shipped path, byte for byte, with the copy as an automatic fallback.
+static volatile LONG   g_sharedFrameDirect = 1;
 static volatile LONG   g_directSwapchain = 0;
 
 // Create a D3D11 device on the adapter OpenXR requires (matched by LUID).
@@ -1949,7 +1944,7 @@ static bool Init(UINT w, UINT h) {
                 g_paceWait      = GetPrivateProfileIntW(L"Perf", L"PaceWait", 1, ini) ? 1 : 0;
                 g_bridgeMirrorOn = GetPrivateProfileIntW(L"Perf", L"BridgeMirror", 1, ini) ? 1 : 0;
                 // [PERF-A3] / [PERF-B8] phase 4: the two frame-path copies, and the view cache.
-                g_sharedFrameDirect = GetPrivateProfileIntW(L"Perf", L"SharedFrameDirect", 0, ini) ? 1 : 0;
+                g_sharedFrameDirect = GetPrivateProfileIntW(L"Perf", L"SharedFrameDirect", 1, ini) ? 1 : 0;
                 g_directSwapchain   = GetPrivateProfileIntW(L"Perf", L"DirectSwapchain", 0, ini) ? 1 : 0;
                 g_viewCacheOn       = GetPrivateProfileIntW(L"Perf", L"ViewCache", 1, ini) ? 1 : 0;
                 XLOG("[OLVR][PERF-A1] timer=%ld thread=%ld process=%ld | [PERF-A2] pacing wait=%s | [PERF-A8] bridge monitor=%s",
@@ -5783,9 +5778,6 @@ void OLXR_OnPresent(IDirect3DDevice9* dev) {
         if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) return;
         D3DSURFACE_DESC sd; bb->GetDesc(&sd); bb->Release();
         if (sd.Width < 64 || sd.Height < 64) return;    // not a real scene yet
-        // [SYNCLOG] A one-line marker that the bridge was reached at all: everything phase 1-4 added to
-        // this file lives behind this point, so its absence in a log means the mod never got here.
-        XLOG("[OLVR][XR] first Present (%ux%u): bringing the headset bridge up", sd.Width, sd.Height);
         if (!Init(sd.Width, sd.Height)) return;
     }
 
