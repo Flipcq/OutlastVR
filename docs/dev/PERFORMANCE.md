@@ -43,7 +43,9 @@ has a number next to it from the mod's own log, or is waiting for one.
 Phase 3 adds one boot line each: `[PERF-A1]` says whether the 1 ms timer, the worker boost and
 the optional process boost are on; `[PERF-A2]` says which pacing wait is in use; and `[PERF-A8]`
 logs the moment the bridge takes the monitor over (`bridge owns the monitor: WxH`), or the reason
-it handed it back.
+it handed it back. Phase 4 adds `[PERF-A3]` (is the shared frame sampled in place, or is the copy
+still there) and `[PERF-B8]` (is the direct draw on), plus a one-off line the first time each lane
+really runs.
 
 `[HITCH]` lists frames over 40 ms with the second they happened, next to whatever else the log says
 happened then.
@@ -119,7 +121,33 @@ bitblt (`DXGI_SWAP_EFFECT_DISCARD`) on purpose: it can coexist with the game's D
 the fallback can hand the window straight back. While A8 is live, `present avg` in `[PERF]` is 0
 because this thread is not presenting - that is the point, not a regression.
 
-### Investigated and deliberately NOT changed
+### Phase 4 - memory and GPU
+
+| Change | Where | Effect |
+|---|---|---|
+| `[PERF-A3]` shared frame read in place | `ol_xr.cpp` `ExWorkerTake` / `FrameTex` | the 36 MB `CopyResource` out of the shared frame, every frame at ~2.6 GB/s, is not issued at all; the eye blit samples the shared texture |
+| `[PERF-A3]` view cache | `ol_xr.cpp` `CachedSrv` / `CachedRtv` / `ViewCacheClear` | one `ID3D11View` per texture instead of a create + release per eye per frame (driver-side allocations); the entry holds its texture, so a rebuilt swapchain cannot leave a stale pointer |
+| `[PERF-A3]` slot hand-back | `ol_xr.cpp` `ExDirectRelease`, `ExWorkerTick` | the shared slot is not returned to the game until the frame's draws are queued (the event query is ended a frame later), and the slot being read is skipped when the tick looks for free slots |
+| `[PERF-B8]` direct draw | `ol_xr.cpp` `GammaDraw`, `OlrDirectViewFormat` - `[Perf] DirectSwapchain=1`, OFF by default | removes `g_blitTmp` + the second 36 MB copy; the view format and colour space come from the destination image, and any refusal falls back to the scratch draw + copy |
+
+Which line in the log says it is live:
+
+- `[PERF-A3] shared frame sampled in place (no per-frame copy)` at boot, and
+  `[PERF-A3] the shared frame is read in place - the per-frame copy is gone` on the first frame
+  that takes that lane. `[PERF-A3] a shared frame cannot be sampled on this adapter - keeping the
+  copy` means the adapter refused a view on the shared resource and the old path is in use.
+- `[PERF-B8] direct swapchain draw ON ...` at boot; a destination that refuses a render-target view
+  logs `the destination gave no render-target view` once, and an image whose colour space differs
+  from what the swapchain was asked for logs the exact pair - that is the gamma the copy path cannot
+  see, and the reason the direct lane derives it from the image.
+- `copy` in the periodic `[PERF]` line should drop; `gpu(own cmds)` should drop by the two copies'
+  cost when B8 is enabled.
+
+`[PERF-B8]` stays OFF by default: it is the experiment the optimization notes always said it should
+be. Judge it on a headset (colour, SBS seam, convergence shift, the camcorder HUD on top), never on
+the API results - the earlier direct-render attempt in this project scrambled the picture while every
+D3D call returned success.
+
 
 - **`Hook_GetViewPoint` (D-2, full dedupe).** The per-eye body is ~300 ns: two `cosf`/`sinf`, one
   `ViewLeanM` and a dozen multiplies, over frame-frozen inputs. Only the lean vector is shared

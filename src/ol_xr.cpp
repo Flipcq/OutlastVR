@@ -115,6 +115,106 @@ static IDirect3DSurface9*   g_sysSurf = nullptr;   // D3D9 SYSTEMMEM readback su
 static UINT g_w = 0, g_h = 0;
 static long long g_frame = 0;
 
+// ---- [PERF-A3] THE FRAME'S SOURCE TEXTURE, AND THE VIEW CACHE -----------------------------------
+// (Beta 1.2.2 optimization pass, phase 4)
+//
+// 1. WHERE THE PICTURE IS. With [EXSHARE] the game's backbuffer is StretchRect'ed into a SHARED D3D9
+//    texture and the bridge opens that same memory as an ID3D11Texture2D. Until now the very next
+//    thing it did was copy the whole frame into g_uploadTex: 36 MB at 3456x1824, ~2.6 GB/s at 72 fps,
+//    paid only so the blits had a texture of our own to sample. They do not need one - the opened
+//    texture has the same format, the same size and is already readable from our context. Reading it
+//    in place removes that copy and the 36 MB it moved, every frame.
+//    g_frameTex IS the picture the current frame shows: null means the classic g_uploadTex (CPU
+//    readback, [ZEROCOPY], and the automatic fallback when a shared frame cannot be sampled at all).
+//    The slot behind it is only handed back once the frame's draws have been queued - see
+//    ExDirectRelease() next to [EXSHARE].
+//
+// 2. THE VIEWS ON IT. GammaDraw made a shader-resource view on its source and released it again, per
+//    call, per eye, per frame: two to four driver-side view allocations a frame, for a handful of
+//    textures. The old comment there refused to cache them "by texture pointer" because a swapchain
+//    rebuild frees textures and the allocator hands the same address back. The cure is to make the
+//    identity safe rather than to guess: an entry holds a REFERENCE to the texture, so the pointer
+//    cannot be recycled while the entry lives, and every entry is dropped when the frame plumbing is
+//    rebuilt (ViewCacheClear in DestroyEyeSwapchains / RebuildForSize / a new [EXSHARE] generation).
+//    Every D3D11 view in this file is made and used on one thread (the worker, or the game thread in
+//    the inline lane), so the table is plain state, not locked.
+//
+// Neither half has a [Perf] switch of its own: the cache is the same object the code already created
+// and dropped inside the same call (nothing about the draw changes), and reading the shared frame in
+// place falls back to the copy by itself. The two switches phase 4 does add are [Perf]
+// SharedFrameDirect (this path, on by default) and [Perf] DirectSwapchain (B8, off by default).
+static ID3D11Texture2D* g_frameTex = nullptr;    // [PERF-A3] the picture being shown, or null
+static inline ID3D11Texture2D* FrameTex() { return g_frameTex ? g_frameTex : g_uploadTex; }
+
+static void ExDirectRelease();   // [PERF-A3] closes a direct [EXSHARE] read (defined with it)
+
+enum { kViewCacheSlots = 24 };
+struct ViewEntry {
+    ID3D11Texture2D* tex   = nullptr;   // the entry holds a reference: an address can never be reused
+    ID3D11View*      view  = nullptr;
+    DXGI_FORMAT      fmt   = DXGI_FORMAT_UNKNOWN;   // the format asked for (a render-target view only)
+    int              isRtv = 0;
+};
+static ViewEntry g_viewCache[kViewCacheSlots];
+static int  g_viewN = 0;
+static long g_viewMisses = 0, g_viewHits = 0;
+
+static void ViewCacheClear() {
+    if (g_viewN > 0) {
+        static long s_logged = 0;
+        if (s_logged++ == 0)
+            XLOG("[OLVR][PERF-A3] view cache: dropped %d view(s) for a rebuild (%ld created, %ld reused so far)",
+                 g_viewN, g_viewMisses, g_viewHits);
+    }
+    for (int i = 0; i < g_viewN; ++i) {
+        if (g_viewCache[i].view) g_viewCache[i].view->Release();
+        if (g_viewCache[i].tex)  g_viewCache[i].tex->Release();
+        g_viewCache[i] = ViewEntry();
+    }
+    g_viewN = 0;
+}
+
+// The view for that texture, made once. `fmt` is DXGI_FORMAT_UNKNOWN for "the texture's own format",
+// which is what a shader-resource view always wants; a render-target view needs an explicit format
+// when the image itself is typeless (see OlrDirectViewFormat).
+static ID3D11View* ViewCacheGet(ID3D11Texture2D* tex, int isRtv, DXGI_FORMAT fmt) {
+    if (!tex || !g_d3d11) return nullptr;
+    for (int i = 0; i < g_viewN; ++i)
+        if (g_viewCache[i].tex == tex && g_viewCache[i].isRtv == isRtv && g_viewCache[i].fmt == fmt) {
+            ++g_viewHits;
+            return g_viewCache[i].view;
+        }
+    if (g_viewN == kViewCacheSlots) ViewCacheClear();   // more live sources than slots: start over
+    ID3D11View* view = nullptr;
+    if (isRtv) {
+        ID3D11RenderTargetView* r = nullptr;
+        HRESULT hr;
+        if (fmt == DXGI_FORMAT_UNKNOWN) {
+            hr = g_d3d11->CreateRenderTargetView(tex, nullptr, &r);
+        } else {
+            D3D11_RENDER_TARGET_VIEW_DESC rd = {};
+            rd.Format = fmt; rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            hr = g_d3d11->CreateRenderTargetView(tex, &rd, &r);
+        }
+        if (SUCCEEDED(hr)) view = r;
+    } else {
+        ID3D11ShaderResourceView* s = nullptr;
+        if (SUCCEEDED(g_d3d11->CreateShaderResourceView(tex, nullptr, &s))) view = s;
+    }
+    if (!view) return nullptr;
+    tex->AddRef();
+    g_viewCache[g_viewN].tex = tex; g_viewCache[g_viewN].view = view;
+    g_viewCache[g_viewN].fmt = fmt; g_viewCache[g_viewN].isRtv = isRtv;
+    ++g_viewN; ++g_viewMisses;
+    return view;
+}
+static inline ID3D11ShaderResourceView* CachedSrv(ID3D11Texture2D* tex) {
+    return (ID3D11ShaderResourceView*)ViewCacheGet(tex, 0, DXGI_FORMAT_UNKNOWN);
+}
+static inline ID3D11RenderTargetView* CachedRtv(ID3D11Texture2D* tex, DXGI_FORMAT fmt) {
+    return (ID3D11RenderTargetView*)ViewCacheGet(tex, 1, fmt);
+}
+
 // ---- head pose (exported; nothing consumes it yet) ----
 volatile float g_olYawRad = 0.0f, g_olPitchRad = 0.0f, g_olRollRad = 0.0f;
 // (Beta 1.1) [BODYTURN] Miles turned to face where you face: the recenter frame turns with him by exactly
@@ -1748,6 +1848,25 @@ static volatile LONG64 g_monLastTick = 0;      // GetTickCount64 of the last suc
 static volatile LONG   g_monFails = 0;
 static volatile LONG64 g_monRetryTick = 0;     // don't re-attempt CreateSwapChain before this
 
+// [PERF-A3] / [PERF-B8] THE TWO PHASE-4 SWITCHES. (Beta 1.2.2 optimization pass, phase 4)
+//
+// SharedFrameDirect (on by default) is item A3: with [EXSHARE] the bridge opens the game's shared
+// frame as a D3D11 texture and used to COPY it into g_uploadTex before every blit - 36 MB a frame of
+// pure VRAM bandwidth. Sampling the shared texture in place removes the copy; the slot is still held
+// until the frame's draws are queued (ExDirectRelease), so the game cannot overwrite what is being
+// read. A GPU/runtime that cannot make a shader-resource view on a shared frame drops back to the
+// copy by itself, and 0 restores the copy for an A/B.
+//
+// DirectSwapchain (OFF by default) is item B8: draw the eye blit's shader straight into the acquired
+// OpenXR swapchain image instead of the g_blitTmp scratch plus a CopyResource, which removes the other
+// 36 MB a frame. It stays opt-in because a direct-render attempt in this project once produced a
+// scrambled picture while every D3D call reported success, and the likeliest explanation is the one
+// OlrDirectViewFormat now handles by construction (a typeless swapchain image, or an sRGB view over
+// non-sRGB bytes). Off = the shipped path, byte for byte; on = the experiment, with the copy as an
+// automatic fallback on any refusal from the driver.
+static volatile LONG   g_sharedFrameDirect = 1;
+static volatile LONG   g_directSwapchain = 0;
+
 // Create a D3D11 device on the adapter OpenXR requires (matched by LUID).
 static bool CreateD3D11OnAdapter(const LUID& luid) {
     IDXGIFactory1* factory = nullptr;
@@ -1814,11 +1933,19 @@ static bool Init(UINT w, UINT h) {
                 g_processPrioOn = GetPrivateProfileIntW(L"Perf", L"ProcessPriority", 0, ini) ? 1 : 0;
                 g_paceWait      = GetPrivateProfileIntW(L"Perf", L"PaceWait", 1, ini) ? 1 : 0;
                 g_bridgeMirrorOn = GetPrivateProfileIntW(L"Perf", L"BridgeMirror", 1, ini) ? 1 : 0;
+                // [PERF-A3] / [PERF-B8] phase 4: the two frame-path copies.
+                g_sharedFrameDirect = GetPrivateProfileIntW(L"Perf", L"SharedFrameDirect", 1, ini) ? 1 : 0;
+                g_directSwapchain   = GetPrivateProfileIntW(L"Perf", L"DirectSwapchain", 0, ini) ? 1 : 0;
                 XLOG("[OLVR][PERF-A1] timer=%ld thread=%ld process=%ld | [PERF-A2] pacing wait=%s | [PERF-A8] bridge monitor=%s",
                      g_timerResOn, g_threadPrioOn, g_processPrioOn,
                      g_paceWait ? "WaitOnAddress (no spin)" : "the old spin",
                      g_bridgeMirrorOn ? "on (render thread does neither the blow-up nor the Present)"
                                       : "off (the old render-thread mirror)");
+                XLOG("[OLVR][PERF-A3] shared frame %s | [PERF-B8] direct swapchain draw %s",
+                     g_sharedFrameDirect ? "sampled in place (no per-frame copy)"
+                                         : "copied into the upload texture (the old way)",
+                     g_directSwapchain ? "ON (experiment: no scratch, no copy - watch for a wrong picture)"
+                                       : "off (blit into the scratch image, then copy)");
                 PerfRaiseTimerResolution();
                 PerfRaiseProcessPriority();
                 // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
@@ -2312,6 +2439,10 @@ static void PollEvents() {
 // mismatch and the headset goes black: UpdateSubresource writes short rows into a wider
 // texture, and CopyResource between different-sized textures does nothing at all.
 static void DestroyEyeSwapchains() {
+    // [PERF-A3] The view cache holds a reference to every eye image it has drawn into, so it must be
+    // emptied BEFORE the swapchain those images belong to is destroyed - the runtime is entitled to
+    // free them, and a dangling entry would be re-used by pointer.
+    ViewCacheClear();
     if (g_fn.destroySwapchain) {
         if (g_scL) g_fn.destroySwapchain(g_scL);
         if (g_scR) g_fn.destroySwapchain(g_scR);
@@ -2322,9 +2453,13 @@ static void DestroyEyeSwapchains() {
 
 static bool RebuildForSize(UINT w, UINT h) {
     XLOG("[OLVR][XR] backbuffer changed %ux%u -> %ux%u, rebuilding swapchains", g_w, g_h, w, h);
+    // [PERF-A3] a frame being read in place is sized for the OLD backbuffer: hand the slot back and
+    // stop pointing the blits at it, or this frame would sample a texture that no longer matches.
+    ExDirectRelease();
     DestroyEyeSwapchains();
     if (g_swapchain && g_fn.destroySwapchain) g_fn.destroySwapchain(g_swapchain);
     g_swapchain = 0; g_xrImages.clear();
+    ViewCacheClear();   // ...and the mono chain's images with it
     if (g_uploadTex) { g_uploadTex->Release(); g_uploadTex = nullptr; }
     g_w = w; g_h = h;
 
@@ -2929,6 +3064,12 @@ static long          g_exWorkerGen = -1;
 static UINT          g_exW = 0, g_exH = 0;
 static uint64_t      g_exOrder = 0;
 static long          g_exSkipped = 0;
+// [PERF-A3] The direct-read lane: which slot is being read in place right now (-1 none), how many
+// frames have gone that way, and whether this adapter can do it at all (0 = it refused a view on a
+// shared frame once, so every frame after that copies, exactly as before).
+static long          g_exDirectSlot = -1;
+static volatile long g_exDirectOk = 1;
+static volatile long g_exDirectFrames = 0;
 extern "C" int OLProxy_IsD3D9Ex();
 
 static void ExFail(const char* why, long hr) {
@@ -3020,6 +3161,10 @@ static bool PublishExShare(IDirect3DDevice9* dev, IDirect3DSurface9* bb) {
 // Bridge thread: drop what was opened for an older generation, and free slots whose copy out ran.
 static void ExWorkerTick() {
     if (g_exWorkerGen != g_exGen) {
+        // [PERF-A3] whatever was being read in place belongs to the old generation, and the views the
+        // cache holds on those textures must go before the textures are dropped.
+        g_exDirectSlot = -1; g_frameTex = nullptr;
+        ViewCacheClear();
         for (auto& s : g_ex) {
             if (s.tex11)  { s.tex11->Release();  s.tex11 = nullptr; }
             if (s.done11) { s.done11->Release(); s.done11 = nullptr; }
@@ -3028,12 +3173,18 @@ static void ExWorkerTick() {
         g_exWorkerGen = g_exGen;
         return;
     }
-    for (auto& s : g_ex)
+    for (auto& s : g_ex) {
+        // [PERF-A3] A slot being read in place is NOT free, however old its event query looks: that
+        // query is still the one from an earlier frame (the direct lane ends it in ExDirectRelease,
+        // one frame after the draws), so it reads as signalled while the slot is still in use.
+        if ((long)(&s - g_ex) == g_exDirectSlot) continue;
         if (s.state == 3 && s.done11 && g_ctx->GetData(s.done11, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK)
             InterlockedCompareExchange(&s.state, 0, 3);
+    }
 }
 
 // Bridge thread, inside ConsumeUpload with g_pubLock held SHARED.
+// [PERF-A3] ... and, when the shared frame can be sampled as it is, WITHOUT the 36 MB copy out.
 static bool ExWorkerTake(long idx) {
     if (idx < 0 || idx >= kExSlots || g_exWorkerGen != g_exGen) return false;
     ExSlot& s = g_ex[idx];
@@ -3058,10 +3209,46 @@ static bool ExWorkerTake(long idx) {
         if (InterlockedIncrement(&s_logged) == 1)
             XLOG("[OLVR][EXSHARE] bridge receiving frames on the GPU (%ux%u fmt=%d)", td.Width, td.Height, (int)td.Format);
     }
+    // [PERF-A3] Read the shared frame WHERE IT IS. The view is made once per slot and kept by the view
+    // cache; the pixels are already in the format the blit samples (B8G8R8A8_UNORM), and the game's
+    // own D3D9 completion query is what published this slot, so the copy has already landed on the
+    // GPU. The previous frame's read window is closed here, which is one whole frame after its draws
+    // were queued - see ExDirectRelease.
+    if (g_sharedFrameDirect && g_exDirectOk) {
+        ID3D11ShaderResourceView* srv = CachedSrv(s.tex11);
+        if (srv) {
+            ExDirectRelease();
+            g_frameTex = s.tex11;
+            g_exDirectSlot = (long)idx;
+            if (InterlockedIncrement(&g_exDirectFrames) == 1)
+                XLOG("[OLVR][PERF-A3] the shared frame is read in place - the per-frame copy is gone");
+            return true;   // the slot stays in state 3 until that release, so nothing overwrites it
+        }
+        InterlockedExchange(&g_exDirectOk, 0);   // this GPU/runtime will not sample a shared frame
+        XLOG("[OLVR][PERF-A3] a shared frame cannot be sampled on this adapter - keeping the copy");
+    }
     g_ctx->CopyResource(g_uploadTex, s.tex11);
     if (s.done11) g_ctx->End(s.done11); else InterlockedExchange(&s.state, 0);
     g_ctx->Flush();
     return true;
+}
+
+// [PERF-A3] Bridge thread: the draws that read a directly-taken shared frame have been queued, so the
+// slot may go back to the game once the GPU has run them. Ending the query is that promise: it
+// completes after every command issued before it, which includes the two eye blits. Called from
+// ExWorkerTake (a frame later) and from RebuildForSize - never from inside the frame's own draws.
+static void ExDirectRelease() {
+    const long i = g_exDirectSlot;
+    if (i < 0) return;
+    g_exDirectSlot = -1;
+    g_frameTex = nullptr;
+    if (i >= kExSlots) return;
+    ExSlot& s = g_ex[i];
+    if (s.state == 3) {
+        if (s.done11 && g_ctx) g_ctx->End(s.done11);   // completes after the reads that used it
+        else InterlockedCompareExchange(&s.state, 0, 3);
+    }
+    if (g_ctx) g_ctx->Flush();
 }
 
 extern "C" void OLProxy_ExStatReport();   // (Test47) [EXSTAT] d3d9_proxy.cpp
@@ -3127,14 +3314,15 @@ static bool PublishBackbuffer(IDirect3DDevice9* dev) {
 // HERE, from the published size - the worker owns every D3D11 and OpenXR object.
 // Bridge thread: save g_uploadTex as a PNG (24-bit BGR) for "xrsnap".
 static void DevSaveUploadTex() {
-    if (!g_devXrSnapReq || !g_uploadTex || !g_conSeq) return;
+    ID3D11Texture2D* frame = FrameTex();     // [PERF-A3] the picture may be a shared slot now
+    if (!g_devXrSnapReq || !frame || !g_conSeq) return;
     InterlockedExchange(&g_devXrSnapReq, 0);
-    D3D11_TEXTURE2D_DESC td; g_uploadTex->GetDesc(&td);
+    D3D11_TEXTURE2D_DESC td; frame->GetDesc(&td);
     td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ; td.MiscFlags = 0;
     ID3D11Texture2D* st = nullptr;
     bool ok = false;
     if (SUCCEEDED(g_d3d11->CreateTexture2D(&td, nullptr, &st)) && st) {
-        g_ctx->CopyResource(st, g_uploadTex);
+        g_ctx->CopyResource(st, frame);
         D3D11_MAPPED_SUBRESOURCE m;
         if (SUCCEEDED(g_ctx->Map(st, 0, D3D11_MAP_READ, 0, &m))) {
             IWICImagingFactory* f = nullptr;
@@ -3638,15 +3826,46 @@ static bool EnsureBlitTmp(UINT w, UINT h, bool srgb) {
     return true;
 }
 
+// [PERF-B8] Which render-target view a DIRECT draw may use on a destination image, and whether that
+// view encodes sRGB on write. Two things decide it, and both come from the image rather than from what
+// the swapchain was asked for:
+//  * a typeless image cannot be viewed with a null description at all - it needs an explicit format,
+//    which is the likeliest reason the earlier direct-render attempt produced a scrambled picture
+//    while every call reported success;
+//  * an sRGB view over non-sRGB bytes (or the reverse) is one whole gamma step wrong - the picture is
+//    washed out or crushed rather than broken, so it also survives review.
+// Anything not in the B8G8R8A8 family, and anything that is not a render target at all, is refused
+// here; the caller then keeps the proven scratch-plus-copy path for that frame.
+static DXGI_FORMAT OlrDirectViewFormat(ID3D11Texture2D* tex, bool* srgbOut) {
+    if (!tex) return DXGI_FORMAT_UNKNOWN;
+    D3D11_TEXTURE2D_DESC dd = {};
+    if (FAILED(tex->GetDesc(&dd))) return DXGI_FORMAT_UNKNOWN;
+    if (!(dd.BindFlags & D3D11_BIND_RENDER_TARGET)) return DXGI_FORMAT_UNKNOWN;
+    bool srgb = g_eyeFmtSrgb;   // a typeLESS image says nothing about the space: honour the request
+    switch (dd.Format) {
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: srgb = true;  break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:      srgb = false; break;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:   break;
+        default: return DXGI_FORMAT_UNKNOWN;
+    }
+    if (srgbOut) *srgbOut = srgb;
+    return srgb ? DXGI_FORMAT_B8G8R8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM;
+}
+
 // Draw src[box] -> a private target with the LUT applied, then COPY that into dst (the acquired
 // swapchain image). ME1's shape exactly. boxX is SIGNED and fractional so the Mass Effect model
 // can slide the window past the half's edge; clampLoPx/clampHiPx bound the sample to this eye's
-// own half. Views on src are made per call - caching by texture pointer is a use-after-free trap
-// when swapchains rebuild.
+// own half. Views are kept by the [PERF-A3] view cache - an entry holds its texture, so the address
+// of a destroyed swapchain image can never be re-used under it.
 // dstVp* place the drawn image inside dst, and boxY offsets the source vertically. Both exist
 // for [FITFRUSTUM]: when the rendered picture covers a NARROWER angle than the eye the runtime
 // is compositing, it must sit at its true position inside that eye with black around it, not
 // be stretched to fill. A zero-offset, full-size call is byte-identical to the old behaviour.
+//
+// [PERF-B8] With [Perf] DirectSwapchain=1 the draw goes STRAIGHT into dst and the copy disappears -
+// the other 36 MB a frame. It is opt-in (see the note by the switch), it derives its own view format
+// and colour space from the destination (OlrDirectViewFormat), and it falls back to the scratch copy
+// for any destination the driver will not give it a view on.
 static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
                       float boxX, UINT boxW, UINT boxH,
                       float clampLoPx, float clampHiPx,
@@ -3655,17 +3874,50 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
                       float dstVpX = 0.0f, float dstVpY = 0.0f,
                       float dstVpW = 0.0f, float dstVpH = 0.0f,
                       bool dstSrgb = true) {
-    if (!EnsureBlitTmp(dstW, dstH, dstSrgb)) return false;
+    // [PERF-B8] Straight into the acquired swapchain image, when the switch is on AND the image hands
+    // us a view. dstSrgb is then re-read from the destination itself: the LUT is chosen below from it,
+    // so a runtime that substituted the format still gets a picture whose colour space matches the
+    // bytes it will actually store.
+    ID3D11RenderTargetView* directRtv = nullptr;
+    if (g_directSwapchain) {
+        bool dstIsSrgb = dstSrgb;
+        const DXGI_FORMAT vf = OlrDirectViewFormat(dst, &dstIsSrgb);
+        if (vf != DXGI_FORMAT_UNKNOWN) {
+            directRtv = CachedRtv(dst, vf);
+            if (directRtv) {
+                static bool s_mismatch = false;
+                if (dstIsSrgb != dstSrgb && !s_mismatch) {
+                    s_mismatch = true;
+                    XLOG("[OLVR][PERF-B8] the destination image is %s, the swapchain was asked for %s - "
+                         "the direct draw follows the IMAGE (this is the gamma the copy path cannot see)",
+                         dstIsSrgb ? "sRGB" : "UNORM", dstSrgb ? "sRGB" : "UNORM");
+                }
+                dstSrgb = dstIsSrgb;
+            }
+        }
+        if (!directRtv) {
+            static bool s_refused = false;
+            if (!s_refused) {
+                s_refused = true;
+                XLOG("[OLVR][PERF-B8] the destination gave no render-target view - this frame keeps the "
+                     "scratch draw and the copy");
+            }
+        }
+    }
+    if (!directRtv && !EnsureBlitTmp(dstW, dstH, dstSrgb)) return false;
     // [SWAPFMT] Which table and which scratch target: an sRGB destination encodes on write, so it
     // takes the LINEAR table and the sRGB scratch; a UNORM destination encodes nothing, so it takes
     // the pre-encoded table and the UNORM scratch. With dstSrgb = true (every call but a non-sRGB
     // eye image) this is byte-for-byte the shipped path.
     ID3D11Texture2D*        tmp    = dstSrgb ? g_blitTmp    : g_blitTmpNs;
     ID3D11RenderTargetView* tmpRtv = dstSrgb ? g_blitTmpRtv : g_blitTmpNsRtv;
+    ID3D11RenderTargetView* target = directRtv ? directRtv : tmpRtv;   // [PERF-B8]
     ID3D11ShaderResourceView* lut  = dstSrgb ? g_lutSRV     : g_lutSRVSrgbEnc;
     if (!lut) lut = g_lutSRV;                 // encoded twin missing: better a gamma step than nothing
-    ID3D11ShaderResourceView* srv = nullptr;
-    if (FAILED(g_d3d11->CreateShaderResourceView(src, nullptr, &srv))) return false;
+    // [PERF-A3] The source's view is kept by the cache, not made and dropped per eye per frame. It is
+    // owned by the cache - never released here.
+    ID3D11ShaderResourceView* srv = CachedSrv(src);
+    if (!srv) return false;
     // Half-texel inset so linear filtering can never blend across the SBS seam.
     const bool scalingUp = dstW > boxW || dstH > boxH;
     const float cb[12] = { boxX / (float)srcW, boxY / (float)srcH,
@@ -3683,7 +3935,7 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
     if (placed) {
         // Everything outside the placed picture must be opaque black, not last frame's pixels.
         const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-        g_ctx->ClearRenderTargetView(tmpRtv, black);
+        g_ctx->ClearRenderTargetView(target, black);
     }
     const float blendFactor[4] = { 0, 0, 0, 0 };
     ID3D11ShaderResourceView* srvs[2] = { srv, lut };
@@ -3700,7 +3952,7 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
     g_ctx->PSSetSamplers(0, 1, &g_blitSamp);
     g_ctx->OMSetBlendState(g_blitBlend, blendFactor, 0xffffffff);
     g_ctx->OMSetDepthStencilState(g_blitDepth, 0);
-    g_ctx->OMSetRenderTargets(1, &tmpRtv, nullptr);
+    g_ctx->OMSetRenderTargets(1, &target, nullptr);
     g_ctx->RSSetState(g_blitRaster);
     g_ctx->RSSetViewports(1, &vp);
     g_ctx->Draw(3, 0);
@@ -3708,8 +3960,7 @@ static bool GammaDraw(ID3D11Texture2D* src, UINT srcW, UINT srcH,
     ID3D11RenderTargetView* nulrt = nullptr;
     g_ctx->PSSetShaderResources(0, 2, nul);
     g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
-    srv->Release();
-    g_ctx->CopyResource(dst, tmp);
+    if (!directRtv) g_ctx->CopyResource(dst, tmp);   // [PERF-B8] nothing to copy when it drew there
     return true;
 }
 
@@ -3785,12 +4036,16 @@ static bool MonitorEnsureSwapchain(HWND hwnd, UINT w, UINT h) {
 // the picture fills the whole buffer, so there is no black border to preserve, and reusing
 // GammaDraw would make its size-keyed scratch thrash with the eye path on non-sRGB runtimes.
 static bool MonitorDraw(ID3D11Texture2D* dst, UINT dstW, UINT dstH, bool oneEye) {
-    if (!g_uploadTex || !g_w || !g_h || !g_blitCB) return false;
+    ID3D11Texture2D* frame = FrameTex();     // [PERF-A3]
+    if (!frame || !g_w || !g_h || !g_blitCB) return false;
     if (!ShaderBlitReady()) return false;
+    // The monitor's own render-target view is made per present ON PURPOSE and is never cached: a
+    // cached entry would hold a reference to a DXGI back buffer, and ResizeBuffers (a window resize)
+    // refuses to run while any reference to the buffers is alive.
     ID3D11RenderTargetView* rtv = nullptr;
     if (FAILED(g_d3d11->CreateRenderTargetView(dst, nullptr, &rtv)) || !rtv) return false;
-    ID3D11ShaderResourceView* srv = nullptr;
-    if (FAILED(g_d3d11->CreateShaderResourceView(g_uploadTex, nullptr, &srv)) || !srv) {
+    ID3D11ShaderResourceView* srv = CachedSrv(frame);   // [PERF-A3] kept by the view cache
+    if (!srv) {
         rtv->Release(); return false;
     }
     // [Render] DesktopMirrorOneEye=0 asks for the raw side-by-side frame, exactly as the old
@@ -3825,8 +4080,7 @@ static bool MonitorDraw(ID3D11Texture2D* dst, UINT dstW, UINT dstH, bool oneEye)
     ID3D11RenderTargetView* nulrt = nullptr;
     g_ctx->PSSetShaderResources(0, 2, nul);
     g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
-    srv->Release();
-    rtv->Release();
+    rtv->Release();          // [PERF-A3] the source's view belongs to the cache: not released here
     return true;
 }
 
@@ -3929,11 +4183,12 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
         // through untouched, and a D3D9 backbuffer alpha is typically zero - SteamVR honours
         // that and composites the whole game as a see-through overlay on its own environment.
         if (ShaderBlitReady()) {
+            ID3D11Texture2D* frame = FrameTex();   // [PERF-A3] a shared slot is sampled in place
             ok = fill
-               ? GammaDraw(g_uploadTex, g_w, g_h, sX, (UINT)sW, (UINT)sH,
+               ? GammaDraw(frame, g_w, g_h, sX, (UINT)sW, (UINT)sH,
                            clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
                            sY, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb)   // [SWAPFMT]
-               : GammaDraw(g_uploadTex, g_w, g_h, srcX, g_srcEyeW, g_srcEyeH,
+               : GammaDraw(frame, g_w, g_h, srcX, g_srcEyeW, g_srcEyeH,
                            clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
                            0.0f, 0.0f, 0.0f, 0.0f, 0.0f, g_eyeFmtSrgb);  // [SWAPFMT]
         }
@@ -3949,7 +4204,7 @@ static bool BlitHalfToEye(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
             if (g_eyeW == g_srcEyeW && g_eyeH == g_srcEyeH && g_eyeFmtSrgb) {   // [SWAPFMT]
                 const UINT x0 = (UINT)clampLoPx;
                 D3D11_BOX box = { x0, 0, 0, x0 + g_srcEyeW, g_srcEyeH, 1 };
-                g_ctx->CopySubresourceRegion(imgs[idx], 0, 0, 0, 0, g_uploadTex, 0, &box);
+                g_ctx->CopySubresourceRegion(imgs[idx], 0, 0, 0, 0, FrameTex(), 0, &box);
                 ok = true;
             }
         }
@@ -4127,7 +4382,7 @@ static bool BlitFitToEyeTan(XrSwapchain sc, std::vector<ID3D11Texture2D*>& imgs,
     bool ok = false;
     XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
     if (XrSucceeded(g_fn.waitSwapchainImage(sc, &wi)) && ShaderBlitReady()) {
-        ok = GammaDraw(g_uploadTex, g_w, g_h, sX, (UINT)sW, (UINT)sH,
+        ok = GammaDraw(FrameTex(), g_w, g_h, sX, (UINT)sW, (UINT)sH,   // [PERF-A3]
                        clampLoPx, clampHiPx, imgs[idx], g_eyeW, g_eyeH,
                        sY, dX, dY, dW, dH, g_eyeFmtSrgb);   // [SWAPFMT]
     }
@@ -4754,7 +5009,7 @@ static ID3D11ShaderResourceView* LensSrv() {
 static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
     OLFlipScreen fs;
     AcquireSRWLockShared(&g_fsLock); fs = g_fs; const ULONGLONG ms = g_fsMs; ReleaseSRWLockShared(&g_fsLock);
-    if (!fs.on || !ms || GetTickCount64() - ms > 200 || !g_uploadTex || g_w < 2 || g_h < 2) return false;
+    if (!fs.on || !ms || GetTickCount64() - ms > 200 || !FrameTex() || g_w < 2 || g_h < 2) return false;
     if (!EnsureFlip()) return false;
     // the lens, in the view the left eye was rendered from (-Z ahead, +X right, +Y up)
     const XrVector3f v = QRotate(QConj(g_fsViewQ), { fs.lens[0], fs.lens[1], fs.lens[2] });
@@ -4771,9 +5026,11 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
     // tune.w: 0 colour, 1 night vision with the lens picture smoothed, 2 night vision sharp (texels, no blur)
     float cb[12] = { u0 * 0.5f, v0, (u1 - u0) * 0.5f, v1 - v0,  0.0f, 0.5f, 0.0f, 1.0f,  t, onImage ? 1.0f : 0.0f, fs.nv ? 9.0f : 1.0f, fs.nv ? (g_nvSharp ? 2.0f : 1.0f) : 0.0f };
     ID3D11ShaderResourceView* srv = LensSrv();                         // [LENSCAM] the lens itself, whole
+    // The lens's view is owned by its slot and the frame's by the [PERF-A3] view cache: NEITHER is
+    // released further down. (The old AddRef/Release pair around the lens view cancelled itself out.)
     const bool lens = srv != nullptr;
-    if (lens) { srv->AddRef(); const float lc[8] = { 0, 0, 1, 1,  0, 1, 0, 1 }; memcpy(cb, lc, sizeof(lc)); cb[9] = 1.0f; }
-    else if (FAILED(g_d3d11->CreateShaderResourceView(g_uploadTex, nullptr, &srv))) return false;
+    if (lens) { const float lc[8] = { 0, 0, 1, 1,  0, 1, 0, 1 }; memcpy(cb, lc, sizeof(lc)); cb[9] = 1.0f; }
+    else if (!(srv = CachedSrv(FrameTex()))) return false;
     g_ctx->UpdateSubresource(g_fsCB, 0, nullptr, cb, 0, 0);
     const D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)kFsW, (float)kFsH, 0.0f, 1.0f };
     const float blendFactor[4] = { 0, 0, 0, 0 };
@@ -4786,7 +5043,6 @@ static bool FlipScreenLayer(XrCompositionLayerQuad& q) {
     g_ctx->Draw(3, 0);
     ID3D11ShaderResourceView* nul = nullptr; ID3D11RenderTargetView* nulrt = nullptr;
     g_ctx->PSSetShaderResources(0, 1, &nul); g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
-    srv->Release();
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai = {}; ai.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO_VALUE;
     if (!XrSucceeded(g_fn.acquireSwapchainImage(g_fsChain, &ai, &idx)) || idx >= g_fsImgs.size()) return false;
@@ -5090,8 +5346,8 @@ struct TheaterLayers {
 // instead of chasing the menu frame by frame, and it cannot repeat the picture's border outwards.
 static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
     if (!src || !g_haloTex || !g_haloRtv || !g_haloVS || !g_haloPS || g_w < 2 || g_h < 2) return false;
-    ID3D11ShaderResourceView* pv = nullptr;
-    if (FAILED(g_d3d11->CreateShaderResourceView(src, nullptr, &pv)) || !pv) return false;
+    ID3D11ShaderResourceView* pv = CachedSrv(src);   // [PERF-A3] owned by the view cache
+    if (!pv) return false;
     {
         D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)kHaloW, (float)kHaloH, 0.0f, 1.0f };
         const float bf[4] = { 0, 0, 0, 0 };
@@ -5112,7 +5368,6 @@ static bool CaptureHaloPalette(ID3D11Texture2D* src, float* average) {
         g_ctx->PSSetShaderResources(0, 1, &nulsrv);
         g_ctx->OMSetRenderTargets(1, &nulrt, nullptr);
     }
-    pv->Release();
     // Read the still back once: the menu may still be black at this point (a loading screen), and a
     // black palette means a black halo - so the caller keeps retrying until it carries colour.
     D3D11_TEXTURE2D_DESC sd = {};
@@ -5223,9 +5478,9 @@ static int AddTheaterLayers(TheaterLayers& t, const XrCompositionLayerBaseHeader
     TheaterTick();
     // Kept retrying while the menu is still black: a loading screen has nothing to copy yet, and a
     // black palette means a black halo.
-    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0 && g_uploadTex) {
+    if (!g_haloValid && g_haloWantAt && (int32_t)(nowMs - g_haloWantAt) >= 0 && FrameTex()) {
         float avg = 0.0f;
-        const bool taken = CaptureHaloPalette(g_uploadTex, &avg);
+        const bool taken = CaptureHaloPalette(FrameTex(), &avg);   // [PERF-A3]
         ++s_haloTries;
         if (taken && avg > 0.004f) {   // a black still is a loading screen: keep waiting for colour
             g_haloValid = true;
@@ -5336,9 +5591,9 @@ static bool BlitToSwapchain() {
     XrSwapchainImageWaitInfo wi = {}; wi.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO_VALUE; wi.timeout = XR_INFINITE_DURATION_VALUE;
     if (XrSucceeded(g_fn.waitSwapchainImage(g_swapchain, &wi))) {
         if (ShaderBlitReady()) {   // opaque alpha, see BlitHalfToEye
-            copied = GammaDraw(g_uploadTex, g_w, g_h, 0.0f, g_w, g_h, 0.0f, (float)g_w, g_xrImages[idx], g_w, g_h);
+            copied = GammaDraw(FrameTex(), g_w, g_h, 0.0f, g_w, g_h, 0.0f, (float)g_w, g_xrImages[idx], g_w, g_h);
         } else {
-            g_ctx->CopyResource(g_xrImages[idx], g_uploadTex);   // UNORM -> UNORM_SRGB, same typeless family
+            g_ctx->CopyResource(g_xrImages[idx], FrameTex());   // UNORM -> UNORM_SRGB, same typeless family
             copied = true;
         }
     }
@@ -6034,7 +6289,7 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
             // Dev-only lane: needs the live device pairing, stands down under the worker.
             if (dev && preCaptured && EnsureEyeHold()) {
                 const int cur = OLUE3_CurrentEye() ? 1 : 0;
-                g_ctx->CopyResource(g_eyeHold[cur], g_uploadTex);
+                g_ctx->CopyResource(g_eyeHold[cur], FrameTex());   // [PERF-A3] the frame, wherever it is
                 eyesOk = BlitHoldToEye(g_scL, g_imgL, g_eyeHold[0]) &&
                          BlitHoldToEye(g_scR, g_imgR, g_eyeHold[1]);
             }
@@ -6750,6 +7005,9 @@ void OLXR_Shutdown() {
         return;
     }
     if (g_session) { if (g_running) g_fn.endSession(g_session); g_fn.destroySession(g_session); g_session = 0; }
+    // [PERF-A3] the cached views hold references to the frame and eye textures released just below
+    ViewCacheClear();
+    g_frameTex = nullptr;
     if (g_sysSurf) { g_sysSurf->Release(); g_sysSurf = nullptr; }
     if (g_uploadTex) { g_uploadTex->Release(); g_uploadTex = nullptr; }
     if (g_blitTmpRtv) { g_blitTmpRtv->Release(); g_blitTmpRtv = nullptr; }

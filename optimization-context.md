@@ -15,8 +15,8 @@ render thread ── Hook_GetViewPoint (ol_ue3.cpp:6751) per eye  (pose, lean, I
                     ├─ monitor mirror       (d3d9_proxy.cpp:308, 30 fps)
                     └─ o_Present            (window, IMMEDIATE)
 worker XR ── xrWaitFrame → beginFrame → SyncInput → pose
-          ── ConsumeUpload → ExWorkerTake: 36 MB CopyResource (ol_xr.cpp:2902)
-          ── BlitHalfToEye ×2 → GammaDraw (shader + CreateSRV + CopyResource) (ol_xr.cpp:3576/3485)
+          ── ConsumeUpload → ExWorkerTake: samples the shared frame in place (no copy; [PERF-A3])
+          ── BlitHalfToEye ×2 → GammaDraw (shader + cached SRV + CopyResource) (ol_xr.cpp:4166/3873)
           ── xrEndFrame (up to 4 layers: projection + flip screen + HUD + focus)
 ```
 
@@ -43,7 +43,7 @@ The repo already measured the bottleneck (docs/dev/PROJECT-BASELINE.md:348): pos
 |---|---|---|---|---|
 | A1 | timeBeginPeriod(1) at startup, + THREAD_PRIORITY_TIME_CRITICAL and EcoQoS opt-out (SetThreadInformation(ThreadPowerThrottling)) on the XR worker thread, + optional process priority | OLXR_Init (ol_xr.cpp:2053) and LogWriter; no timeBeginPeriod/SetThreadPriority exists in the project today (grep empty) | PaceToHeadset uses Sleep(1): since Win10 2004 timer resolution is per-process, and without it Sleep(1) can sleep up to ~15.6 ms → blowing the 1.25×period budget and causing jitter. EcoQoS can demote the compositor thread on power-managed machines | very low |
 | A2 | Replace YieldProcessor() spin + PaceToHeadset lock with event wait (WaitOnAddress on g_pubSeq) | ol_xr.cpp:5089-5097 | in the last 1.5 ms before the deadline, the game render thread burns CPU spinning (~100% of one core) competing with the draws | very low |
-| A3 | Eliminate the 36 MB per-frame CopyResource in ExWorkerTake (create one SRV per slot and bind directly into the blit) + cache the SRV GammaDraw creates every call | ol_xr.cpp:2902 and 3503 (CreateShaderResourceView per eye per frame, with comment "don't cache by pointer" — the safe solution is cache by swapchain image index, cleared on rebuild, see DestroyEyeSwapchains) | VRAM bandwidth: 36 MB/frame ≈ 2.6 GB/s | medium |
+| A3 | Eliminate the 36 MB per-frame CopyResource in ExWorkerTake (create one SRV per slot and bind directly into the blit) + cache the SRV GammaDraw creates every call | ol_xr.cpp:2902 and 3503 (CreateShaderResourceView per eye per frame, with comment "don't cache by pointer" — the safe solution is cache by swapchain image index, cleared on rebuild, see DestroyEyeSwapchains) | VRAM bandwidth: 36 MB/frame ≈ 2.6 GB/s | medium — **DONE in phase 4** ([PERF-A3], `[Perf] SharedFrameDirect=1`) |
 | A4 | Per-frame snapshot of flags read in each draw call: OcclDrawSkipped() → OLUE3_OcclBypassOn() (cross-TU call), MirrorUiDraw → OLUE3_StereoMode/SplitActive | d3d9_proxy.cpp:866-886, 766 | 2k–6k draws × 2 eyes = up to ~12k calls/frame, each with 6–8 volatile reads and 2–3 non-inlinable calls | low |
 | A5 | Hook_SetRenderTarget does GetBackBuffer (AddRef/Release) on every RT switch | d3d9_proxy.cpp:443-452 | cache the backbuffer pointer (invalidated on Reset) | very low |
 | A6 | Camcorder HUD: only resend the dynamic strip when text changes | ol_xr.cpp ~3975 (UpdateSubresource 1920×160×4 = 1.2 MB/frame) | upload + glyph rebuild every frame | very low |
@@ -61,7 +61,7 @@ The repo already measured the bottleneck (docs/dev/PROJECT-BASELINE.md:348): pos
 | B5 | Fewer composition layers | In-game with camcorder in hand: projection + flip screen + HUD + focus = 4 layers (ol_xr.cpp:6154-6196). Draw HUD/focus inside the eye image (the blit already exists) eliminates compositor work per layer — test visually for loss of depth adjustment |
 | B6 | FSR1 (EASU + RCAS) on the D3D11 blit | The blit is already a PS 4.0 with gamma LUT and custom CAS (ol_xr.cpp:3233). Swapping bicubic+sharpen for EASU+RCAS (pure HLSL, MIT, GPL-3.0 compatible like ImGui/MinHook) allows RenderScale 0.70-0.85 with better quality → real GPU gain for those who are GPU-bound (Quest 3 at 1.0 = 9.1 MP/frame) |
 | B7 | "Performance" profile in launcher | Expose via ConsoleCommand (the con channel already exists, PROJECT-BASELINE.md:350): DynamicShadows (+6% measured), MaxDrawDistanceScale, Decals, ParticleLODBias, with restore on exit and an ini behind it (house rule) |
-| B8 | Render directly into the swapchain image (typeless RTV) | Eliminates g_blitTmp + CopyResource (ol_xr.cpp:3547) = another 36 MB/frame. There was an old garbled-image case; the most likely hypothesis is wrong sRGB view — test only as an isolated experiment, with automatic fallback |
+| B8 | Render directly into the swapchain image (typeless RTV) | Eliminates g_blitTmp + CopyResource (ol_xr.cpp:3547) = another 36 MB/frame. There was an old garbled-image case; the most likely hypothesis is wrong sRGB view — test only as an isolated experiment, with automatic fallback. **DONE in phase 4** as the experiment it was meant to be: `[Perf] DirectSwapchain=1` (off by default), format + colour space taken from the image (OlrDirectViewFormat), scratch draw + copy on any refusal |
 
 ### C. Structural — biggest gain, requires reverse engineering (research spike)
 
@@ -201,4 +201,14 @@ The repo already has [PERF] (frame/present/grab/copy/pace/upload), [XRTIMING], [
 - A8: monitor mirror off the render thread (worker draws directly into a DXGI bitblt swapchain on the same HWND, DXGI_PRESENT_DO_NOT_WAIT; live fallback if monitor not active).
 - New [Perf] switches: TimerResolution=1, ThreadPriority=1, ProcessPriority=0, PaceWait=1, BridgeMirror=1 (all with optimized path as default), documented in runtime/outlastvr.ini.
 
-**Pending caveats:** missing visual test on a headset/real game session (the probe proves the mechanism, not the image); while A8 is active, present avg in the [PERF] report is 0 — that's the goal, not a regression.
+**Phase 4 — Memory and GPU**
+
+- A3, first half: the 36 MB per-frame copy is gone. `[EXSHARE]` used to `CopyResource` the opened shared frame into `g_uploadTex` before every blit; the blits now sample the shared texture itself. Every consumer of "this frame's pixels" reads one pointer, `FrameTex()` (null = the old upload texture, i.e. the CPU-readback lane, `[ZEROCOPY]`, and the fallback).
+- A3, second half: the view cache. `CachedSrv`/`CachedRtv` keep one `ID3D11View` per (texture, kind, format) instead of `GammaDraw` creating and releasing one per eye per frame. The old comment refused to cache "by texture pointer" (a rebuilt swapchain frees the texture and the allocator reuses the address); the entry now holds a *reference* to its texture, so the identity cannot be recycled, and `ViewCacheClear()` runs in `DestroyEyeSwapchains` (before `destroySwapchain`), `RebuildForSize` and on every new `[EXSHARE]` generation. The MonitorDraw render-target view is deliberately NOT cached: a cached reference to a DXGI back buffer blocks `ResizeBuffers`.
+- A3, ordering: the shared slot is only handed back when the frame's draws are queued, not when the copy runs — `ExDirectRelease()` ends the slot's D3D11 event query one frame later (`ExWorkerTake` → next frame), and `ExWorkerTick` skips the slot being read (its query still reads as signalled from an earlier frame — that check is the one that keeps the game from overwriting a live read). `RebuildForSize` releases it immediately, because a size change means the picture is unusable anyway.
+- B8: `[Perf] DirectSwapchain` (default **0**, opt-in) draws the eye blit straight into the acquired swapchain image and skips `g_blitTmp` + `CopyResource`. `OlrDirectViewFormat` takes the view format *and* the colour space from the destination image: a typeless image gets an explicit format (null-desc views are illegal on typeless resources), an sRGB/UNORM mismatch is impossible by construction, anything outside the B8G8R8A8 family or not a render target is refused, and the frame falls back to the scratch draw + copy. That is the diagnosis of the old garbled-image case, expressed as code.
+- New [Perf] switches: SharedFrameDirect=1 (optimized path, with its own automatic fallback), DirectSwapchain=0 (isolated experiment), documented in runtime/outlastvr.ini with a boot line each (`[PERF-A3]` / `[PERF-B8]`).
+- Tests: `tests/perf_framepath_test.py` compiles the real cache and the real `OlrDirectViewFormat` against a stub D3D11 layer (view identity, reuse over 60 frames, refcount, refusal of a wrong-space view, eviction, clear) and then checks the source for the ordering rules above.
+
+**Pending caveats:** missing visual test on a headset/real game session (the probe proves the mechanism, not the image); while A8 is active, present avg in the [PERF] report is 0 — that's the goal, not a regression. Phase 4 needs the same visual pass: `[PERF-A3] the shared frame is read in place` in the log says the copy is really gone, and `DirectSwapchain=1` must be judged on a headset (colour, seam, convergence shift) before it could ever become a default.
+
