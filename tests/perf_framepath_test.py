@@ -46,12 +46,20 @@ def block(signature):
 
 
 # ---------------------------------------------------------------- the switches, ini and code agree
-SWITCHES = [('SharedFrameDirect', '1'), ('DirectSwapchain', '0')]
+# SharedFrameDirect and DirectSwapchain both ship OFF: each one changes what the GPU does with the
+# frame, and neither has been cleared on hardware. ViewCache is the transparent one, so it ships on.
+SWITCHES = [('SharedFrameDirect', '0'), ('DirectSwapchain', '0'), ('ViewCache', '1')]
 for key, default in SWITCHES:
     assert f'{key}={default}' in INI, f'{key}={default} missing from the shipped ini'
     pat = re.compile(r'L"Perf",\s*L"%s",\s*%s' % (key, default))
     assert pat.search(XR), f'{key} is not read as [Perf] {key}={default} in the code'
-print('ini/code defaults: SharedFrameDirect=1, DirectSwapchain=0')
+print('ini/code defaults: SharedFrameDirect=0, DirectSwapchain=0, ViewCache=1')
+
+# With SharedFrameDirect off, "the frame" must be exactly the upload texture: the phase-4 indirection
+# has to be invisible, or the 0 setting would not restore the 1.2.2 path.
+assert 'static volatile LONG   g_sharedFrameDirect = 0;' in XR, \
+    'SharedFrameDirect no longer ships off - the in-place read is not validated on hardware'
+assert 'return g_frameTex ? g_frameTex : g_uploadTex;' in XR, 'FrameTex lost its fallback to the upload texture'
 
 # --------------------------------------------------- 1. A3: the picture is read where it lies
 # Every consumer of "this frame's pixels" goes through FrameTex(); nothing blits the upload texture
@@ -201,6 +209,21 @@ int main() {
         assert(CachedSrv(&many[i]) != nullptr);
         assert(g_viewN <= kViewCacheSlots);
     }
+
+    // [Perf] ViewCache=0 is the OLD shape: a view made for every call and dropped by the next one, so
+    // the switch really can take the cache out of the picture.
+    g_viewCacheOn = 0;
+    const int churn = g_srvCreated;
+    for (int i = 0; i < 10; ++i) assert(CachedSrv(&swap[0]) != nullptr);
+    assert(g_srvCreated == churn + 10);
+    assert(g_viewN == 1);   // one alive at a time, exactly like the create/release pair it replaces
+    g_viewCacheOn = 1;
+    const int kept = g_srvCreated;
+    for (int i = 0; i < 10; ++i) assert(CachedSrv(&swap[0]) != nullptr);
+    assert(g_srvCreated == kept);        // the cached view is reused, nothing is made
+    ViewCacheClear();                    // a swapchain rebuild
+    for (int i = 0; i < 10; ++i) assert(CachedSrv(&swap[0]) != nullptr);
+    assert(g_srvCreated == kept + 1);    // exactly one new view after the rebuild, then reused again
 
     // ---- B8: the view a direct draw is allowed to use ---------------------------------
     bool srgb = false;

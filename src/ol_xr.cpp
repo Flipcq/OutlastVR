@@ -142,7 +142,8 @@ static long long g_frame = 0;
 // Neither half has a [Perf] switch of its own: the cache is the same object the code already created
 // and dropped inside the same call (nothing about the draw changes), and reading the shared frame in
 // place falls back to the copy by itself. The two switches phase 4 does add are [Perf]
-// SharedFrameDirect (this path, on by default) and [Perf] DirectSwapchain (B8, off by default).
+// SharedFrameDirect (this path; OFF by default until a headset run clears it) and [Perf]
+// DirectSwapchain (B8, also off by default).
 static ID3D11Texture2D* g_frameTex = nullptr;    // [PERF-A3] the picture being shown, or null
 static inline ID3D11Texture2D* FrameTex() { return g_frameTex ? g_frameTex : g_uploadTex; }
 
@@ -158,6 +159,10 @@ struct ViewEntry {
 static ViewEntry g_viewCache[kViewCacheSlots];
 static int  g_viewN = 0;
 static long g_viewMisses = 0, g_viewHits = 0;
+// [Perf] ViewCache: 1 (default) keeps the views, 0 restores the pre-1.2.2 shape of one view created
+// and dropped per call. The switch exists so a picture problem can be bisected down to the cache
+// without a rebuild; nothing about the draw itself changes either way.
+static volatile long g_viewCacheOn = 1;
 
 static void ViewCacheClear() {
     if (g_viewN > 0) {
@@ -179,6 +184,9 @@ static void ViewCacheClear() {
 // when the image itself is typeless (see OlrDirectViewFormat).
 static ID3D11View* ViewCacheGet(ID3D11Texture2D* tex, int isRtv, DXGI_FORMAT fmt) {
     if (!tex || !g_d3d11) return nullptr;
+    // [Perf] ViewCache=0: the old shape exactly. The entry from the previous call is dropped here, so
+    // one view is alive at a time - the create/release pair this replaces.
+    if (!g_viewCacheOn) ViewCacheClear();
     for (int i = 0; i < g_viewN; ++i)
         if (g_viewCache[i].tex == tex && g_viewCache[i].isRtv == isRtv && g_viewCache[i].fmt == fmt) {
             ++g_viewHits;
@@ -1848,23 +1856,30 @@ static volatile LONG64 g_monLastTick = 0;      // GetTickCount64 of the last suc
 static volatile LONG   g_monFails = 0;
 static volatile LONG64 g_monRetryTick = 0;     // don't re-attempt CreateSwapChain before this
 
-// [PERF-A3] / [PERF-B8] THE TWO PHASE-4 SWITCHES. (Beta 1.2.2 optimization pass, phase 4)
+// [PERF-A3] / [PERF-B8] THE PHASE-4 SWITCHES. (Beta 1.2.2 optimization pass, phase 4)
 //
-// SharedFrameDirect (on by default) is item A3: with [EXSHARE] the bridge opens the game's shared
-// frame as a D3D11 texture and used to COPY it into g_uploadTex before every blit - 36 MB a frame of
-// pure VRAM bandwidth. Sampling the shared texture in place removes the copy; the slot is still held
-// until the frame's draws are queued (ExDirectRelease), so the game cannot overwrite what is being
-// read. A GPU/runtime that cannot make a shader-resource view on a shared frame drops back to the
-// copy by itself, and 0 restores the copy for an A/B.
+// SharedFrameDirect is item A3: with [EXSHARE] the bridge opens the game's shared frame as a D3D11
+// texture and used to COPY it into g_uploadTex before every blit - 36 MB a frame of pure VRAM
+// bandwidth. Sampling the shared texture in place removes the copy; the slot is still held until the
+// frame's draws are queued (ExDirectRelease), so the game cannot overwrite what is being read, and a
+// GPU/runtime that cannot make a shader-resource view on a shared frame drops back to the copy by
+// itself.
 //
-// DirectSwapchain (OFF by default) is item B8: draw the eye blit's shader straight into the acquired
-// OpenXR swapchain image instead of the g_blitTmp scratch plus a CopyResource, which removes the other
-// 36 MB a frame. It stays opt-in because a direct-render attempt in this project once produced a
-// scrambled picture while every D3D call reported success, and the likeliest explanation is the one
-// OlrDirectViewFormat now handles by construction (a typeless swapchain image, or an sRGB view over
-// non-sRGB bytes). Off = the shipped path, byte for byte; on = the experiment, with the copy as an
-// automatic fallback on any refusal from the driver.
-static volatile LONG   g_sharedFrameDirect = 1;
+// It ships OFF. Not because the code is unsure of its bookkeeping, but because it is the one change in
+// this pass that makes the GPU read D3D9Ex shared memory instead of the bridge's own texture, and that
+// has to be validated on real hardware before it becomes the default: on the first hardware run the
+// game started and closed, which is what a device-level fault looks like from the outside, and no
+// source-level fault is visible in this path. 0 = the copy, i.e. exactly the 1.2.2 frame path before
+// phase 4 (FrameTex() is then permanently g_uploadTex). Turn it to 1 and send the log: the first line
+// `[PERF-A3] the shared frame is read in place` says the lane really engaged.
+//
+// DirectSwapchain is item B8: draw the eye blit's shader straight into the acquired OpenXR swapchain
+// image instead of the g_blitTmp scratch plus a CopyResource, which removes the other 36 MB a frame.
+// Also opt-in, for the same reason plus its own history: a direct-render attempt in this project once
+// produced a scrambled picture while every D3D call reported success, and the likeliest explanation is
+// the one OlrDirectViewFormat now handles by construction (a typeless swapchain image, or an sRGB view
+// over non-sRGB bytes). Off = the shipped path, byte for byte, with the copy as an automatic fallback.
+static volatile LONG   g_sharedFrameDirect = 0;
 static volatile LONG   g_directSwapchain = 0;
 
 // Create a D3D11 device on the adapter OpenXR requires (matched by LUID).
@@ -1933,17 +1948,19 @@ static bool Init(UINT w, UINT h) {
                 g_processPrioOn = GetPrivateProfileIntW(L"Perf", L"ProcessPriority", 0, ini) ? 1 : 0;
                 g_paceWait      = GetPrivateProfileIntW(L"Perf", L"PaceWait", 1, ini) ? 1 : 0;
                 g_bridgeMirrorOn = GetPrivateProfileIntW(L"Perf", L"BridgeMirror", 1, ini) ? 1 : 0;
-                // [PERF-A3] / [PERF-B8] phase 4: the two frame-path copies.
-                g_sharedFrameDirect = GetPrivateProfileIntW(L"Perf", L"SharedFrameDirect", 1, ini) ? 1 : 0;
+                // [PERF-A3] / [PERF-B8] phase 4: the two frame-path copies, and the view cache.
+                g_sharedFrameDirect = GetPrivateProfileIntW(L"Perf", L"SharedFrameDirect", 0, ini) ? 1 : 0;
                 g_directSwapchain   = GetPrivateProfileIntW(L"Perf", L"DirectSwapchain", 0, ini) ? 1 : 0;
+                g_viewCacheOn       = GetPrivateProfileIntW(L"Perf", L"ViewCache", 1, ini) ? 1 : 0;
                 XLOG("[OLVR][PERF-A1] timer=%ld thread=%ld process=%ld | [PERF-A2] pacing wait=%s | [PERF-A8] bridge monitor=%s",
                      g_timerResOn, g_threadPrioOn, g_processPrioOn,
                      g_paceWait ? "WaitOnAddress (no spin)" : "the old spin",
                      g_bridgeMirrorOn ? "on (render thread does neither the blow-up nor the Present)"
                                       : "off (the old render-thread mirror)");
-                XLOG("[OLVR][PERF-A3] shared frame %s | [PERF-B8] direct swapchain draw %s",
+                XLOG("[OLVR][PERF-A3] shared frame %s | view cache %s | [PERF-B8] direct swapchain draw %s",
                      g_sharedFrameDirect ? "sampled in place (no per-frame copy)"
-                                         : "copied into the upload texture (the old way)",
+                                         : "copied into the upload texture (the 1.2.2 path)",
+                     g_viewCacheOn ? "on (one view per texture)" : "off (a view per call, the old way)",
                      g_directSwapchain ? "ON (experiment: no scratch, no copy - watch for a wrong picture)"
                                        : "off (blit into the scratch image, then copy)");
                 PerfRaiseTimerResolution();
