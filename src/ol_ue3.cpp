@@ -7061,6 +7061,125 @@ static void __fastcall Hook_GetViewPoint(void* actor, float* outLoc, int* outRot
     } __except (EXCEPTION_EXECUTE_HANDLER) { }
 }
 
+// ---- [OCCLPEREYE] WHICH EYE THE RENDERER IS DRAWING (Beta 1.2.2 pass, phase 5) --------------
+// Both visibility items of phase 5 need the same answer to one question: of the two views the split
+// builds, which one is the renderer drawing RIGHT NOW? On the render thread g_eyePhase is 0 - the
+// split only holds it during the game thread's two CalcSceneView calls - so it cannot be asked.
+// What can be asked is the FSceneView itself: the mod already hands the LEFT view's view+projection
+// matrices (128 bytes at kViewMatOff) to [FRAMETAG], and the renderer's copy of a view carries them
+// bit for bit (that is what makes [FRAMETAG]'s lookup an exact compare). An exact compare against
+// the newest committed LEFT key therefore names the eye - primary (left) or the other one - with no
+// hook, no ordering assumption and no arithmetic.
+//
+// The answer is published as a plain extern "C" long so d3d9_proxy.cpp reads it with one load
+// instead of a cross-module call: thousands of occlusion queries go through that path per frame.
+extern "C" volatile long g_olRenderEye = 0;     // 0 = the frame's primary (left) view, 1 = the other
+extern "C" volatile long g_olRenderFrame = 0;   // ++ every time a frame's primary view shows up
+static float g_eyeKeyL[32];                     // the LEFT view's view+projection matrices
+static volatile long g_eyeKeyLHave = 0;
+static unsigned char g_eyeLastKey[128];         // what the last lookup was handed
+static volatile long g_eyeLastWasPrimary = 0;
+static volatile long g_perfEyePrimary = 0, g_perfEyeSecondary = 0;
+
+// Hook_CalcSceneView records what this frame's LEFT view was built with. The compare above is only
+// meaningful against a key from a view the split really built; with no key nothing can match, so the
+// tracker answers "the other eye" (1) and every per-eye path keeps ONE set of answers - the shared
+// shape it replaced - instead of splitting them the wrong way round. That is the honest failure
+// mode: it can be useless, it cannot be wrong about which eye is which.
+static void EyeNoteLeftView(const float* key32) {
+    if (!key32) return;
+    memcpy(g_eyeKeyL, key32, sizeof(g_eyeKeyL));
+    InterlockedExchange(&g_eyeKeyLHave, 1);
+}
+
+// 0 = this view IS the frame's primary (left) view, 1 = the other eye.
+// *newPrimaryPass is set when this call is the first of a new frame's primary pass - the moment a
+// per-frame cache may be invalidated. A repeated call for the same view is not a new pass: the
+// engine walks many primitives per view, and they all carry the same matrices.
+static int EyeOfView(const void* view, int* newPrimaryPass) {
+    if (newPrimaryPass) *newPrimaryPass = 0;
+    if (!view) return (int)g_olRenderEye;
+    unsigned char key[128];
+    if (!SafeReadBytes((const char*)view + kViewMatOff, key, sizeof(key))) return (int)g_olRenderEye;
+    const int eye = (g_eyeKeyLHave && memcmp(key, g_eyeKeyL, sizeof(key)) == 0) ? 0 : 1;
+    if (eye == 0) {
+        ++g_perfEyePrimary;
+        if (!g_eyeLastWasPrimary || memcmp(key, g_eyeLastKey, sizeof(key)) != 0) {
+            InterlockedIncrement(&g_olRenderFrame);
+            if (newPrimaryPass) *newPrimaryPass = 1;
+        }
+    } else {
+        ++g_perfEyeSecondary;
+    }
+    memcpy(g_eyeLastKey, key, sizeof(key));
+    InterlockedExchange(&g_eyeLastWasPrimary, eye == 0 ? 1 : 0);
+    InterlockedExchange(&g_olRenderEye, eye);
+    return eye;
+}
+
+// ---- [PVSSHARE] THE SECOND EYE REUSES THE FIRST EYE'S PVS ANSWER (phase 5, item B2) --------
+// UE3's precomputed visibility picks a baked cell from the view's ORIGIN and hands the caller the
+// bitfield for that cell (InitViews, once per primitive per view). The two eyes are ~6 cm apart, so
+// they select the same cell unless a cell boundary runs between them - and when one does, the two
+// views receive two different verdicts for the same mesh, which is exactly the "prop winks in one
+// eye" family this mod has fought since Test 36. Both the cost argument (half the lookups) and the
+// correctness argument (one verdict for both eyes) point the same way: the second eye uses the
+// answer the first eye of the SAME frame already got.
+//
+// The cache is keyed by the call's own state pointer rather than by call order, so the pairing does
+// not depend on the order the renderer walks primitives in. It is invalidated once per Present
+// (OLUE3_PerfFrameBoundary, called by the d3d9 proxy's Present hook, on the render thread), so a
+// cell pointer from an older frame can never be handed out - nothing here survives past its frame.
+// [Perf] PvsShare=0 asks the engine for both eyes, the pre-1.2.2 way.
+static volatile LONG g_pvsShareOn = 1;
+enum { kPvsShareSlots = 1024 };                 // power of two; the table never grows past it
+struct PvsShareEntry { const void* state; long long data; long gen; };
+static PvsShareEntry g_pvsShareTab[kPvsShareSlots];
+static long g_pvsShareGen = 0;
+static long g_pvsShareServed = 0, g_pvsShareMiss = 0, g_pvsShareFull = 0;
+
+// A new frame (or a pass that cannot be paired any more): everything the table holds is stale.
+static void PvsShareNewPass() { ++g_pvsShareGen; }
+// Same pass, same state pointer - the answer the first eye got for this call.
+static int PvsShareLookup(const void* state, long long* out) {
+    if (!state) return 0;
+    const size_t mask = (size_t)kPvsShareSlots - 1;
+    size_t i = (((size_t)state) >> 4) & mask;
+    for (size_t n = 0; n < (size_t)kPvsShareSlots; ++n, i = (i + 1) & mask) {
+        if (g_pvsShareTab[i].gen != g_pvsShareGen) return 0;    // free slot: the key is not there
+        if (g_pvsShareTab[i].state == state) { if (out) *out = g_pvsShareTab[i].data; return 1; }
+    }
+    return 0;
+}
+static void PvsShareStore(const void* state, long long data) {
+    if (!state) return;
+    const size_t mask = (size_t)kPvsShareSlots - 1;
+    size_t i = (((size_t)state) >> 4) & mask;
+    for (size_t n = 0; n < (size_t)kPvsShareSlots; ++n, i = (i + 1) & mask) {
+        if (g_pvsShareTab[i].gen != g_pvsShareGen) {            // free slot: claim it
+            g_pvsShareTab[i].state = state; g_pvsShareTab[i].data = data;
+            g_pvsShareTab[i].gen = g_pvsShareGen;
+            return;
+        }
+        if (g_pvsShareTab[i].state == state) { g_pvsShareTab[i].data = data; return; }
+    }
+    ++g_pvsShareFull;   // full: this pass simply does not share, the second eye asks the engine
+}
+
+// Called by the d3d9 proxy once per Present, on the render thread: the frame boundary the cache
+// above hangs on. A Present that happens on another thread can only cost a shared lookup, never
+// hand out a pointer from a frame that is gone.
+extern "C" void OLUE3_PerfFrameBoundary() { PvsShareNewPass(); }
+
+extern "C" void OLUE3_TakeVisibilityStats(long* pvsServed, long* pvsMiss, long* pvsFull,
+                                          long* eyePrimary, long* eyeSecondary) {
+    if (pvsServed)    { *pvsServed    = g_pvsShareServed;   g_pvsShareServed = 0; }
+    if (pvsMiss)      { *pvsMiss      = g_pvsShareMiss;     g_pvsShareMiss = 0; }
+    if (pvsFull)      { *pvsFull      = g_pvsShareFull;     g_pvsShareFull = 0; }
+    if (eyePrimary)   { *eyePrimary   = g_perfEyePrimary;   g_perfEyePrimary = 0; }
+    if (eyeSecondary) { *eyeSecondary = g_perfEyeSecondary; g_perfEyeSecondary = 0; }
+}
+
 // ---- the Outlast-custom occlusion tracker ------------------------------------------------
 // Outlast added an engine source file stock UE3 does not have: PrimitiveSceneProxyOcclusionTracker
 // (16 path strings in OLGame_R.exe). Ghidra (2026-07-22, this session): the tracker's
@@ -7133,6 +7252,18 @@ static long long __fastcall Hook_PvsGet(void* state, void* view, void* scene) {
         __try { OLXR_RenderViewSeen((const char*)view + kViewMatOff); }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+    // [PVSSHARE] Which eye is asking (phase 5, item B2). The first eye's answer for this same call
+    // is the frame's answer for both eyes; the second eye simply reuses it.
+    const int eye = EyeOfView(view, nullptr);
+    if (!g_pvsShareOn) return o_PvsGet(state, view, scene);
+    if (eye == 0) {
+        const long long r = o_PvsGet(state, view, scene);
+        PvsShareStore(state, r);
+        return r;
+    }
+    long long shared = 0;
+    if (PvsShareLookup(state, &shared)) { ++g_pvsShareServed; return shared; }
+    ++g_pvsShareMiss;
     return o_PvsGet(state, view, scene);
 }
 
@@ -7514,8 +7645,13 @@ static void* __fastcall Hook_CalcSceneView(void* self, void* family, void* outLo
                     // [FRAMETAG] what this frame's views were built with, keyed by the left view's
                     // view+projection matrices (the render thread finds the frame by them).
                     float key[32];
-                    if (SafeReadBytes((char*)left + kViewMatOff, key, sizeof(key)))
+                    if (SafeReadBytes((char*)left + kViewMatOff, key, sizeof(key))) {
                         OLXR_FrameCommit(g_fovX, g_fovY, g_lensFitFrame, OLInteract_ViewfinderZoom() > 0.0f, key);
+                        // [OCCLPEREYE] (phase 5) the same key is how the render thread tells which of
+                        // the two views it is drawing: the left one matches bit for bit, the other
+                        // cannot. See EyeOfView above.
+                        EyeNoteLeftView(key);
+                    }
                     // [INTERACT] (Test37) once per stereo frame, right after this frame's head
                     // position and body yaw were recorded: doors, raise-to-eye, battery, markers.
                     DevGameThreadWork();
@@ -7704,9 +7840,11 @@ static void ReadConfig() {
     { LONG b = (LONG)GetPrivateProfileIntW(L"Perf", L"ObjScanBudgetUs", 250, ini);
       if (b < 0) b = 0; if (b > 5000) b = 5000;
       g_objScanBudgetUs = b; }
+    // [PVSSHARE] (phase 5, B2) the second eye takes the first eye's precomputed-visibility answer.
+    g_pvsShareOn      = GetPrivateProfileIntW(L"Perf", L"PvsShare", 1, ini) ? 1 : 0;
     { char l[200]; sprintf_s(l, "[OLVR][PERF] switches: skelGate=%ld fovCache=%ld nvCache=%ld objScanBudget=%ldus "
-                                "(0 = off; all in [Perf] of outlastvr.ini)",
-                             g_skelFastGate, g_fovCacheOn, g_nvCacheOn, g_objScanBudgetUs);
+                                "pvsShare=%ld (0 = off; all in [Perf] of outlastvr.ini)",
+                             g_skelFastGate, g_fovCacheOn, g_nvCacheOn, g_objScanBudgetUs, g_pvsShareOn);
       OLProxyLog(l); }
     g_cineFovOn = GetPrivateProfileIntW(L"Stage3", L"CineFov", 1, ini) ? 1 : 0;   // [CINEFOV]
     g_wideFov = GetPrivateProfileIntW(L"Render", L"WideFov", 0, ini) ? 1 : 0;     // [WIDEFOV]

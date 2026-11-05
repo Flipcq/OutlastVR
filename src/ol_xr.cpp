@@ -1495,12 +1495,61 @@ extern "C" void OLXR_GetHmdFovDeg(float* fx, float* fy) {
     if (fy) *fy = outY * 57.2957795f;
 }
 
+// [UNIONFRUSTUM] (C2) ONE frustum for both halves. (Beta 1.2.2 pass, phase 5 - see
+// optimization-context.md.) [LENSFIT] gives each half its own eye's lens frustum, which is sharper
+// but means the two views hand the renderer two DIFFERENT volumes of the world: each one culls what
+// the other keeps, and any visibility verdict shared between them (C1) is unsound. With this on,
+// both halves are built with the same frustum - the union of the two lenses, widened by the stereo
+// offset itself - so both views cull the same world. The blit then crops that wider picture back
+// onto each eye's own lens (BlitFitToEyeTan already does exactly that), so the geometry the player
+// sees is unchanged.
+//
+// The price is honest and measurable: each half renders a wider picture and throws the margin away,
+// so the eye gets its lens out of an image that covers more than the lens - the sharpness [LENSFIT]
+// bought is partly given back. That is why it ships OFF; what it buys is a per-eye verdict that
+// cannot disagree, which is what [VISREUSE] in d3d9_proxy.cpp needs.
+static volatile LONG g_unionFrustumOn = 0;     // [Perf] UnionFrustum
+static volatile LONG g_unionNearUU10 = 100;    // [Perf] UnionNearUU x10 (game units, 100 = 1 m)
+extern "C" int OLXR_UnionFrustumOn() { return g_unionFrustumOn ? 1 : 0; }
+
+// One runtime eye's lens frustum, in tangents, with no sharing or fitting policy applied.
+static int OlrEyeTangents(int eye, float* l, float* r, float* u, float* d) {
+    if (!g_rtEyeFovValid) return 0;
+    const XrFovf f = g_rtEyeFov[eye & 1];
+    const float tl = tanf(f.angleLeft), tr = tanf(f.angleRight), tu = tanf(f.angleUp), td = tanf(f.angleDown);
+    if (!(tr - tl > 0.2f && tu - td > 0.2f && tr - tl < 12.0f && tu - td < 12.0f)) return 0;
+    if (l) *l = tl; if (r) *r = tr; if (u) *u = tu; if (d) *d = td;
+    return 1;
+}
+// The union of both lenses as ONE frustum. Horizontal: the wider edge of the two, plus the stereo
+// offset, which is a tangent per metre of distance and is therefore bounded by the eye's half
+// separation over the nearest distance anything is drawn at ([Perf] UnionNearUU, 10 game units =
+// 10 cm). Vertical: the two eyes share their height (the mod separates them horizontally only), so
+// the plain union is exact there.
+static int OlrUnionTangents(float* l, float* r, float* u, float* d) {
+    float al, ar, au, ad, bl, br, bu, bd;
+    if (!OlrEyeTangents(0, &al, &ar, &au, &ad)) return 0;
+    if (!OlrEyeTangents(1, &bl, &br, &bu, &bd)) return 0;
+    const float halfSep = OLUE3_GetHalfEye();
+    const float nearUU  = (float)g_unionNearUU10 * 0.1f;
+    float off = (nearUU > 0.01f) ? halfSep / nearUU : halfSep;
+    if (off < 0.0f) off = 0.0f;
+    if (off > 1.0f) off = 1.0f;
+    const float L = fminf(al, bl) - off, R = fmaxf(ar, br) + off;
+    const float U = fmaxf(au, bu),       D = fminf(ad, bd);
+    if (!(R - L > 0.2f && U - D > 0.2f && R - L < 12.0f && U - D < 12.0f)) return 0;
+    if (l) *l = L; if (r) *r = R; if (u) *u = U; if (d) *d = D;
+    return 1;
+}
+
 // [LENSFIT] The frustum the picture in HALF h of the frame must cover: the runtime eye that half is
 // routed to (the Mass Effect model routes by half ^ swap). Tangents; 0 = not now (no runtime
 // frustum yet, not fitting to it, another stereo model, or switched off).
 extern "C" int OLUE3_GetEyeSwap();
 extern "C" int OLXR_LensFitTangents(int half, float* l, float* r, float* u, float* d) {
     if (!g_lensFitOn || !g_rtEyeFovValid || !g_fitFrustum || !g_meModel || OLUE3_StereoMode() != 1) return 0;
+    // [UNIONFRUSTUM] (C2) both halves get the SAME frustum, so both views cull the same world.
+    if (g_unionFrustumOn) return OlrUnionTangents(l, r, u, d);
     const int eye = (half ^ (OLUE3_GetEyeSwap() ? 1 : 0)) & 1;
     const XrFovf f = g_rtEyeFov[eye];
     const float tl = tanf(f.angleLeft), tr = tanf(f.angleRight), tu = tanf(f.angleUp), td = tanf(f.angleDown);
@@ -1947,6 +1996,13 @@ static bool Init(UINT w, UINT h) {
                 g_sharedFrameDirect = GetPrivateProfileIntW(L"Perf", L"SharedFrameDirect", 1, ini) ? 1 : 0;
                 g_directSwapchain   = GetPrivateProfileIntW(L"Perf", L"DirectSwapchain", 0, ini) ? 1 : 0;
                 g_viewCacheOn       = GetPrivateProfileIntW(L"Perf", L"ViewCache", 1, ini) ? 1 : 0;
+                // [UNIONFRUSTUM] (phase 5, C2) one frustum for both halves, so both views cull the
+                // same world. OFF by default: it renders a wider picture per half and crops it back,
+                // which costs the sharpness [LENSFIT] bought. See the block in ol_xr.cpp above.
+                g_unionFrustumOn    = GetPrivateProfileIntW(L"Perf", L"UnionFrustum", 0, ini) ? 1 : 0;
+                { LONG near10 = (LONG)GetPrivateProfileIntW(L"Perf", L"UnionNearUU", 10, ini);
+                  if (near10 < 1) near10 = 1; if (near10 > 200) near10 = 200;
+                  g_unionNearUU10 = near10; }
                 XLOG("[OLVR][PERF-A1] timer=%ld thread=%ld process=%ld | [PERF-A2] pacing wait=%s | [PERF-A8] bridge monitor=%s",
                      g_timerResOn, g_threadPrioOn, g_processPrioOn,
                      g_paceWait ? "WaitOnAddress (no spin)" : "the old spin",
@@ -1958,6 +2014,15 @@ static bool Init(UINT w, UINT h) {
                      g_viewCacheOn ? "on (one view per texture)" : "off (a view per call, the old way)",
                      g_directSwapchain ? "ON (experiment: no scratch, no copy - watch for a wrong picture)"
                                        : "off (blit into the scratch image, then copy)");
+                XLOG("[OLVR][PERF-UNIONFRUSTUM] %s", g_unionFrustumOn
+                     ? "ON - both eyes are built with ONE frustum (C2): the union of the two lenses, "
+                       "widened by the stereo offset at the near distance below; the blit crops it back "
+                       "onto each eye. Costs picture margin per eye; buys per-eye verdicts that cannot disagree"
+                     : "off - each eye renders (and culls) its own lens frustum ([Render] LensFit)");
+                if (g_unionFrustumOn)
+                    XLOG("[OLVR][UNIONFRUSTUM] stereo offset taken at %.1f game units (%.1f cm); "
+                         "wider is safer and softer, narrower is sharper and culls more",
+                         (double)g_unionNearUU10 * 0.1, (double)g_unionNearUU10 * 0.1);
                 PerfRaiseTimerResolution();
                 PerfRaiseProcessPriority();
                 // [STREAMEDGE] / [STREAMPOSE] streaming-facing knobs (see docs/STREAMING.md).
@@ -5621,6 +5686,10 @@ static bool BlitToSwapchain() {
 // [PERF] Present-to-Present interval and the 5 s report. Runs whether or not a session is up, so
 // a flat run measures the game alone.
 extern "C" void OLProxy_TakeDrawStats(long* draws, long* occlSkipped);          // d3d9_proxy.cpp
+extern "C" void OLProxy_TakeOcclStats(long* fresh, long* stale, long* blocked, long* reused,
+                                      long* noSlot, long* usL, long* usR, long* nL, long* nR);
+extern "C" void OLUE3_TakeVisibilityStats(long* pvsServed, long* pvsMiss, long* pvsFull,
+                                          long* eyePrimary, long* eyeSecondary);
 extern "C" void OLUE3_TakeFrameStats(long* calcSceneSumUs, long* calcSceneMaxUs, long* skelCalls,
                                      long* skelMiles, long* fovCalls, long* pvsCalls, long* occlCalls,
                                      long* fovCacheHits);
@@ -5684,6 +5753,24 @@ static void PerfFrame() {
              (double)skel / frames, (unsigned long)skelMiles, (double)fov / frames,
              (unsigned long)fovHits, (double)pvs / frames, (double)occl / frames,
              (double)OLXR_PerfGpuMsX10() / 10.0);
+        // [OCCLPEREYE] / [PVSSHARE] / [VISREUSE] (phase 5) - the visibility numbers the phase-5
+        // work is judged by. "fresh" answers came from the GPU, "stale" from this eye's previous
+        // frame (the read did not wait), "blocked" is the fallback of a query's very first read,
+        // "reused" is the second eye taking the first eye's verdict (C1, off by default), and the
+        // two pass times are what one eye's run of occlusion reads actually took.
+        long oFresh = 0, oStale = 0, oBlocked = 0, oReused = 0, oNoSlot = 0;
+        long usL = 0, usR = 0, nL = 0, nR = 0;
+        OLProxy_TakeOcclStats(&oFresh, &oStale, &oBlocked, &oReused, &oNoSlot, &usL, &usR, &nL, &nR);
+        long pvsServed = 0, pvsMiss = 0, pvsFull = 0, eyePri = 0, eyeSec = 0;
+        OLUE3_TakeVisibilityStats(&pvsServed, &pvsMiss, &pvsFull, &eyePri, &eyeSec);
+        XLOG("[OLVR][PERF] occl per-eye: %.0f fresh + %.0f stale (no wait) + %.0f first-read, "
+             "%.0f reused, %.0f no slot | pass L %.0f us (%.1f/frame) R %.0f us (%.1f/frame) | "
+             "pvs shared %.0f, asked %.0f | view eye primary/secondary %ld/%ld",
+             (double)oFresh / frames, (double)oStale / frames, (double)oBlocked / frames,
+             (double)oReused / frames, (double)oNoSlot / frames,
+             nL > 0 ? (double)usL / (double)nL : 0.0, (double)nL / frames,
+             nR > 0 ? (double)usR / (double)nR : 0.0, (double)nR / frames,
+             (double)pvsServed / frames, (double)pvsMiss / frames, eyePri, eyeSec);
     }
     OLProxy_ExStatReport();   // (Test47) [EXSTAT] the game's resource creates / locks this period
     XLOG("[OLVR][XRTIMING] loop avg %.2f max %.2f | begin avg %.2f max %.2f | end avg %.2f max %.2f | "
@@ -6349,16 +6436,23 @@ static bool RunXrFrame(IDirect3DDevice9* dev, bool preCaptured) {
                 const int eyeOfLeftHalf  = swap ? 1 : 0;
                 const int eyeOfRightHalf = swap ? 0 : 1;
                 if (lensFrame) {
-                    // [LENSFIT] each half already covers exactly its eye's frustum.
+                    // [LENSFIT] each half already covers exactly the frustum it was rendered with.
+                    // [UNIONFRUSTUM] (C2) that frustum is the SAME for both halves, so it is asked
+                    // for per half instead of assuming it equals the eye's own lens: in lens mode
+                    // the two are identical, and in union mode this is the crop that puts the wider
+                    // picture back onto each eye.
                     const XrFovf& fl = g_rtEyeFov[eyeOfLeftHalf];
                     const XrFovf& fr = g_rtEyeFov[eyeOfRightHalf];
+                    float rl0, rr0, ru0, rd0, rl1, rr1, ru1, rd1;
+                    const int haveL = OLXR_LensFitTangents(0, &rl0, &rr0, &ru0, &rd0);
+                    const int haveR = OLXR_LensFitTangents(1, &rl1, &rr1, &ru1, &rd1);
+                    if (!haveL) { rl0 = tanf(fl.angleLeft); rr0 = tanf(fl.angleRight); ru0 = tanf(fl.angleUp); rd0 = tanf(fl.angleDown); }
+                    if (!haveR) { rl1 = tanf(fr.angleLeft); rr1 = tanf(fr.angleRight); ru1 = tanf(fr.angleUp); rd1 = tanf(fr.angleDown); }
                     eyesOk = preCaptured
                           && BlitFitToEyeTan(scL, imL, 0.0f - convPx, halfW - convPx, 0.0f, halfW,
-                                             tanf(fl.angleLeft), tanf(fl.angleRight),
-                                             tanf(fl.angleUp), tanf(fl.angleDown), fl)
+                                             rl0, rr0, ru0, rd0, fl)
                           && BlitFitToEyeTan(scR, imR, halfW + convPx, (float)g_w + convPx, halfW, (float)g_w,
-                                             tanf(fr.angleLeft), tanf(fr.angleRight),
-                                             tanf(fr.angleUp), tanf(fr.angleDown), fr);
+                                             rl1, rr1, ru1, rd1, fr);
                 } else {
                     eyesOk = preCaptured
                           && BlitFitToEye(scL, imL, 0.0f - convPx, halfW - convPx, 0.0f, halfW,

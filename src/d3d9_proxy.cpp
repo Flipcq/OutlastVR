@@ -220,6 +220,7 @@ typedef HRESULT (STDMETHODCALLTYPE *CreateDevice_t)(IDirect3D9*, UINT, D3DDEVTYP
 typedef HRESULT (STDMETHODCALLTYPE *Present_t)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
 typedef HRESULT (STDMETHODCALLTYPE *CreateQuery_t)(IDirect3DDevice9*, D3DQUERYTYPE, IDirect3DQuery9**);
 typedef HRESULT (STDMETHODCALLTYPE *QueryGetData_t)(IDirect3DQuery9*, void*, DWORD, DWORD);
+typedef HRESULT (STDMETHODCALLTYPE *SetViewport_t)(IDirect3DDevice9*, const D3DVIEWPORT9*);
 typedef HRESULT (STDMETHODCALLTYPE *Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 
 static CreateDevice_t o_CreateDevice = nullptr;
@@ -280,14 +281,28 @@ extern "C" void OLProxy_TakeDrawStats(long* draws, long* occlSkipped) {
 // transition cannot change a verdict: g_splitFresh only falls off after 30 frames of no split.
 // [Perf] DrawFastFlags=0 restores the direct per-draw queries for an A/B.
 extern "C" int OLUE3_OcclBypassOn();
+// [OCCLPEREYE] (phase 5) the switches the draw wrappers and the query hooks read, declared here
+// because the occlusion-box test below runs on every draw call of both eyes.
+extern "C" volatile long g_olRenderEye;   // ol_ue3.cpp: 0 = the frame's primary view, 1 = the other
+static volatile LONG g_occlPerEye = 1;    // [Perf] OcclPerEye - B1, ships ON
+static volatile LONG g_visReuse = 0;      // [Perf] VisReuse   - C1, ships OFF (it needs C2)
+// [VISREUSE] safety: the second eye's boxes are only skipped in a frame where the tracker really did
+// report the primary view. Without that, a tracker that could not tell the eyes apart would skip
+// BOTH passes' boxes, every query would answer 0, and the level would cull itself away.
+static volatile LONG g_sawPrimaryEye = 0;
+
 static volatile LONG g_fastFlagsOn = 1;
 static volatile LONG g_fastFlags = 7;         // see the kFF_ bits; 7 = the shipped state at boot
-enum { kFF_OcclBypass = 1, kFF_SplitStereo = 2, kFF_SplitActive = 4 };
+enum { kFF_OcclBypass = 1, kFF_SplitStereo = 2, kFF_SplitActive = 4, kFF_VisReuse = 8 };
+extern "C" int OLXR_UnionFrustumOn();
 static void FastFlagsRefresh() {
     LONG f = 0;
     if (OLUE3_OcclBypassOn()) f |= kFF_OcclBypass;
     if (OLUE3_StereoMode() == 1) f |= kFF_SplitStereo;
     if (OLUE3_SplitActive()) f |= kFF_SplitActive;
+    // [VISREUSE] (phase 5, C1) only ever on when the union frustum (C2) is: the second eye's reuse
+    // of the first eye's occlusion verdicts is only sound if both views cull the same world.
+    if (OLXR_UnionFrustumOn()) f |= kFF_VisReuse;
     InterlockedExchange(&g_fastFlags, f);
 }
 static inline LONG FastFlags() {
@@ -947,10 +962,25 @@ static volatile LONG g_inOcclQuery = 0;
 static volatile LONG g_occlSkip = 1;              // with OcclForce: skip those draws and never wait for answers
 static volatile LONG g_occlSkippedDraws = 0;
 extern "C" int OLUE3_OcclBypassOn();
+// [OCCLPEREYE] (phase 5, B1) the precedence, in one place: while the per-eye path owns the queries
+// the boxes MUST be drawn (they are the query's pixels - skipping them answers "0 pixels" and the
+// engine culls everything), so OcclForce's force-visible and OcclusionSkip's box skipping both stand
+// down. With [Perf] OcclPerEye=0 the two keys below are back in charge, exactly as in 1.2.2.
 static inline bool OcclDrawSkipped() {
-    // [PERF-A4] Two plain reads reject every ordinary draw; the cross-TU OcclForce query only
-    // happens when a query box is actually open, and comes from the per-Present snapshot.
-    if (!g_inOcclQuery || !g_occlSkip) return false;
+    // [PERF-A4] Two plain reads reject every ordinary draw; the cross-TU queries only happen when a
+    // query box is actually open, and come from the per-Present snapshot.
+    if (!g_inOcclQuery) return false;
+    if (g_occlPerEye) {
+        // B1: the boxes are the answer, so they are drawn - except the second eye's, which has no
+        // answer of its own to produce when [VISREUSE] is serving it. Only in a frame that really
+        // saw the primary view: see g_sawPrimaryEye.
+        if (!g_visReuse || !(FastFlags() & kFF_VisReuse) || !g_sawPrimaryEye) return false;
+        if (g_olRenderEye == 0) return false;
+        InterlockedIncrement(&g_occlSkippedDraws);
+        ++g_dcOcclSkipped;
+        return true;
+    }
+    if (!g_occlSkip) return false;
     if (!(FastFlags() & kFF_OcclBypass)) return false;
     InterlockedIncrement(&g_occlSkippedDraws);
     ++g_dcOcclSkipped;
@@ -996,11 +1026,18 @@ extern "C" double OLXR_PerfNowMs();
 extern "C" void   OLXR_PerfNotePresent(double ms);
 extern "C" int    OLXR_MonitorActive();      // [PERF-A8] the bridge is presenting the monitor
 extern "C" void   OLXR_OnDeviceLost();
+extern "C" void   OLUE3_PerfFrameBoundary();  // [PVSSHARE] ol_ue3.cpp: the per-frame boundary
+static void OcclTableReset();                  // [OCCLPEREYE] defined with the query hooks below
 
 static HRESULT STDMETHODCALLTYPE Hook_Present(IDirect3DDevice9* This, const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
     LONG n = InterlockedIncrement(&g_presentCount);
     // [PERF-A4] The snapshot the draw wrappers read for the frame that is about to be drawn.
     FastFlagsRefresh();
+    // [PVSSHARE] / [OCCLPEREYE] (phase 5) the frame boundary: the precomputed-visibility cache the
+    // second eye reads from only ever holds answers from the frame that just ended, and the C1 guard
+    // starts each frame believing it has not seen the primary view.
+    OLUE3_PerfFrameBoundary();
+    InterlockedExchange(&g_sawPrimaryEye, 0);
     if (n == 1) {
         Log("[OLVR] first Present - frame loop is live");
         Log("[OLVR][PERF28] direct final-backbuffer capture active; expensive 3840x1080 native-eye replay disabled");
@@ -1209,6 +1246,7 @@ static HRESULT STDMETHODCALLTYPE Hook_Reset(IDirect3DDevice9* This, D3DPRESENT_P
     // [PERF-A5] A Reset is the one thing that replaces the backbuffer surface; the cache must not
     // outlive it (a stale pointer here would be read as "not the backbuffer" forever).
     InvalidateBackBufferCache();
+    OcclTableReset();   // [OCCLPEREYE] a Reset drops every D3D9 query object the table knows
     if (pp) {
         Log("[OLVR] Reset -> %ux%u windowed=%d (monitor-rect spoofs=%ld, display-mode spoofs=%ld)",
             pp->BackBufferWidth, pp->BackBufferHeight, (int)pp->Windowed, g_dispqHits, g_admHits);
@@ -1358,38 +1396,288 @@ extern "C" void OLProxy_HwqStats(long* created, long* forced) {
 
 typedef HRESULT (STDMETHODCALLTYPE *QueryIssue_t)(IDirect3DQuery9*, DWORD);
 static QueryIssue_t o_QueryIssue = nullptr;
+
+// ======================= PHASE 5: PER-EYE VISIBILITY [OCCLPEREYE] / [VISREUSE] =================
+// (Beta 1.2.2 optimization pass, phase 5 - see optimization-context.md)
+//
+// WHAT WAS WRONG. The engine asks the GPU "how many pixels of this primitive's bounding box passed
+// the depth test" and culls the mesh on LAST frame's answer. With two views per frame those answers
+// come out of one shared pot: the second eye read verdicts produced for the first one, they
+// oscillated, and props winked in and out of one eye. The mod's answer until now was the blunt one -
+// [Stage3] OcclForce=1 makes EVERY query answer "lots of pixels visible", so nothing is ever culled,
+// and [Render] OcclusionSkip=1 stops drawing the test boxes at all. Stable, cheap, and it throws the
+// culling away (the +7-12% OcclusionSkip bought back).
+//
+// WHAT THIS DOES INSTEAD (B1). Each query keeps the last REAL answer PER EYE - the eye being the
+// view the renderer is drawing (g_olRenderEye in ol_ue3.cpp: an exact compare of the view matrices,
+// with the engine's own per-view viewport as a second opinion when it sets one). A read never
+// waits: the flags are stripped of D3DGETDATA_FLUSH, and a query the GPU has not finished yet
+// answers with this eye's previous frame - which is precisely the answer UE3 was designed around,
+// one frame old. Nothing is forced, so the culling is back; nothing is waited on, so the stall
+// OcclusionSkip was hiding does not return either.
+//
+// [VISREUSE] (C1) goes one step further and ships OFF: the second eye stops drawing its own test
+// boxes and takes the first eye's verdicts, in call order. That is only sound when both views cull
+// the same region of the world - which is what [UNIONFRUSTUM] (C2, ol_xr.cpp) makes true - so
+// VISREUSE stays idle unless the union frustum is on, and logs that it is idle.
+// (g_olRenderEye and OLXR_UnionFrustumOn are declared with the per-draw switches at the top of this
+// file: the box test runs on every draw call, so they live where that test can see them.)
+
+static volatile LONG g_vpX = 0, g_vpW = 0; // the engine's current viewport, mirrored by Hook_SetViewport
+static volatile LONG g_occlEyePass = -1;   // which eye's pass is open (the [PERF] numbers)
+static double g_occlPassT0 = 0.0, g_occlPassUs[2] = { 0.0, 0.0 };
+static long   g_occlPassN[2] = { 0, 0 };
+static LONG g_occlFresh = 0, g_occlStale = 0, g_occlBlocked = 0, g_occlReused = 0, g_occlNoSlot = 0;
+
+// The eye of the pass being drawn. The engine's own viewport, when it sets one per view, is the
+// most direct statement there is; the matrix compare behind g_olRenderEye is the general case.
+static inline int OcclEyeFromViewport() {
+    const LONG half = (LONG)(g_bbW / 2);
+    const LONG x = g_vpX, w = g_vpW;
+    if (half > 0 && w > 0 && w < (LONG)g_bbW) {
+        if (x >= half) return 1;
+        if (x + w <= half) return 0;
+    }
+    return (int)g_olRenderEye;
+}
+
+// The per-eye answer table. A D3D9 query object belongs to one view, so its eye is stable; the
+// table is fixed-size and never grows (a pool bigger than this simply asks the device, see below).
+// staleRun counts consecutive reads answered from the previous frame: a query whose answer never
+// arrives (a GPU that is never flushed, a driver that parks it) must not freeze a verdict forever,
+// so after kOcclStaleLimit the read is allowed to wait the way the engine asked.
+enum { kOcclSlots = 512, kOcclStaleLimit = 4 };                 // power of two
+struct OcclSlot { IDirect3DQuery9* q; DWORD ans[2]; LONG have[2]; LONG staleRun[2]; };
+static OcclSlot g_occlTab[kOcclSlots];
+static void OcclTableReset() {
+    for (int i = 0; i < kOcclSlots; ++i) {
+        g_occlTab[i].q = nullptr; g_occlTab[i].have[0] = g_occlTab[i].have[1] = 0;
+        g_occlTab[i].staleRun[0] = g_occlTab[i].staleRun[1] = 0;
+    }
+    InterlockedExchange(&g_occlEyePass, -1);
+    g_occlPassN[0] = g_occlPassN[1] = 0;
+    g_occlPassUs[0] = g_occlPassUs[1] = 0.0;
+}
+static OcclSlot* OcclSlotFor(IDirect3DQuery9* q, bool create) {
+    if (!q) return nullptr;
+    const size_t mask = (size_t)kOcclSlots - 1;
+    size_t i = (((size_t)q) >> 4) & mask;
+    for (size_t n = 0; n < (size_t)kOcclSlots; ++n, i = (i + 1) & mask) {
+        if (g_occlTab[i].q == q) return &g_occlTab[i];
+        if (!g_occlTab[i].q) {
+            if (!create) return nullptr;
+            g_occlTab[i].q = q;
+            g_occlTab[i].have[0] = g_occlTab[i].have[1] = 0;
+            g_occlTab[i].staleRun[0] = g_occlTab[i].staleRun[1] = 0;
+            return &g_occlTab[i];
+        }
+    }
+    return nullptr;   // full: this query is answered the old way, never with a wrong verdict
+}
+// 1 = answer from this eye's previous frame (and count it); 0 = too many in a row, so the caller has
+// to ask the device properly. This is what keeps a verdict from freezing when the answer stops
+// arriving, and it is the one piece of B1 that is a policy rather than a memory access, so it is its
+// own function.
+static int OcclStaleOk(LONG* staleRun) {
+    if (!staleRun || *staleRun >= kOcclStaleLimit) return 0;
+    ++*staleRun;
+    return 1;
+}
+// The pass bookkeeping and the [VISREUSE] list. A "pass" is one eye's run of occlusion reads: it
+// starts when the eye changes, which is also where the per-pass [PERF] timing is taken (one QPC
+// reading per pass, not per query - the queries are thousands a frame).
+enum { kVisSlots = 2048 };
+static DWORD g_visAns[kVisSlots];
+static LONG  g_visLN = 0, g_visIdx = 0;
+static LONG  g_visLNPrev = 0, g_visSecN = 0, g_visPairOk = 0;
+
+static inline int OcclEyeNow() {
+    const int e = OcclEyeFromViewport();
+    if (e == 0) InterlockedExchange(&g_sawPrimaryEye, 1);   // [VISREUSE] the guard, see its comment
+    if (e != (int)g_occlEyePass) {
+        const double now = OLXR_PerfNowMs();
+        const LONG prev = g_occlEyePass;
+        if (prev >= 0 && prev <= 1) {
+            g_occlPassUs[prev] += (now - g_occlPassT0) * 1000.0;
+            ++g_occlPassN[prev];
+            if (prev == 0) {
+                g_visLNPrev = g_visLN;
+            } else {
+                g_visSecN = g_visIdx;
+                // The self-check C1 lives or dies by: reuse is only offered to a frame whose two
+                // passes asked the same number of questions last time, which is what makes call
+                // order a usable pairing.
+                g_visPairOk = (g_visLNPrev == g_visSecN && g_visLNPrev > 0) ? 1 : 0;
+            }
+        }
+        InterlockedExchange(&g_occlEyePass, e);
+        g_occlPassT0 = now;
+        g_visIdx = 0;
+        if (e == 0) g_visLN = 0;      // the primary pass rewrites the list
+    }
+    return e;
+}
+// The first eye's verdict for this call, in call order.
+static inline int VisReuseTake(DWORD* out) {
+    if (!g_visPairOk || g_visIdx >= g_visLN || g_visIdx >= (LONG)kVisSlots) return 0;
+    *out = g_visAns[g_visIdx];
+    ++g_visIdx;
+    return 1;
+}
+static inline void VisReuseRecord(int eye, DWORD v) {
+    if (!g_visReuse) return;
+    if (eye == 0) {
+        if (g_visIdx >= 0 && g_visIdx < (LONG)kVisSlots) g_visAns[g_visIdx] = v;
+        if (g_visIdx + 1 > g_visLN) g_visLN = g_visIdx + 1;
+    }
+    ++g_visIdx;
+}
+
+// [OCCLPEREYE] The engine's viewport, mirrored so the eye of a query costs two loads instead of a
+// COM call per query. The mod's own UI mirror changes the viewport for its own draws and restores
+// it - an occlusion box is never a UI draw, so nothing that reaches the query path sees a
+// half-frame viewport unless the ENGINE set one.
+static SetViewport_t o_SetViewport = nullptr;
+static HRESULT STDMETHODCALLTYPE Hook_SetViewport(IDirect3DDevice9* This, const D3DVIEWPORT9* vp) {
+    if (vp) { InterlockedExchange(&g_vpX, (LONG)vp->X); InterlockedExchange(&g_vpW, (LONG)vp->Width); }
+    else    { InterlockedExchange(&g_vpX, 0);         InterlockedExchange(&g_vpW, 0); }
+    return o_SetViewport(This, vp);
+}
 // [OCCLSKIP] (Test46) With OcclForce every occlusion answer is replaced by "visible" anyway, yet the game still
 // drew each query's test boxes (twice a frame - both eyes) and its render thread waited for the GPU to answer
 // (UE3 reads last frame's queries with wait=TRUE) - work and stalls for answers that were thrown away. Now the
 // boxes are not drawn and the answer comes back at once. [Render] OcclusionSkip=0 restores the old way.
 static HRESULT STDMETHODCALLTYPE Hook_QueryIssue(IDirect3DQuery9* This, DWORD flags) {
-    if (This->GetType() == D3DQUERYTYPE_OCCLUSION) {
-        if (flags & D3DISSUE_BEGIN) InterlockedExchange(&g_inOcclQuery, 1);
-        else if (flags & D3DISSUE_END) InterlockedExchange(&g_inOcclQuery, 0);
+    if (This && This->GetType() == D3DQUERYTYPE_OCCLUSION) {
+        if (flags & D3DISSUE_BEGIN) {
+            InterlockedExchange(&g_inOcclQuery, 1);
+            if (g_occlPerEye) OcclEyeNow();       // [OCCLPEREYE] opens this eye's pass
+        } else if (flags & D3DISSUE_END) {
+            InterlockedExchange(&g_inOcclQuery, 0);
+        }
     }
     return o_QueryIssue(This, flags);
 }
+// What one occlusion read does, given what the device said and what this eye already has. Kept as
+// its own function because it is the whole rule of B1 in one place, and because
+// tests/perf_visibility_test.py compiles exactly this code:
+//   0 = the device has a fresh answer, keep it       1 = answer with this eye's previous frame
+//   2 = nothing to fall back on, ask the device the way the engine asked (a real wait, once)
+static int OcclReadPlan(int pollOk, int haveThisEye) {
+    if (pollOk) return 0;
+    if (haveThisEye) return 1;
+    return 2;
+}
+
 static HRESULT STDMETHODCALLTYPE Hook_QueryGetData(IDirect3DQuery9* This, void* pData, DWORD size, DWORD flags) {
-    if (g_occlSkip && OLUE3_OcclBypassOn() && This->GetType() == D3DQUERYTYPE_OCCLUSION) {
+    if (!This) return o_QueryGetData(This, pData, size, flags);
+    const bool occl = This->GetType() == D3DQUERYTYPE_OCCLUSION;
+    // [OCCLPEREYE] (B1) one answer per eye, never forced, never waited on.
+    if (occl && g_occlPerEye && pData && size >= sizeof(DWORD)) {
+        OcclSlot* s = OcclSlotFor(This, true);
+        if (!s) { InterlockedIncrement(&g_occlNoSlot); return o_QueryGetData(This, pData, size, flags); }
+        const int eye = OcclEyeNow();
+        // [VISREUSE] (C1) the second eye takes the first eye's verdict for this same call in its
+        // pass and never asks the device at all. Idle unless the union frustum makes both views
+        // cull the same world (see [UNIONFRUSTUM] in ol_xr.cpp and the boot line).
+        if (g_visReuse && eye == 1 && (FastFlags() & kFF_VisReuse)) {
+            DWORD v = 0;
+            if (VisReuseTake(&v)) {
+                *(DWORD*)pData = v;
+                InterlockedIncrement(&g_occlReused);
+                return S_OK;
+            }
+        }
+        const HRESULT hr = o_QueryGetData(This, pData, size, flags & ~(DWORD)D3DGETDATA_FLUSH);
+        const int plan = OcclReadPlan(hr == S_OK ? 1 : 0, s->have[eye]);
+        if (plan == 0) {
+            s->ans[eye] = *(const DWORD*)pData; s->have[eye] = 1; s->staleRun[eye] = 0;
+            InterlockedIncrement(&g_occlFresh);
+            VisReuseRecord(eye, s->ans[eye]);
+            return S_OK;
+        }
+        if (plan == 1 && OcclStaleOk(&s->staleRun[eye])) {
+            // Not finished by the GPU: this eye's previous frame is the answer, which is the age
+            // UE3's own occlusion culling is built around.
+            *(DWORD*)pData = s->ans[eye];
+            InterlockedIncrement(&g_occlStale);
+            VisReuseRecord(eye, s->ans[eye]);
+            return S_OK;
+        }
+        // Nothing to fall back on (the query's first read), or an answer that has stopped arriving:
+        // ask the device the way the engine did.
+        InterlockedIncrement(&g_occlBlocked);
+        const HRESULT hr2 = o_QueryGetData(This, pData, size, flags);
+        s->staleRun[eye] = 0;
+        if (hr2 == S_OK) {
+            s->ans[eye] = *(const DWORD*)pData; s->have[eye] = 1;
+            VisReuseRecord(eye, s->ans[eye]);
+        }
+        return hr2;
+    }
+    if (g_occlSkip && OLUE3_OcclBypassOn() && occl) {
         if (pData && size >= sizeof(DWORD)) *(DWORD*)pData = 0x7FFFFF;
         InterlockedIncrement(&g_hwqForced);
         return S_OK;
     }
     HRESULT hr = o_QueryGetData(This, pData, size, flags);
-    if (hr == S_OK && pData && size >= sizeof(DWORD) && OLUE3_OcclBypassOn() &&
-        This->GetType() == D3DQUERYTYPE_OCCLUSION) {
+    if (hr == S_OK && pData && size >= sizeof(DWORD) && OLUE3_OcclBypassOn() && occl) {
         *(DWORD*)pData = 0x7FFFFF;          // "many pixels" -> the engine never culls on it
         InterlockedIncrement(&g_hwqForced);
     }
     return hr;
 }
 
-extern "C" void OLProxy_SetOcclSkip(int on) { InterlockedExchange(&g_occlSkip, on ? 1 : 0); Log("[OLVR][OCCLSKIP] %s", on ? "ON - forced occlusion queries draw nothing and never wait" : "OFF"); }
+// [Perf] OcclPerEye (B1). ON is the per-eye path above; OFF restores exactly the 1.2.2 behaviour,
+// where [Stage3] OcclForce and [Render] OcclusionSkip own every occlusion answer.
+extern "C" void OLProxy_SetOcclPerEye(int on) {
+    InterlockedExchange(&g_occlPerEye, on ? 1 : 0);
+    OcclTableReset();
+    Log("[OLVR][OCCLPEREYE] %s", on
+        ? "ON - every query keeps one real answer per eye, reads never wait (B1); "
+          "OcclForce's force-visible and OcclusionSkip's box skipping stand down"
+        : "OFF - OcclForce/OcclusionSkip own the occlusion queries again (the pre-1.2.2 way)");
+}
+// [Perf] VisReuse (C1). The second eye's verdicts come from the first eye's pass, and its test boxes
+// are not drawn. That is only sound with the union frustum on ([Perf] UnionFrustum), so the live gate
+// is the per-Present flag snapshot (kFF_VisReuse): until the union frustum is on, this switch is
+// armed but idle, which is also what makes the two keys independent of the order they are loaded in.
+extern "C" void OLProxy_SetVisReuse(int on) {
+    InterlockedExchange(&g_visReuse, on ? 1 : 0);
+    const bool unionOn = OLXR_UnionFrustumOn() != 0;
+    Log("[OLVR][VISREUSE] %s%s", on
+        ? "ON - the second eye draws no occlusion boxes and takes the first eye's verdicts (C1)"
+        : "OFF - both eyes test their own occlusion boxes",
+        (on && !unionOn) ? " (IDLE until [Perf] UnionFrustum=1: C1 needs C2)" : "");
+}
+// What the [PERF] report publishes: how the answers were produced, and how long each eye's pass took.
+extern "C" void OLProxy_TakeOcclStats(long* fresh, long* stale, long* blocked, long* reused,
+                                      long* noSlot, long* usL, long* usR, long* nL, long* nR) {
+    if (fresh)   { *fresh   = g_occlFresh;   g_occlFresh = 0; }
+    if (stale)   { *stale   = g_occlStale;   g_occlStale = 0; }
+    if (blocked) { *blocked = g_occlBlocked; g_occlBlocked = 0; }
+    if (reused)  { *reused  = g_occlReused;  g_occlReused = 0; }
+    if (noSlot)  { *noSlot  = g_occlNoSlot;  g_occlNoSlot = 0; }
+    if (usL) *usL = (long)g_occlPassUs[0]; if (usR) *usR = (long)g_occlPassUs[1];
+    if (nL)  *nL  = g_occlPassN[0];        if (nR)  *nR  = g_occlPassN[1];
+    g_occlPassUs[0] = g_occlPassUs[1] = 0.0;
+    g_occlPassN[0] = g_occlPassN[1] = 0;
+}
+
+extern "C" void OLProxy_SetOcclSkip(int on) {
+    InterlockedExchange(&g_occlSkip, on ? 1 : 0);
+    Log("[OLVR][OCCLSKIP] %s%s", on ? "ON - forced occlusion queries draw nothing and never wait" : "OFF",
+        g_occlPerEye ? " (idle: [Perf] OcclPerEye=1 draws the boxes and uses their answers)" : "");
+}
 extern "C" long OLProxy_OcclSkippedDraws() { return InterlockedExchange(&g_occlSkippedDraws, 0); }
 static HRESULT STDMETHODCALLTYPE Hook_CreateQuery(IDirect3DDevice9* This, D3DQUERYTYPE type, IDirect3DQuery9** ppQ) {
     HRESULT hr = o_CreateQuery(This, type, ppQ);
     if (SUCCEEDED(hr) && ppQ && *ppQ && type == D3DQUERYTYPE_OCCLUSION) {
         LONG n = InterlockedIncrement(&g_hwqCreated);
+        // [OCCLPEREYE] A D3D address can be recycled by the runtime: a new query that lands on the
+        // slot of a released one must not inherit that one's answers.
+        OcclSlot* s = OcclSlotFor(*ppQ, false);
+        if (s) { s->have[0] = 0; s->have[1] = 0; }
         if (InterlockedCompareExchange(&g_queryVtblHooked, 1, 0) == 0) {
             void** qvt = *(void***)*ppQ;    // shared by all IDirect3DQuery9 instances
             o_QueryGetData = (QueryGetData_t)HookSlot(qvt, 7, (void*)&Hook_QueryGetData);
@@ -1637,6 +1925,7 @@ static void InstallDeviceHooks(IDirect3DDevice9* dev) {
     // [UIMIRROR]: 57 = SetRenderState (state cache), 81..84 = the four draw entry points.
     o_SetRenderTarget        = (SetRenderTarget_t)       HookSlot(vt, 37, (void*)&Hook_SetRenderTarget);
     o_SetRenderState         = (SetRenderState_t)        HookSlot(vt, 57, (void*)&Hook_SetRenderState);
+    o_SetViewport            = (SetViewport_t)           HookSlot(vt, 47, (void*)&Hook_SetViewport);   // [OCCLPEREYE]
     o_DrawPrimitive          = (DrawPrimitive_t)         HookSlot(vt, 81, (void*)&Hook_DrawPrimitive);
     o_DrawIndexedPrimitive   = (DrawIndexedPrimitive_t)  HookSlot(vt, 82, (void*)&Hook_DrawIndexedPrimitive);
     o_DrawPrimitiveUP        = (DrawPrimitiveUP_t)       HookSlot(vt, 83, (void*)&Hook_DrawPrimitiveUP);
@@ -1648,11 +1937,13 @@ static void InstallDeviceHooks(IDirect3DDevice9* dev) {
     // constants per frame and every one of them was going through this hook to be
     // pattern-matched. Removing
     // it costs nothing and gives those cycles back.
-    Log("[OLVR] device hooks installed dev=%p (CreateQuery 118, SetRenderState 57, draws 81-84)", (void*)dev);
+    Log("[OLVR] device hooks installed dev=%p (CreateQuery 118, SetRenderState 57, SetViewport 47, draws 81-84)", (void*)dev);
     // [PERF-A4/A5] first snapshot + a first backbuffer probe, so the very first frame after install
     // already runs the fast paths instead of the fallbacks.
     FastFlagsRefresh();
     if (g_bbCacheOn) CachedBackBuffer(dev);
+    // [OCCLPEREYE] one answer per query per eye, and none of them outlives the device that made them.
+    OcclTableReset();
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_CreateDevice(IDirect3D9* This, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocus,
@@ -2537,6 +2828,11 @@ static void LoadSavedSettings() {
     // is the optimized path; 0 is the pre-1.2.2 behaviour, kept so a report can be A/B'd.
     OLProxy_SetDrawFastFlags(GetPrivateProfileIntW(L"Perf", L"DrawFastFlags", 1, ini) ? 1 : 0);
     OLProxy_SetBackBufferCache(GetPrivateProfileIntW(L"Perf", L"BackBufferCache", 1, ini) ? 1 : 0);
+    // [OCCLPEREYE] / [VISREUSE] (phase 5) the two visibility switches. OcclPerEye ships ON - it is
+    // what gives the game's own occlusion culling back; VisReuse ships OFF because it changes what
+    // the second eye is told and needs the union frustum (C2) to be sound.
+    OLProxy_SetOcclPerEye(GetPrivateProfileIntW(L"Perf", L"OcclPerEye", 1, ini) ? 1 : 0);
+    OLProxy_SetVisReuse(GetPrivateProfileIntW(L"Perf", L"VisReuse", 0, ini) ? 1 : 0);
     g_mouseUse = GetPrivateProfileIntW(L"Input", L"MouseUse", 1, ini) ? 1 : 0;
     Log("[OLVR][MOUSEUSE] %s (gameplay B=left mouse, X=crouch; menus/grip shortcuts unchanged)",
         g_mouseUse ? "ON" : "OFF: legacy layout");
