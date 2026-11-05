@@ -1964,7 +1964,7 @@ namespace Outlast1VR
             new Rectangle(190, 444, 480, 50), new Rectangle(190, 500, 480, 50), new Rectangle(190, 556, 480, 50),
         };
         static readonly Rectangle PanelR = new Rectangle(710, 244, 440, 242);  // system check ao lado dos botões, largura ainda maior para textos caberem
-        static readonly Rectangle SpeakerR = new Rectangle(16, 36, 34, 28), MinR = new Rectangle(1204, 2, 34, 24), CloseR = new Rectangle(1240, 2, 36, 24);
+        static readonly Rectangle SpeakerR = new Rectangle(16, 24, 34, 28), MinR = new Rectangle(1204, 2, 34, 24), CloseR = new Rectangle(1240, 2, 36, 24);
         const string TapeLabel = "TAPE 01 — MOUNT MASSIVE ASYLUM, LAKE COUNTY, COLORADO";
 
         static readonly Color Osd = Color.FromArgb(240, 228, 246, 228);
