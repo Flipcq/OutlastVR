@@ -3366,6 +3366,9 @@ static void ConsumeUpload() {
     bool advanced = false;                 // [PERF-A2] did this frame actually reach the bridge
     AcquireSRWLockShared(&g_pubLock);
     if (g_pubZcSlot >= 0) {
+        // [PERF-A3] Not the shared-frame lane: if the previous frame was read in place (a lane change
+        // between two frames), hand its slot back before a picture of another origin is used.
+        ExDirectRelease();
         // [ZEROCOPY] the frame is on the GPU already
         if (g_pubW == g_w && g_pubH == g_h && g_uploadTex && g_pubSeq == seq) {
             const double t0 = PerfNowMs();
@@ -3390,6 +3393,7 @@ static void ConsumeUpload() {
             }
         }
     } else if (g_pubW == g_w && g_pubH == g_h && g_uploadTex && !g_pubPixels.empty()) {
+        ExDirectRelease();   // [PERF-A3] the CPU lane owns the picture from here on
         const double t0 = PerfNowMs();
         if (g_devUpload) g_ctx->UpdateSubresource(g_uploadTex, 0, nullptr, g_pubPixels.data(), g_pubPitch, 0);
         g_conSeq = g_pubSeq; g_conPose = g_pubPose; g_conPoseValid = g_pubPoseValid;
