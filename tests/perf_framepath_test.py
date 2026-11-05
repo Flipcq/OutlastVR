@@ -117,7 +117,9 @@ struct ID3D11Texture2D {
     long refs = 1; DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM; unsigned bind = 0;
     void AddRef() { ++refs; }
     void Release() { --refs; ++g_texReleased; }
-    HRESULT GetDesc(D3D11_TEXTURE2D_DESC* d) const { d->Format = fmt; d->BindFlags = bind; return S_OK; }
+    // D3D11's GetDesc returns NOTHING (D3D12's returns HRESULT): the stub says so too, which is what
+    // makes "if (FAILED(tex->GetDesc(...)))" a compile error here as well as in the real build.
+    void GetDesc(D3D11_TEXTURE2D_DESC* d) const { d->Format = fmt; d->BindFlags = bind; }
 };
 struct ID3D11Device {
     HRESULT CreateShaderResourceView(ID3D11Texture2D* t, void*, ID3D11ShaderResourceView** out) {

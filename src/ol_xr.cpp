@@ -188,7 +188,7 @@ static ID3D11View* ViewCacheGet(ID3D11Texture2D* tex, int isRtv, DXGI_FORMAT fmt
     ID3D11View* view = nullptr;
     if (isRtv) {
         ID3D11RenderTargetView* r = nullptr;
-        HRESULT hr;
+        HRESULT hr = E_FAIL;
         if (fmt == DXGI_FORMAT_UNKNOWN) {
             hr = g_d3d11->CreateRenderTargetView(tex, nullptr, &r);
         } else {
@@ -3843,7 +3843,7 @@ static bool EnsureBlitTmp(UINT w, UINT h, bool srgb) {
 static DXGI_FORMAT OlrDirectViewFormat(ID3D11Texture2D* tex, bool* srgbOut) {
     if (!tex) return DXGI_FORMAT_UNKNOWN;
     D3D11_TEXTURE2D_DESC dd = {};
-    if (FAILED(tex->GetDesc(&dd))) return DXGI_FORMAT_UNKNOWN;
+    tex->GetDesc(&dd);   // D3D11's GetDesc is void (D3D12's is not): nothing to check
     if (!(dd.BindFlags & D3D11_BIND_RENDER_TARGET)) return DXGI_FORMAT_UNKNOWN;
     bool srgb = g_eyeFmtSrgb;   // a typeLESS image says nothing about the space: honour the request
     switch (dd.Format) {
